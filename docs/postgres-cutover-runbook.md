@@ -32,3 +32,15 @@
 - 스키마를 정의하는 코드(`database/`, `managers/`, `web_api/`, `functions/`)의 지문이 바뀐 시작에서만 실행되고(약 20초), 같으면 쿼리 한 번으로 끝난다. 실패한 문장은 `[PostgreSQL schema sync] could not apply ...`로 출력되고 서버는 계속 뜬다.
 - 미리 보기: `INAZINA_DB_BACKEND=postgres python -m database.pg_schema_sync --dry-run`. 끄기: `INAZINA_PG_SCHEMA_SYNC=0`. 테스트(pytest)에서는 꺼져 있다.
 - 한계: NOT NULL이고 기본값이 없는 새 컬럼은 기존 행 때문에 NULL 허용으로 추가하고, 이름이 없는 외래키는 새로 만들어진 표에만 붙는다. 컬럼 삭제·타입 변경·이름 변경은 자동으로 하지 않으니 수동 마이그레이션이 필요하다.
+
+## 전환 후 재검토 결과 (2026-11-19)
+
+전환 때 다시 확인하기로 한 항목을 운영 PostgreSQL에서 점검한 결과다.
+
+- **금액 스냅샷 점검**: 건너뛰지 않는다. PG에서는 원천 테이블의 NUMERIC `*_units` 소수 검사로 바뀌었고, 통합 대조의 `amount_field_coverage`는 등록 167·면제 20·미분류 0으로 `matched`다.
+- **REPLACE 위험 4건**: 모두 명시적 충돌 갱신으로 고쳤다(`docs/postgres-replace-audit.md` 처리 결과 참고).
+- **`SQLITE_ONLY` 45개**: 24개는 옛 SQLite 스키마를 올리는 이전 시험이라 PG에는 해당이 없다(PG 스키마는 새로 생성한다). 9개는 줄인 SQLite 표를 직접 만드는 시험, 4개는 쿼리 계획·인덱스 시험, 8개는 기타다. 줄인 표 시험과 쿼리 계획 시험은 PG용(`EXPLAIN`, 실제 스키마)으로 옮길 만하다. "스냅샷 재설계 대기"라고 적힌 4개는 위 점검으로 이미 대체돼서 사유를 고쳐야 한다.
+- **읽기 일관성**: PG 읽기 전용 연결은 `REPEATABLE READ`로 연다. 기본 격리 수준에서는 LP가 호가를 바꾸는 동안 통합 대조가 주문을 한 문장에서는 열림, 다음 문장에서는 취소로 읽어 일시적으로 `mismatch`가 났다. SQLite 읽기와 같은 단일 스냅샷이 맞다.
+- **SQLite 파일을 읽는 도구**: `tools/repair_ledger.py`는 PG로 운영 중이면 실행을 거부한다(`--sqlite-file`로 의도했을 때만 허용). `sqlite_to_postgres.py`와 `build_postgres_schema.py`는 SQLite 원본이 필요한 도구라 그대로 둔다. `benchmark_price_native.py`는 백업을 읽기 전용으로 쓴다.
+- **개발용 DB**: `inazina_dev`(2026-11-01 이후 사용 없음)와 `inazina_schema`는 코드·문서가 이름을 참조해서 지우지 않았다. `inazina_test_*`는 시험 실행이 정상 종료되지 않았을 때 남는 임시 DB라 시험이 끝난 뒤 지운다.
+- **PR #123**: 병합 커밋 `aba8781`이 현재 master에 이미 들어 있어 따로 맞출 것이 없다.

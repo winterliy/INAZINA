@@ -81,10 +81,17 @@ def set_password(service, current, new, actor):
         raise ValueError("서비스를 확인해주세요.")
     if not verify(service, current):
         raise ValueError("현재 비밀번호가 맞지 않습니다.")
-    if not isinstance(new, str) or not MIN_LENGTH <= len(new) <= MAX_LENGTH:
-        raise ValueError(f"새 비밀번호는 {MIN_LENGTH}~{MAX_LENGTH}자로 입력해주세요.")
     if new == current:
         raise ValueError("현재와 다른 비밀번호를 입력해주세요.")
+    reset_password(service, new, actor)
+
+
+def reset_password(service, new, actor="local-reset"):
+    """Set a password without knowing the current one (the local reset tool); same rules for the new value."""
+    if service not in SERVICES:
+        raise ValueError("서비스를 확인해주세요.")
+    if not isinstance(new, str) or not MIN_LENGTH <= len(new) <= MAX_LENGTH:
+        raise ValueError(f"새 비밀번호는 {MIN_LENGTH}~{MAX_LENGTH}자로 입력해주세요.")
     data = _read()
     data[service] = {"hash": hash_password(new), "updatedEpoch": int(time.time()), "updatedBy": str(actor)}
     _write(data)

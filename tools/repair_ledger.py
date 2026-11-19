@@ -68,12 +68,29 @@ def explain_deleted_row(conn, table, key, field, snapshot_units):
     return None
 
 
+def running_on_postgres():
+    """True when the environment or the project's .env selects PostgreSQL (this tool never loads .env itself)."""
+    import os
+    if (os.environ.get("INAZINA_DB_BACKEND") or "").strip().lower() == "postgres":
+        return True
+    env = Path(__file__).resolve().parents[1] / ".env"
+    try:
+        return any(line.replace(" ", "").strip().lower() == "inazina_db_backend=postgres" for line in env.read_text(encoding="utf-8").splitlines())
+    except OSError:
+        return False
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("data_dir")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--actor", default="ledger-repair-2026-11")
+    parser.add_argument("--sqlite-file", action="store_true",
+                        help="the data folder really is the one in use (needed only while the project runs on PostgreSQL)")
     args = parser.parse_args(argv)
+    if running_on_postgres() and not args.sqlite_file:
+        raise SystemExit("This project runs on PostgreSQL, so the inazina.db in that folder is the frozen pre-cutover copy.\n"
+                         "Repairing it changes nothing in production. Pass --sqlite-file only to work on a SQLite copy on purpose.")
     data_dir = Path(args.data_dir).resolve()
     db_path = data_dir / "inazina.db"
     if not db_path.exists():

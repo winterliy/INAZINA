@@ -76,6 +76,24 @@ class SecurityStoreTests(unittest.TestCase):
         self.assertTrue(store.verify("api", "a-new-password"))
         self.assertEqual({s["id"]: s["isDefault"] for s in server.security_overview()["services"]}, {"api": False, "python": False})
 
+    def test_reset_tool_sets_every_target_without_the_current_password(self):
+        import importlib.util, os
+        spec = importlib.util.spec_from_file_location("reset_tool", store.ROOT / "tools" / "reset_access_password.py")
+        tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tool)
+        tool.WL_STORE = Path(self.dir.name) / "wl-security.json"
+        store.reset_password("python", "brand-new-pass")
+        self.assertTrue(store.verify("python", "brand-new-pass"))
+        with self.assertRaises(ValueError):
+            store.reset_password("python", "short")
+        tool.reset_wl("wl-entry", "wl-entry-secret")
+        tool.reset_wl("wl-code", "246810")
+        saved = json.loads(tool.WL_STORE.read_text(encoding="utf-8"))
+        self.assertTrue(saved["entry"]["hash"].startswith("pbkdf2$"))
+        self.assertEqual(saved["logCode"]["length"], 6)
+        with self.assertRaises(ValueError):
+            tool.reset_wl("wl-code", "12ab")
+
 
 if __name__ == "__main__":
     unittest.main()

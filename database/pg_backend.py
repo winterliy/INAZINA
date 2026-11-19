@@ -505,8 +505,10 @@ class PgConnection:
 
     def _begin(self, immediate):
         if not self._in_transaction:
-            # A snapshot reader must reject writes like SQLite's query_only does.
-            self._raw.execute("BEGIN READ ONLY" if self.readonly else "BEGIN")
+            # A snapshot reader must reject writes like SQLite's query_only does, and (as on SQLite) see one
+            # consistent snapshot for the whole read: with READ COMMITTED a long read such as the ledger
+            # reconciliation saw an order open in one statement and cancelled in the next while LP quotes churn.
+            self._raw.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ" if self.readonly else "BEGIN")
             self._in_transaction = True
         if immediate:
             self._raw.execute(WRITER_LOCK)

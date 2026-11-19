@@ -5,7 +5,7 @@ import "./style.css";
 import "../../shared/typography.css";
 import "../../shared/backdrop.css";
 import "./ux-fixes.css";
-import "./topbar.css";
+import "./rebrand.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

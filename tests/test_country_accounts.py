@@ -1,4 +1,6 @@
+import hashlib
 import io
+import os
 import tempfile
 import unittest
 from contextlib import closing
@@ -16,8 +18,11 @@ class CountryAccountTests(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.old_database_dir = DBManager.database_dir
         self.old_database = server.DATABASE
-        self.old_browser_password_hash = server.BROWSER_PASSWORD_SHA256
-        server.BROWSER_PASSWORD_SHA256 = server.hashlib.sha256(b"TestPass123").hexdigest()
+        from web_api import security_store
+        self.old_security = (security_store.STORE, security_store.ATTEMPTS, os.environ.get("INAZINA_BROWSER_PASSWORD_SHA256"))
+        security_store.STORE = Path(self.tempdir.name) / "security.json"
+        security_store.ATTEMPTS = Path(self.tempdir.name) / "browser-access.log.jsonl"
+        os.environ["INAZINA_BROWSER_PASSWORD_SHA256"] = hashlib.sha256(b"TestPass123").hexdigest()
         root = Path(self.tempdir.name)
         DBManager.database_dir = root
         server.DATABASE = root / "inazina.db"
@@ -47,7 +52,12 @@ class CountryAccountTests(unittest.TestCase):
     def tearDown(self):
         DBManager.database_dir = self.old_database_dir
         server.DATABASE = self.old_database
-        server.BROWSER_PASSWORD_SHA256 = self.old_browser_password_hash
+        from web_api import security_store
+        security_store.STORE, security_store.ATTEMPTS, previous = self.old_security
+        if previous is None:
+            os.environ.pop("INAZINA_BROWSER_PASSWORD_SHA256", None)
+        else:
+            os.environ["INAZINA_BROWSER_PASSWORD_SHA256"] = previous
         self.tempdir.cleanup()
 
     def test_country_id_is_the_treasury_id_and_country_password_login_works(self):

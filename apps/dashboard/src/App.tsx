@@ -6,6 +6,9 @@ import { api, appUrl, clearToken, signedOut, type ApiUser } from "../../shared/a
 import { AuthPanel } from "../../shared/AuthPanel";
 import { Card, plain, type Ctx } from "./common";
 import { TopBar } from "./TopBar";
+import { PageHead } from "./PageHead";
+import { HomePage } from "./HomePage";
+import { Footer } from "./Footer";
 import { LEGACY_PAGE } from "./nav";
 const ProductsPage = lazy(() => import("./ProductsPage").then((module) => ({ default: module.ProductsPage })));
 const UsersPage = lazy(() => import("./UsersPage").then((module) => ({ default: module.UsersPage })));
@@ -33,7 +36,7 @@ const AccountPage = lazy(() => import("./AccountPage").then((module) => ({ defau
 const OrganizationPage = lazy(() => import("./OrganizationPage").then((module) => ({ default: module.OrganizationPage })));
 const OrganizationOwnershipWindow = lazy(() => import("./OrganizationOwnershipWindow").then((module) => ({ default: module.OrganizationOwnershipWindow })));
 
-type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "feedback" | "board" | "documents" | "credit" | "accounting" | "close" | "events" | "liquidity" | "commands" | "database" | "security" | "audit" | "ownership";
+type Page = "home" | "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "feedback" | "board" | "documents" | "credit" | "accounting" | "close" | "events" | "liquidity" | "commands" | "database" | "security" | "audit" | "ownership";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
 type Instrument = { code: string; name: string; type: string; price: Money; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
 type Exchange = { exchange_id: string; status: string; reason: string | null; trading_halted: number; updated_epoch: number | null; resume_epoch: number | null; circuit_stage: number | null };
@@ -49,6 +52,7 @@ type BotJob = { job_id: number; kind: string; actor_id: string; payload: string;
 type CommandResult = { command: string; arguments: string; message: string; success: boolean; time: number; national: boolean };
 
 const pages: { id: Page; label: string }[] = [
+  { id: "home", label: "메인" },
   { id: "account", label: "내 계정" },
   { id: "overview", label: "운영 현황" },
   { id: "instruments", label: "종목 · 상품" },
@@ -73,6 +77,7 @@ const pages: { id: Page; label: string }[] = [
   { id: "ownership", label: "조직도" },
 ];
 const subtitles: Record<Page, string> = {
+  home: "처리할 일과 시장 상황, 최근 작업을 한눈에 봅니다.",
   account: "관리자 계정의 로그인 정보, 실행 명의와 최근 로그인을 관리합니다.",
   overview: "시장 상태와 서비스 연결을 확인하고 거래소를 제어합니다.",
   instruments: "주식·자산·ETF·선물·채권·펀드·원자재·옵션·ELS를 생성·수정·중지합니다.",
@@ -106,11 +111,11 @@ const message = (cause: unknown, fallback: string) => cause instanceof Error ? c
 function readRoute(): { page: Page; sub: string } {
   const [head, ...rest] = decodeURIComponent(location.hash.replace(/^#\/?/, "")).replace(/\/+$/, "").split("/");
   const id = LEGACY_PAGE[head] ?? head;
-  return { page: pages.some((item) => item.id === id) ? id as Page : "overview", sub: rest.join("/") };
+  return { page: pages.some((item) => item.id === id) ? id as Page : "home", sub: rest.join("/") };
 }
 const NATIONAL = "국가 명의", HELP = "도움말";
 // Redesign D (grid guideline) was approved for these tabs only; the rest keep the bento look.
-const THEME_D_PAGES = new Set<Page>(["instruments", "finance", "exchanges", "board", "credit", "documents"]);
+const THEME_D_PAGES = new Set<Page>();  // the grid-guideline theme was dropped with the rebrand
 const scopeOf = (section: string) => section === NATIONAL ? "national" : section === HELP ? "help" : "admin";
 const initialRoute = readRoute();
 
@@ -188,7 +193,7 @@ export default function App() {
     }
     if (!user || user.role !== "admin") return;
     try {
-      if (page === "overview") setOverview(await api<Overview>("/api/admin/overview"));
+      if (page === "overview" || page === "home") setOverview(await api<Overview>("/api/admin/overview"));
       if (page === "audit") setAudit((await api<{ entries: Audit[] }>("/api/admin/audit")).entries);
       if (page === "events") {
         const [eventResult, instrumentResult] = await Promise.all([
@@ -393,29 +398,20 @@ export default function App() {
 
   const current = pages.find((item) => item.id === page)!;
   const searchable = page === "instruments" || page === "finance" || page === "exchanges" || page === "companies" || page === "users" || page === "feedback" || page === "board" || page === "database" || page === "accounting";
-  const openExchanges = overview ? overview.market.filter((item) => item.status === "open" && !item.trading_halted).length : 0;
+  const labels = new Map<string, string>(pages.filter((item) => item.id !== "account" && item.id !== "ownership").map((item) => [item.id, item.label]));
+  const badges = { feedback: unreadFeedback, naturalization: pendingNaturalization };
 
   return <Stage>
     <div className="shell">
       <TopBar user={user} page={page} pages={pages.filter((item) => item.id !== "account" && item.id !== "ownership")}
-        badges={{ feedback: unreadFeedback, naturalization: pendingNaturalization }} health={health} connected={connected} busy={busy}
-        onPage={(next) => setPage(next as Page)} onRefresh={() => void refresh()} onLogout={logout} />
+        badges={badges} connected={connected} onPage={(next) => setPage(next as Page)} onLogout={logout} />
       <main className={THEME_D_PAGES.has(page) ? "content theme-d" : "content"}>
-        {page === "overview"
-          ? <section className="hero">
-            <div className="hero-copy"><p className="eyebrow">INAZINA 로컬 관리 콘솔</p><h1 className="title">{current.label}</h1><p className="sub">{subtitles[page]}</p></div>
-            <div className="hero-figure"><div className="hero-number">{overview ? <>{openExchanges}<span> / </span>{overview.market.length}</> : "—"}</div><p>개장 중 거래소</p></div>
-          </section>
-          : <section className="page-head">
-            <div className="page-copy"><h1 className="title">{current.label}</h1><p className="sub">{subtitles[page]}</p></div>
-            {searchable && <label className="search">
-              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>
-              <input type="search" aria-label="검색" placeholder={page === "users" ? "이름 또는 ID" : page === "database" ? "모든 열에서 검색" : "이름 또는 코드"} value={query} onChange={(event) => setQuery(event.target.value)} />
-            </label>}
-          </section>}
+        <PageHead page={page} title={current.label} labels={labels} badges={badges} searchable={searchable} query={query}
+          placeholder={page === "users" ? "이름 또는 ID" : page === "database" ? "모든 열에서 검색" : "이름 또는 코드"} onQuery={setQuery} onPage={(next) => setPage(next as Page)} />
         {notice && <div className={notice.error ? "notice error" : "notice"} role={notice.error ? "alert" : "status"}><span>{notice.text}</span><button type="button" className="ghost" aria-label="알림 닫기" onClick={() => setNotice(null)}>×</button></div>}
 
         <Suspense fallback={<p className="loading">화면을 불러오는 중…</p>}>
+        {page === "home" && <HomePage market={overview?.market} bankDeficits={overview?.bankDeficits ?? []} labels={labels} badges={badges} onPage={(next) => setPage(next as Page)} />}
         {page === "overview" && <>
           <section className="spec-strip" aria-label="주요 지표">
             <Metric label="활성 사용자" value={overview ? number(overview.activeUsers) : "—"} />
@@ -424,22 +420,6 @@ export default function App() {
           </section>
           {!!overview?.bankDeficits?.length && <section className="glass card mb rise warn-card" role="alert"><div className="card-head"><div><h2>⚠️ 은행 본사 계좌 적자</h2><p className="cap">적자는 허용되지만 자본 확충을 검토하세요. 처음 적자가 될 때 관리자에게 Discord DM으로도 알립니다.</p></div></div>
             <div className="scroll-x"><table><thead><tr><th>은행</th><th>본사 계좌</th><th>국가</th><th className="r">잔액</th></tr></thead><tbody>{overview.bankDeficits.map((bank) => <tr key={bank.issuer}><td>{bank.issuer}</td><td className="mono">{bank.account}</td><td>{bank.nationality}</td><td className="r mono">{number(bank.cash)}</td></tr>)}</tbody></table></div></section>}
-          <section className="section">
-            <div className="section-head"><div><h2>시장 제어</h2><p className="cap">전체 또는 거래소별로 개장·휴장·정지합니다. 기존 Python 시장 제어와 기록을 거칩니다.</p></div>
-              <div className="actions"><button className="btn primary" disabled={busy} onClick={() => marketAction("open")}>전체 개장</button><button className="outline" disabled={busy} onClick={() => marketAction("close")}>전체 휴장</button><button className="outline" disabled={busy} onClick={() => marketAction("pause")}>일시 정지</button><button className="outline" disabled={busy} onClick={() => marketAction("resume")}>재개</button></div></div>
-            <div className="exchange-grid">
-              {(overview?.market ?? []).map((item) => <article key={item.exchange_id} className="exchange-tile">
-                <div className="exchange-top"><h3>{item.exchange_id}</h3><span className={item.status === "open" && !item.trading_halted ? "state ok" : "state warn"}>{item.trading_halted ? "거래 정지" : marketStatusName[item.status] ?? item.status}</span></div>
-                <dl className="exchange-facts"><div><dt>사유</dt><dd>{item.reason || "—"}</dd></div><div><dt>서킷</dt><dd>{item.circuit_stage ? `${item.circuit_stage}단계` : "—"}</dd></div><div><dt>변경 시각</dt><dd>{item.updated_epoch ? date(item.updated_epoch) : "—"}</dd></div></dl>
-                <div className="exchange-actions">{item.status === "open" ? <button className="tile-btn" disabled={busy} onClick={() => marketAction("close", item.exchange_id)}>휴장</button> : <button className="tile-btn" disabled={busy} onClick={() => marketAction("open", item.exchange_id)}>개장</button>}{item.trading_halted ? <button className="tile-btn" disabled={busy} onClick={() => marketAction("resume", item.exchange_id)}>재개</button> : <button className="tile-btn" disabled={busy} onClick={() => marketAction("pause", item.exchange_id)}>정지</button>}<button className="tile-btn" disabled={busy || item.status === "closed"} onClick={() => marketAction("sidecar", item.exchange_id)}>사이드카</button><select className="tile-select" aria-label={`${item.exchange_id} 서킷브레이커`} value="" disabled={busy || item.status === "closed"} onChange={(event) => { if (event.target.value) marketAction("circuit", item.exchange_id, Number(event.target.value)); }}><option value="">서킷…</option><option value="1">1단계 (20분)</option><option value="2">2단계 (20분)</option><option value="3">3단계 (다음 날)</option></select></div>
-              </article>)}
-            </div>
-            {overview && !overview.market.length && <p className="empty">등록된 거래소가 없습니다.</p>}
-          </section>
-          <section className="service-tile">
-            <div className="section-head"><h2>서비스 연결</h2><p className="cap">모든 서비스는 이 컴퓨터(127.0.0.1)에서만 열립니다.</p></div>
-            <dl className="service-grid"><div><dt>웹 API</dt><dd className="mono">:4312</dd></div><div><dt>Python 데이터 서비스</dt><dd className="mono">:4313</dd></div><div><dt>데이터베이스</dt><dd className="mono">inazina.db</dd></div><div><dt>상태</dt><dd className="state-line"><span className={connected ? "dot ok" : "dot"} />{health}</dd></div></dl>
-          </section>
         </>}
 
         {page === "instruments" && <><ProductsPage group="market" ctx={ctx} /><WarningsCard ctx={ctx} /></>}
@@ -530,7 +510,7 @@ export default function App() {
         {page === "audit" && <LoginHistoryCard ctx={ctx} />}
         {page === "account" && <AccountPage ctx={ctx} user={user} onLogout={logout} />}
         </Suspense>
-        <p className="foot">© INAZINA. All rights reserved.</p>
+        <Footer connected={connected} />
       </main>
     </div>
     {jumpOpen && (() => {
