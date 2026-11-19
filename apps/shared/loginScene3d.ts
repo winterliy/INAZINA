@@ -56,32 +56,34 @@ const HASH = /* glsl */`
 float h11(float p) { p = fract(p * .1031); p *= p + 33.33; p *= p + p; return fract(p); }
 `;
 
-const POINT_VERT = /* glsl */`
+/** Where point i is at a given moment (time, how formed, how far the burst has spread). Shared by the heads and their trails. */
+const PLACE = /* glsl */`
 ${HASH}
 attribute vec3 aTarget;
 attribute vec4 aSeed;
 attribute float aBlue;
-uniform float uTime, uForm, uBurst, uGlitch, uPx;
+uniform float uTime, uForm, uBurst, uGlitch, uPx, uTrail, uFormRate, uBurstRate;
 uniform vec2 uPointer;
-varying float vBlue, vAlpha;
+float gF;                                   // this point's own 0..1 "settled into the word" at the moment asked about
 
-void main() {
+vec3 place(float time, float form, float burst) {
   float strand = floor(aSeed.w * 90.0);
   float baseAngle = strand / 90.0 * 6.2831853 + h11(strand) * 0.4;
-  float r = pow(aSeed.y, 0.62) * 2.6 * uBurst;
-  float swirl = r * (0.75 + 0.35 * sin(strand * 1.7)) + 0.35 * sin(uTime * 0.23 + strand * 0.9);
+  float r = pow(aSeed.y, 0.62) * 2.6 * burst;
+  float swirl = r * (0.75 + 0.35 * sin(strand * 1.7)) + 0.35 * sin(time * 0.23 + strand * 0.9);
   float angle = baseAngle + swirl;
   vec3 scatter = vec3(cos(angle), sin(angle), 0.0) * r;
-  scatter.z = (aSeed.z - 0.5) * 2.4 * uBurst;
+  scatter.z = (aSeed.z - 0.5) * 2.4 * burst;
   // slow stochastic drift, the "chaos" half
-  scatter.xy += 0.06 * vec2(sin(uTime * 0.7 + aSeed.x * 40.0), cos(uTime * 0.6 + aSeed.y * 40.0)) * (0.4 + r);
-  scatter.z += 0.1 * sin(uTime * 0.5 + aSeed.x * 20.0);
+  scatter.xy += 0.06 * vec2(sin(time * 0.7 + aSeed.x * 40.0), cos(time * 0.6 + aSeed.y * 40.0)) * (0.4 + r);
+  scatter.z += 0.1 * sin(time * 0.5 + aSeed.x * 20.0);
 
   float stagger = fract(aSeed.z * 7.13) * 0.55 + clamp((aTarget.x + 1.7) / 3.4, 0.0, 1.0) * 0.25;
-  float f = smoothstep(0.0, 1.0, clamp((uForm * 1.55 - stagger) / 0.55, 0.0, 1.0));
+  float f = smoothstep(0.0, 1.0, clamp((form * 1.55 - stagger) / 0.55, 0.0, 1.0));
+  gF = f;
   vec3 target = aTarget;
   target.z += (aSeed.z - 0.5) * 0.18;
-  target.xy += 0.0016 * vec2(sin(uTime * 1.3 + aSeed.x * 60.0), cos(uTime * 1.1 + aSeed.y * 60.0));
+  target.xy += 0.0016 * vec2(sin(time * 1.3 + aSeed.x * 60.0), cos(time * 1.1 + aSeed.y * 60.0));
   vec3 pos = mix(scatter, target, f);
 
   // glitch: horizontal bands slide sideways, a few at a time
@@ -92,14 +94,38 @@ void main() {
 
   // pointer pushes points aside, the formed word springs back
   vec2 d = pos.xy - uPointer;
-  float push = exp(-dot(d, d) / 0.045) * 0.3 * (0.35 + 0.65 * f);
-  pos.xy += normalize(d + 1e-4) * push;
+  pos.xy += normalize(d + 1e-4) * exp(-dot(d, d) / 0.045) * 0.3 * (0.35 + 0.65 * f);
+  return pos;
+}
+`;
 
-  vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+const POINT_VERT = /* glsl */`
+${PLACE}
+varying float vBlue, vAlpha;
+
+void main() {
+  vec4 mv = modelViewMatrix * vec4(place(uTime, uForm, uBurst), 1.0);
+  float f = gF;
   gl_Position = projectionMatrix * mv;
   gl_PointSize = uPx * mix(1.15 + 1.9 * aSeed.y, 1.0 + 0.9 * aSeed.y, f) * clamp(5.2 / -mv.z, 0.55, 1.7);
   vBlue = aBlue;
   vAlpha = mix(0.3, 0.95, f) * mix(0.55 + 0.45 * aSeed.x, 1.0, f);
+}
+`;
+
+/** Each point also draws a line back along where it just was (a fixed slice of time earlier, so fast movers stretch long and
+ *  still ones stay dots). The slice is zero once the word is held, so the finished logo stays crisp. */
+const TRAIL_VERT = /* glsl */`
+${PLACE}
+attribute float aEnd;                       // 0 at the head, 1 at the tail
+varying float vBlue, vAlpha;
+
+void main() {
+  float back = aEnd * uTrail;
+  vec3 pos = place(uTime - back, clamp(uForm - uFormRate * back, 0.0, 1.0), max(0.15, uBurst - uBurstRate * back));
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+  vBlue = aBlue;
+  vAlpha = (1.0 - aEnd) * 0.4 * (0.5 + 0.5 * aSeed.x) * (1.0 - smoothstep(0.85, 1.0, uForm));
 }
 `;
 
@@ -176,10 +202,22 @@ export function mountLoginScene(container: HTMLElement): () => void {
   geometry.setAttribute("aTarget", new BufferAttribute(target, 3));
   geometry.setAttribute("aSeed", new BufferAttribute(seed, 4));
   geometry.setAttribute("aBlue", new BufferAttribute(blue, 1));
-  const uniforms = { uTime: { value: 0 }, uForm: { value: 0 }, uBurst: { value: 0.15 }, uGlitch: { value: 0 }, uPx: { value: 1 }, uPointer: { value: { x: 9, y: 9 } } };
+  const uniforms = { uTime: { value: 0 }, uForm: { value: 0 }, uBurst: { value: 0.15 }, uGlitch: { value: 0 }, uPx: { value: 1 }, uTrail: { value: 0 }, uFormRate: { value: 0 }, uBurstRate: { value: 0 }, uPointer: { value: { x: 9, y: 9 } } };
   const material = new ShaderMaterial({ uniforms, vertexShader: POINT_VERT, fragmentShader: POINT_FRAG, transparent: true, depthTest: false, depthWrite: false });
   const points = new Points(geometry, material);
   points.frustumCulled = false;
+
+  // trails: the same points again as two-vertex lines (head, tail) sharing the point attributes
+  const trailGeometry = new BufferGeometry();
+  const doubled = (source: Float32Array, size: number) => { const out = new Float32Array(source.length * 2); for (let i = 0; i < COUNT; i += 1) { const part = source.subarray(i * size, i * size + size); out.set(part, i * size * 2); out.set(part, i * size * 2 + size); } return out; };
+  trailGeometry.setAttribute("position", new BufferAttribute(new Float32Array(COUNT * 6), 3));
+  trailGeometry.setAttribute("aTarget", new BufferAttribute(doubled(target, 3), 3));
+  trailGeometry.setAttribute("aSeed", new BufferAttribute(doubled(seed, 4), 4));
+  trailGeometry.setAttribute("aBlue", new BufferAttribute(doubled(blue, 1), 1));
+  trailGeometry.setAttribute("aEnd", new BufferAttribute(Float32Array.from({ length: COUNT * 2 }, (_, i) => i & 1), 1));
+  const trailMaterial = new ShaderMaterial({ uniforms, vertexShader: TRAIL_VERT, fragmentShader: POINT_FRAG, transparent: true, depthTest: false, depthWrite: false });
+  const trails = new LineSegments(trailGeometry, trailMaterial);
+  trails.frustumCulled = false;
 
   const RAYS = 140;
   const rayData = new Float32Array(RAYS * 4);
@@ -192,7 +230,7 @@ export function mountLoginScene(container: HTMLElement): () => void {
   rays.frustumCulled = false;
 
   const scene = new Scene();
-  scene.add(rays, points);
+  scene.add(rays, trails, points);
   const camera = new PerspectiveCamera(FOV, 1, 0.1, 60);
 
   const fadeUniforms = { uFade: { value: 1 }, uAspect: { value: 1 } };
@@ -247,7 +285,7 @@ export function mountLoginScene(container: HTMLElement): () => void {
     return { burst, form, glitch, label };
   };
 
-  let running = true, visible = true, frame = 0, last = performance.now(), time = 0, hudAt = 0;
+  let prevForm = 0, prevBurst = 0.15, running = true, visible = true, frame = 0, last = performance.now(), time = 0, hudAt = 0;
   const render = (now: number) => {
     frame = requestAnimationFrame(render);
     const delta = Math.min(1, (now - last) / 1000); last = now;
@@ -255,6 +293,13 @@ export function mountLoginScene(container: HTMLElement): () => void {
     time += delta;
     const t = time % CYCLE;
     const phase = phaseOf(t);
+    if (delta > 0) {                                           // how fast the cloud is changing, to size the trails
+      const k = 1 - Math.exp(-delta * 8);
+      uniforms.uFormRate.value += ((phase.form - prevForm) / delta - uniforms.uFormRate.value) * k;
+      uniforms.uBurstRate.value += ((phase.burst - prevBurst) / delta - uniforms.uBurstRate.value) * k;
+    }
+    prevForm = phase.form; prevBurst = phase.burst;
+    uniforms.uTrail.value = t < 14 ? 0.32 : 0.5;
     uniforms.uTime.value = time; uniforms.uForm.value = phase.form; uniforms.uBurst.value = phase.burst; uniforms.uGlitch.value = phase.glitch;
 
     pointer.x += (pointer.tx - pointer.x) * 0.06; pointer.y += (pointer.ty - pointer.y) * 0.06;
@@ -287,7 +332,7 @@ export function mountLoginScene(container: HTMLElement): () => void {
     observer.disconnect(); intersection.disconnect();
     window.removeEventListener("pointermove", onPointer);
     document.removeEventListener("visibilitychange", onVisibility);
-    geometry.dispose(); material.dispose(); rayGeometry.dispose(); rayMaterial.dispose(); fadeGeometry.dispose(); fadeMaterial.dispose();
+    geometry.dispose(); material.dispose(); trailGeometry.dispose(); trailMaterial.dispose(); rayGeometry.dispose(); rayMaterial.dispose(); fadeGeometry.dispose(); fadeMaterial.dispose();
     renderer.dispose();
     renderer.domElement.remove(); hud.remove();
   };
