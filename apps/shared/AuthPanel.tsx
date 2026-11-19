@@ -191,12 +191,14 @@ export function AuthPanel({ app, onAuthenticated, extra }: { app: "dashboard" | 
   </main>;
 }
 
+/** `?scene=3d` forces the motion on (testing): no hardware checks and no slow-run fallback. */
+const forcedMotion = () => { try { return new URLSearchParams(location.search).get("scene") === "3d"; } catch { return false; } };
 const STILL_KEY = "inazina.scene";
 /** The motion picture is for capable desktops only; phones, weak machines and software rendering get the still logo.
- *  `?scene=3d` forces the motion (for testing). A machine that turned out too slow is remembered (see loginScene3d's onSlow). */
+ *  A machine that turned out too slow is remembered (see loginScene3d's onSlow). */
 function stillLogoOnly(): boolean {
+  if (forcedMotion()) return false;
   try {
-    if (new URLSearchParams(location.search).get("scene") === "3d") return false;
     if (localStorage.getItem(STILL_KEY) === "still") return true;
   } catch { /* storage blocked: decide from the hardware alone */ }
   const nav = navigator as Navigator & { deviceMemory?: number };
@@ -230,7 +232,7 @@ function AuthScene() {
     };
     void import("./loginScene3d").then((scene) => {
       if (cancelled) return;
-      try { dispose = scene.mountLoginScene(element, settle); element.classList.add("is-3d"); } catch { element.classList.add("is-still"); }
+      try { dispose = scene.mountLoginScene(element, forcedMotion() ? undefined : settle); element.classList.add("is-3d"); } catch { element.classList.add("is-still"); }
     }).catch(() => element.classList.add("is-still"));
     return () => { cancelled = true; dispose?.(); element.classList.remove("is-3d"); };
   }, []);
