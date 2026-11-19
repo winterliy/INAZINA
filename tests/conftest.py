@@ -47,7 +47,7 @@ def _init_from_template(self):
     _original_init(self)
 
 
-# INAZINA_DB_BACKEND=postgres: the same tests on PostgreSQL. Each worker converts its
+# The tests run on PostgreSQL (the only backend since 2026-11-20). Each worker converts its
 # SQLite template once into a PostgreSQL template database; every test directory gets
 # a fresh clone (CREATE DATABASE ... TEMPLATE), and the previous clone is dropped.
 _pg_template = None
@@ -168,19 +168,22 @@ def _quarantine_default_database():
 def pytest_configure(config):
     global _template, _pg_template
     _quarantine_default_database()
-    from database import pg_backend
-    if pg_backend.enabled():
-        # The SQLite template is built with the SQLite backend, then converted.
-        import os
-        os.environ["INAZINA_DB_BACKEND"] = "sqlite"
-        try:
-            _template = _build_template()
-        finally:
-            os.environ["INAZINA_DB_BACKEND"] = "postgres"
-        _pg_template = _build_postgres_template(_template)
-        _route_test_database_connections()
-    else:
+    # PostgreSQL is the only backend (SQLite support ended 2026-11-20). The SQLite template is only the schema generator:
+    # built with the internal "sqlite-schema" mode, then converted into a PostgreSQL template database.
+    import os
+    os.environ["INAZINA_DB_BACKEND"] = "sqlite-schema"
+    try:
         _template = _build_template()
+    finally:
+        os.environ["INAZINA_DB_BACKEND"] = "postgres"
+    _pg_template = _build_postgres_template(_template)
+    _route_test_database_connections()
+    # (the old SQLite test mode, kept for reference)
+    # from database import pg_backend
+    # if pg_backend.enabled():
+    #     ...the PostgreSQL branch above...
+    # else:
+    #     _template = _build_template()
     database.DatabaseManager.__init__ = _init_from_template
 
 
@@ -199,7 +202,7 @@ def pytest_report_to_serializable(config, report):
     return None
 
 
-# Tests about SQLite itself, skipped on INAZINA_DB_BACKEND=postgres (reviewed 2026-11-14).
+# Tests about SQLite itself. They are kept (not deleted) but always skipped now that PostgreSQL is the only backend (reviewed 2026-11-14).
 SQLITE_ONLY = {
     # Fixtures built on SQLite specifics (reduced tables, the database file itself).
     "test_log_delete.py::LogDeleteTests::test_flows_are_listed_and_deleted": "creates its own reduced SQLite tables with CREATE TABLE; PostgreSQL already has the full schema",

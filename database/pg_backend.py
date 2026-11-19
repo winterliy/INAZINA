@@ -36,8 +36,30 @@ _NO_OP_PRAGMAS = {"foreign_keys", "busy_timeout", "query_only", "journal_mode", 
                   "cache_size", "temp_store", "mmap_size", "recursive_triggers"}
 
 
+# SQLite support ended on 2026-11-20: PostgreSQL is the only database the app runs on.
+# SQLite is still used for one thing, as the in-process tool that turns the code's schema definition into the PostgreSQL
+# schema (tools/build_postgres_schema.py, database/pg_schema_sync.py, the test template). Those callers select it with the
+# internal value "sqlite-schema"; a plain "sqlite" is refused so nobody starts the app on it by mistake.
+#
+# (the old switch, kept for reference)
+# def enabled():
+#     return os.environ.get("INAZINA_DB_BACKEND", "sqlite").lower() == "postgres"
+SCHEMA_TOOL = "sqlite-schema"
+
+
+def backend():
+    """"postgres" (the default) or "sqlite-schema" (the schema-building tool only); anything else is refused."""
+    value = (os.environ.get("INAZINA_DB_BACKEND") or "postgres").strip().lower()
+    if value in ("postgres", "postgresql"):
+        return "postgres"
+    if value == SCHEMA_TOOL:
+        return SCHEMA_TOOL
+    raise RuntimeError(f"INAZINA_DB_BACKEND={value!r} is no longer supported: SQLite support ended on 2026-11-20 and the app runs on "
+                       "PostgreSQL only. Remove the setting or use INAZINA_DB_BACKEND=postgres (see docs/postgres-cutover-runbook.md).")
+
+
 def enabled():
-    return os.environ.get("INAZINA_DB_BACKEND", "sqlite").lower() == "postgres"
+    return backend() == "postgres"
 
 
 def dsn():

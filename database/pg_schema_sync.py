@@ -45,7 +45,7 @@ def fingerprint():
 
 def generate():
     """(schema_sql, triggers_sql) of the layout the current code creates."""
-    env = {**os.environ, "INAZINA_DB_BACKEND": "sqlite"}
+    env = {**os.environ, "INAZINA_DB_BACKEND": "sqlite-schema"}
     env.pop("INAZINA_PG_DSN", None)
     with tempfile.TemporaryDirectory(prefix="inazina-pg-sync-") as folder:
         subprocess.run([sys.executable, "-c", _INIT.format(root=str(ROOT), folder=folder)], env=env, check=True,

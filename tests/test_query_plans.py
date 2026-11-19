@@ -23,7 +23,7 @@ class QueryPlanTests(unittest.TestCase):
 
     @staticmethod
     def _details(connection, sql, parameters):
-        if os.environ.get("INAZINA_DB_BACKEND", "sqlite").lower() == "postgres":
+        if os.environ.get("INAZINA_DB_BACKEND", "postgres").lower() == "postgres":
             # The test database is nearly empty, so the planner would scan; ask what it does when it may not.
             connection.execute("SET LOCAL enable_seqscan = off")
             for value in parameters:  # EXPLAIN is passed through untranslated, so write the values in

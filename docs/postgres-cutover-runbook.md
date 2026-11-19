@@ -48,3 +48,16 @@
 ## 옛 SQLite 파일 보관 (2026-11-19)
 
 전환 시점의 SQLite 파일(`inazina.db`, `-wal`, `-shm`)은 `database/backups/sqlite-frozen-20261119/`로 옮겼다. 실수로 SQLite로 켜지는 일을 막기 위해서다. 세 파일은 함께 보관해야 한다. 되돌릴 때는 세 파일을 `database/`로 복사하고 `.env`의 `INAZINA_DB_BACKEND`/`INAZINA_PG_DSN` 두 줄을 지운다. 그 사이에 PostgreSQL에 쌓인 쓰기는 SQLite에 없으므로 먼저 `pg_dump`로 보존한다.
+
+
+## SQLite 지원 종료 (2026-11-20)
+
+앱은 PostgreSQL로만 실행된다. SQLite는 코드가 정의한 스키마를 PostgreSQL 스키마로 바꾸는 **내부 도구**로만 남는다
+(`tools/build_postgres_schema.py`, `database/pg_schema_sync.py`, 시험용 템플릿 DB가 `INAZINA_DB_BACKEND=sqlite-schema`로 쓴다).
+
+- `INAZINA_DB_BACKEND`를 지정하지 않으면 PostgreSQL이다. `sqlite`로 지정하면 안내 메시지와 함께 멈춘다(`database/pg_backend.py`의 `backend()`).
+- **SQLite로 되돌리는 길은 없다.** 위 "되돌리기"와 "옛 SQLite 파일 보관"의 롤백 절차는 더 이상 쓸 수 없다. `database/backups/sqlite-frozen-20261119/`는 기록용으로만 남긴다.
+- 백업은 `pg_dump`(`python -m database.backup`), 복원 점검은 `python tools/backup_restore_drill.py <dump> [--require-table NAME] [--reconcile]`다. 점검은 덤프를 임시 DB(`inazina_drill_*`)에 `pg_restore`하고 필수 표, 검증되지 않은 외래키, 통합 대사를 확인한 뒤 임시 DB를 지운다.
+- 삭제하지 않고 주석 처리해 둔 SQLite 도구: `database/backup.py`의 `backup()`, `tools/verify_backup.py`, `tools/backup_restore_drill.py`의 SQLite 버전, `tests/test_backup.py`, `tests/test_m8_backup_restore_drill.py`의 SQLite 버전. 파일 안의 "retired 2026-11-20" 표시를 찾으면 된다.
+- 건너뛰는 시험 `SQLITE_ONLY`(`tests/conftest.py`)는 지우지 않고 그대로 둔다. 이제 항상 건너뛴다.
+- 아직 SQLite가 필요한 것: 새 표·컬럼을 정의하는 방식 자체(스키마 정의가 SQLite DDL/마이그레이션 코드다). 이를 PostgreSQL용 정의로 다시 쓰는 일(2단계)을 하기 전에는 SQLite를 코드에서 모두 지울 수 없다.

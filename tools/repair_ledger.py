@@ -71,7 +71,7 @@ def explain_deleted_row(conn, table, key, field, snapshot_units):
 def running_on_postgres():
     """True when the environment or the project's .env selects PostgreSQL (this tool never loads .env itself)."""
     import os
-    if (os.environ.get("INAZINA_DB_BACKEND") or "").strip().lower() == "postgres":
+    if (os.environ.get("INAZINA_DB_BACKEND") or "postgres").strip().lower() in ("postgres", "postgresql"):   # PostgreSQL is the default since 2026-11-20
         return True
     env = Path(__file__).resolve().parents[1] / ".env"
     try:

@@ -47,6 +47,11 @@ token = os.getenv("INAZINA_TOKEN") or os.getenv("NACONOMICS_TOKEN")
 if not token:
     raise SystemExit("INAZINA_TOKEN 환경변수를 설정해주세요.")
 
-print(f"Database backend: {os.getenv('INAZINA_DB_BACKEND', 'sqlite')}", flush=True)
+from database import pg_backend
+try:
+    pg_backend.backend()
+except RuntimeError as exc:
+    raise SystemExit(str(exc))
+print(f"Database backend: {pg_backend.backend()}", flush=True)
 bot = InazinaBot(token)
 bot.run(token)

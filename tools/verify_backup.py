@@ -1,44 +1,53 @@
 #!/usr/bin/env python3
-"""Inspect a SQLite backup; this does not restore it or validate business ledgers."""
-import argparse
-import json
-import sqlite3
+"""Verification of standalone SQLite backups. Retired 2026-11-20 with SQLite support; PostgreSQL backups are checked by
+tools/backup_restore_drill.py (pg_restore into a temporary database). The original is kept below as a comment."""
 import sys
-from pathlib import Path
+
+if __name__ == "__main__":
+    sys.exit("verify_backup.py is retired (SQLite backups ended on 2026-11-20); use tools/backup_restore_drill.py for PostgreSQL dumps.")
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('backup', type=Path, help='SQLite backup snapshot to inspect')
-    parser.add_argument('--require-table', action='append', default=[], metavar='NAME',
-                        help='require this table in the snapshot (repeatable)')
-    args = parser.parse_args()
-    try:
-        # Project CHECK constraints depend on deterministic SQLite functions.
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-        from database.exact_cost_basis import register as register_cost
-        from database.wide_values import register as register_wide
-        path = args.backup.resolve(strict=True)
-        with path.open('rb') as source:
-            if source.read(16) != b'SQLite format 3\x00':
-                raise ValueError('Not a complete SQLite database file')
-        uri = path.as_uri() + '?mode=ro'
-        with sqlite3.connect(uri, uri=True) as db:
-            register_cost(db)
-            register_wide(db)
-            tables = {row[0] for row in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
-            missing_tables = sorted(set(args.require_table) - tables)
-            integrity = [row[0] for row in db.execute('PRAGMA integrity_check')]
-            violations = [dict(zip(('table', 'rowid', 'parent', 'fk_index'), row))
-                          for row in db.execute('PRAGMA foreign_key_check')]
-        report = {'ok': integrity == ['ok'] and not violations and not missing_tables,
-                  'integrity': integrity, 'foreign_key_violations': violations,
-                  'missing_tables': missing_tables}
-    except (OSError, ValueError, sqlite3.Error) as exc:
-        report = {'ok': False, 'error': str(exc)}
-    print(json.dumps(report, ensure_ascii=False))
-    return 0 if report['ok'] else 1
-
-
-if __name__ == '__main__':
-    sys.exit(main())
+# #!/usr/bin/env python3
+# """Inspect a SQLite backup; this does not restore it or validate business ledgers."""
+# import argparse
+# import json
+# import sqlite3
+# import sys
+# from pathlib import Path
+#
+#
+# def main():
+#     parser = argparse.ArgumentParser(description=__doc__)
+#     parser.add_argument('backup', type=Path, help='SQLite backup snapshot to inspect')
+#     parser.add_argument('--require-table', action='append', default=[], metavar='NAME',
+#                         help='require this table in the snapshot (repeatable)')
+#     args = parser.parse_args()
+#     try:
+#         # Project CHECK constraints depend on deterministic SQLite functions.
+#         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+#         from database.exact_cost_basis import register as register_cost
+#         from database.wide_values import register as register_wide
+#         path = args.backup.resolve(strict=True)
+#         with path.open('rb') as source:
+#             if source.read(16) != b'SQLite format 3\x00':
+#                 raise ValueError('Not a complete SQLite database file')
+#         uri = path.as_uri() + '?mode=ro'
+#         with sqlite3.connect(uri, uri=True) as db:
+#             register_cost(db)
+#             register_wide(db)
+#             tables = {row[0] for row in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+#             missing_tables = sorted(set(args.require_table) - tables)
+#             integrity = [row[0] for row in db.execute('PRAGMA integrity_check')]
+#             violations = [dict(zip(('table', 'rowid', 'parent', 'fk_index'), row))
+#                           for row in db.execute('PRAGMA foreign_key_check')]
+#         report = {'ok': integrity == ['ok'] and not violations and not missing_tables,
+#                   'integrity': integrity, 'foreign_key_violations': violations,
+#                   'missing_tables': missing_tables}
+#     except (OSError, ValueError, sqlite3.Error) as exc:
+#         report = {'ok': False, 'error': str(exc)}
+#     print(json.dumps(report, ensure_ascii=False))
+#     return 0 if report['ok'] else 1
+#
+#
+# if __name__ == '__main__':
+#     sys.exit(main())

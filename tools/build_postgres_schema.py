@@ -379,7 +379,7 @@ def code_column_types():
     """Declared column types of a schema freshly built by the current code (SQLite backend)."""
     import tempfile
     previous = os.environ.get("INAZINA_DB_BACKEND")
-    os.environ["INAZINA_DB_BACKEND"] = "sqlite"
+    os.environ["INAZINA_DB_BACKEND"] = "sqlite-schema"   # the schema-building tool; plain "sqlite" is refused
     sys.path.insert(0, str(ROOT))
     try:
         import database

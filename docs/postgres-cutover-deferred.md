@@ -20,7 +20,7 @@ ELS 이전은 기존 상품과 이전 데이터의 코드가 겹치면 자동 �
 보존한다. 중복이 있으면 운영자가 내용과 청약을 확인해 정리한 뒤 이전을 다시 실행해야 한다.
 세부 내용은 `docs/postgres-replace-audit.md`를 참고한다.
 
-## 3. `SQLITE_ONLY` 테스트는 PostgreSQL 커버리지가 없다
+## 3. `SQLITE_ONLY` 테스트는 PostgreSQL 커버리지가 없다 (2026-11-20: SQLite 지원 종료로 항상 건너뜀, 지우지는 않음)
 `tests/conftest.py`의 `SQLITE_ONLY` 목록(이유가 각 항목에 적혀 있다). 전환 전에 목록을 다시 검토해,
 PostgreSQL용 동등 테스트가 필요한 항목을 골라낸다.
 - SQLite 파일을 직접 열거나 잠그는 테스트(동시 쓰기, 무결성 감사)
