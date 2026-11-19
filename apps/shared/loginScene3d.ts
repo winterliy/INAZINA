@@ -13,7 +13,7 @@
  * Loaded only on the sign-in screen (dynamic import); a still logo is shown where this is not suitable (see AuthPanel).
  */
 import {
-  AdditiveBlending, NormalBlending, BufferAttribute, BufferGeometry, LineSegments, Mesh, PerspectiveCamera, Points, Scene, ShaderMaterial, Vector2, Vector3, WebGLRenderer,
+  AdditiveBlending, NormalBlending, BufferAttribute, BufferGeometry, LinearFilter, LineSegments, Mesh, PerspectiveCamera, Points, Scene, ShaderMaterial, Vector2, Vector3, WebGLRenderer, WebGLRenderTarget,
 } from "three";
 import { LETTERS, PERIOD } from "./Logo";
 
@@ -103,7 +103,7 @@ vec3 place(float time, float form, float burst) {
 
   // pointer pushes points aside, the formed word springs back
   vec2 d = pos.xy - uPointer;
-  pos.xy += normalize(d + 1e-4) * exp(-dot(d, d) / 0.045) * 0.3 * (0.35 + 0.65 * f);
+  pos.xy += normalize(d + 1e-4) * exp(-dot(d, d) / 0.045) * 0.07 * (0.35 + 0.65 * f);
   pos.xy += uOffset;
   return pos;
 }
@@ -423,6 +423,43 @@ void main() {
 `;
 
 const VIGNETTE = { day: "radial-gradient(ellipse at 50% 46%, transparent 52%, rgba(8,12,36,.12) 100%)", night: "radial-gradient(ellipse at 50% 46%, transparent 52%, rgba(0,0,0,.35) 100%)" };
+
+/** The magnifier that follows the pointer: the finished picture is sampled through a glass disc. Magnified in the middle, and the
+ *  samples bunch up toward the rim so the edge bends the picture (with a little colour dispersion and a bright rim). */
+const LENS_FRAG = /* glsl */`
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D tMap;
+uniform vec2 uCenter;
+uniform float uAspect, uRadius, uLens, uDark;
+vec3 tapAt(vec2 d, float r, float scale) {
+  vec2 dir = d / max(r, 1e-5);
+  vec2 uv = uCenter + dir * r * scale / vec2(uAspect, 1.0);
+  return texture2D(tMap, uv).rgb;
+}
+void main() {
+  vec2 d = (vUv - uCenter) * vec2(uAspect, 1.0);
+  float r = length(d);
+  float R = uRadius * uLens;
+  vec3 col = texture2D(tMap, vUv).rgb;
+  if (R > 0.002 && r < R * 1.1) {
+    float t = r / R;
+    if (t < 1.0) {
+      float edge = smoothstep(0.7, 1.0, t);
+      float k = 0.5 + 0.5 * pow(t, 3.0);                                // 2x in the middle, back to 1x at the rim
+      col = vec3(tapAt(d, r, k * (1.0 - 0.03 * edge)).r, tapAt(d, r, k).g, tapAt(d, r, k * (1.0 + 0.03 * edge)).b);
+      float rim = smoothstep(0.955, 1.0, t);
+      float spec = pow(max(dot(d / max(r, 1e-5), normalize(vec2(-0.6, 0.8))), 0.0), 5.0);
+      col += rim * (mix(vec3(1.0), vec3(0.8, 0.86, 1.0), uDark) * 0.22 + spec * 0.35);
+    } else {                                                            // just outside: a ripple of the picture and a soft shadow
+      float u = (t - 1.0) / 0.1;
+      col = tapAt(d, r, 1.0 - 0.06 * sin(u * 3.14159)).rgb;
+      col *= 1.0 - 0.07 * (1.0 - u);
+    }
+  }
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
 const CAPTIONS: Record<string, string> = {
   burst: "every point, in noise.", converge: "pulled into a word.", hold: "inazina.", disperse: "back to noise.", drift: "noise settles.",
   bloom: "something grows.", walk: "a walk, scanned.", stack: "time, stacked.", wave: "every signal at once.", shards: "splintered.", cuts: "fast cuts.", panel: "ticks, counted.", again: "again.",
@@ -431,7 +468,7 @@ const GRAIN = "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/
 
 /** `onSlow` is called once if the first seconds ran under ~26 fps; the caller then drops the scene and shows the still logo. */
 export function mountLoginScene(container: HTMLElement, onSlow?: () => void): () => void {
-  const renderer = new WebGLRenderer({ antialias: false, alpha: false, preserveDrawingBuffer: true, powerPreference: "high-performance" });
+  const renderer = new WebGLRenderer({ antialias: false, alpha: false, powerPreference: "high-performance" });
   renderer.autoClear = false;
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
   renderer.domElement.className = "auth-canvas";
@@ -537,6 +574,13 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void): ()
   const fadeMesh = new Mesh(fadeGeometry, fadeMaterial); fadeMesh.frustumCulled = false;
   const fadeScene = new Scene(); fadeScene.add(fadeMesh);
 
+  // the picture (with its trails) lives in a texture; a last pass shows it through the lens that follows the pointer
+  const picture = new WebGLRenderTarget(1, 1, { depthBuffer: false, minFilter: LinearFilter, magFilter: LinearFilter });
+  const lensUniforms = { tMap: { value: picture.texture }, uCenter: { value: new Vector2(0.5, 0.5) }, uAspect: { value: 1 }, uRadius: { value: 0.17 }, uLens: { value: 0 }, uDark: uniforms.uDark };
+  const lensMaterial = new ShaderMaterial({ uniforms: lensUniforms, vertexShader: FADE_VERT, fragmentShader: LENS_FRAG, depthTest: false, depthWrite: false });
+  const lensMesh = new Mesh(fadeGeometry, lensMaterial); lensMesh.frustumCulled = false;
+  const lensScene = new Scene(); lensScene.add(lensMesh);
+
   // ---- film grain, vignette, caption and readout (DOM over the canvas) ---------------------------------------------------
   const overlay = (css: string) => { const el = document.createElement("div"); el.setAttribute("aria-hidden", "true"); el.style.cssText = `position:absolute;inset:0;pointer-events:none;${css}`; return el; };
   const grain = overlay(`background-image:${GRAIN};background-size:160px 160px;opacity:.14;mix-blend-mode:multiply`);
@@ -585,7 +629,8 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void): ()
     dist = Math.max((WORD_HALF_WIDTH / 0.78) / (t * camera.aspect), 0.95 / t);
     halfH = dist * t; halfW = halfH * camera.aspect;
     uniforms.uPx.value = renderer.getPixelRatio() * Math.min(1.5, Math.max(0.7, height / 760));
-    fadeUniforms.uAspect.value = camera.aspect;
+    fadeUniforms.uAspect.value = camera.aspect; lensUniforms.uAspect.value = camera.aspect;
+    const size = renderer.getDrawingBufferSize(new Vector2()); picture.setSize(size.x, size.y);
     fadeUniforms.uFade.value = 1;                         // repaint the backdrop once so no stale pixels survive a resize
   };
   const observer = new ResizeObserver(resize);
@@ -667,9 +712,14 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void): ()
     camera.lookAt(0, 0, 0);
 
     // long smear while moving (many past frames stay), crisp once the word is held
+    renderer.setRenderTarget(picture);
     renderer.render(fadeScene, camera);
     fadeUniforms.uFade.value = 1 - Math.exp(-delta * (held ? 9 : phase.name === "drift" ? 2.6 : 1.9));
     renderer.render(scene, camera);
+    renderer.setRenderTarget(null);
+    lensUniforms.uLens.value += ((pointer.active ? 1 : 0) - lensUniforms.uLens.value) * (1 - Math.exp(-delta * 10));
+    lensUniforms.uCenter.value.set(pointer.x * 0.5 + 0.5, pointer.y * 0.5 + 0.5);
+    renderer.render(lensScene, camera);
 
     const nightText = phase.dark > 0.5;
     if (lastDark !== (nightText ? 1 : 0)) {
@@ -704,7 +754,7 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void): ()
     window.removeEventListener("pointermove", onPointer);
     document.removeEventListener("visibilitychange", onVisibility);
     grainAnimation.cancel();
-    for (const item of [geometry, material, trailGeometry, trailMaterial, rays.geometry, rays.material, ring.geometry, ring.material, bloom.geometry, bloom.material, walk.geometry, walk.material, stack.geometry, stack.material, wave.geometry, wave.material, shard.geometry, shard.material, cut.geometry, cut.material, ground, groundMaterial, fadeGeometry, fadeMaterial, ...ghostMaterials]) item.dispose();
+    for (const item of [geometry, material, trailGeometry, trailMaterial, rays.geometry, rays.material, ring.geometry, ring.material, bloom.geometry, bloom.material, walk.geometry, walk.material, stack.geometry, stack.material, wave.geometry, wave.material, shard.geometry, shard.material, cut.geometry, cut.material, ground, groundMaterial, fadeGeometry, fadeMaterial, lensMaterial, picture, ...ghostMaterials]) item.dispose();
     renderer.dispose();
     renderer.domElement.remove(); grain.remove(); vignette.remove(); hud.remove(); panel.remove();
   };
