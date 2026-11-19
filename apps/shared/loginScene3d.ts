@@ -242,6 +242,7 @@ void main() {
 }
 `;
 
+const VIGNETTE = { day: "radial-gradient(ellipse at 50% 46%, transparent 52%, rgba(8,12,36,.12) 100%)", night: "radial-gradient(ellipse at 50% 46%, transparent 52%, rgba(0,0,0,.35) 100%)" };
 const CAPTIONS: Record<string, string> = {
   burst: "every point, in noise.", converge: "pulled into a word.", hold: "inazina.", disperse: "back to noise.", drift: "again.",
 };
@@ -340,7 +341,7 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void): ()
   const overlay = (css: string) => { const el = document.createElement("div"); el.setAttribute("aria-hidden", "true"); el.style.cssText = `position:absolute;inset:0;pointer-events:none;${css}`; return el; };
   const grain = overlay(`background-image:${GRAIN};background-size:160px 160px;opacity:.14;mix-blend-mode:multiply`);
   const grainAnimation = grain.animate([{ backgroundPosition: "0 0" }, { backgroundPosition: "-80px 48px" }, { backgroundPosition: "40px -64px" }, { backgroundPosition: "0 0" }], { duration: 480, iterations: Infinity, easing: "steps(4)" });
-  const vignette = overlay("background:radial-gradient(ellipse at 50% 46%, transparent 52%, rgba(8,12,36,.12) 100%)");
+  const vignette = overlay(`background:${VIGNETTE.day}`);
   const hud = overlay("inset:auto auto 18px 22px;font:500 11px/1.7 ui-monospace,'SF Mono',Menlo,monospace;letter-spacing:.02em;white-space:pre;z-index:1");
   const caption = document.createElement("span");
   caption.style.cssText = "display:inline-block;padding:1px 9px 2px;margin-bottom:6px;font:600 15px/1.45 var(--font-system,'DM Sans','Noto Sans KR',system-ui,sans-serif);letter-spacing:-.01em;white-space:pre;min-width:22px;min-height:24px";
@@ -430,7 +431,7 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void): ()
       lastDark = nightText ? 1 : 0;
       hud.style.color = nightText ? "rgba(226,232,255,.7)" : "rgba(18,24,52,.62)";
       caption.style.background = nightText ? "#eef1f8" : "#0b0d1a"; caption.style.color = nightText ? "#0b0d1a" : "#eef1f8";
-      vignette.style.background = nightText ? "radial-gradient(ellipse at 50% 46%, transparent 52%, rgba(0,0,0,.35) 100%)" : "radial-gradient(ellipse at 50% 46%, transparent 52%, rgba(8,12,36,.12) 100%)";
+      vignette.style.background = VIGNETTE[nightText ? "night" : "day"];
       grain.style.mixBlendMode = nightText ? "screen" : "multiply"; grain.style.opacity = nightText ? ".09" : ".14";
     }
     if (phase.name !== captionKey) { captionKey = phase.name; captionAt = now; }
