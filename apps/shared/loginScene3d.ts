@@ -81,7 +81,7 @@ void main() {
   float f = smoothstep(0.0, 1.0, clamp((uForm * 1.55 - stagger) / 0.55, 0.0, 1.0));
   vec3 target = aTarget;
   target.z += (aSeed.z - 0.5) * 0.18;
-  target.xy += 0.0016 * vec2(sin(uTime * 1.3 + aSeed.x * 60.0), cos(uTime * 1.1 + aSeed.y * 60.0)) * (1.0 - 0.0);
+  target.xy += 0.0016 * vec2(sin(uTime * 1.3 + aSeed.x * 60.0), cos(uTime * 1.1 + aSeed.y * 60.0));
   vec3 pos = mix(scatter, target, f);
 
   // glitch: horizontal bands slide sideways, a few at a time
