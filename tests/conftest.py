@@ -216,7 +216,6 @@ SQLITE_ONLY = {
     "test_credit_risk_stages.py::DefaultedLoanEclTests::test_legacy_assessment_migration_preserves_rows_and_uses_neutral_factor": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
     "test_credit_risk_stages.py::EclScenarioConfigurationTests::test_legacy_scenario_weights_are_normalized_without_changing_ratios": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
     "test_currency_account_storage.py::CurrencyAccountStorageTests::test_institution_ledger_minor_unit_upgrade_is_idempotent": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
-    "test_currency_account_storage.py::CurrencyAccountStorageTests::test_insurance_payout_reconciler_reports_unverifiable_legacy_currency": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
     "test_currency_account_storage.py::CurrencyAccountStorageTests::test_legacy_wallets_move_to_home_cash_and_foreign_accounts": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
     "test_currency_account_storage.py::LegacyCurrencySchemaMigrationTests::test_legacy_deposit_insurance_claims_gain_nullable_payout_fields": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
     "test_currency_account_storage.py::LegacyCurrencySchemaMigrationTests::test_source_tax_rule_fk_survives_legacy_negative_rate_table_rebuild": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
@@ -225,11 +224,7 @@ SQLITE_ONLY = {
     "test_currency_default_config.py::CurrencyDefaultConfigTests::test_legacy_fixed_currency_default_is_removed_without_losing_rows": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
     "test_currency_home.py::CurrencyHomeTests::test_migration_is_idempotent_and_all_product_denominations_present": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
     "test_currency_liquidity.py::CurrencyLiquidityTests::test_baseline_migration_preserves_existing_state_and_is_idempotent": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
-    "test_depositary_receipt_manager.py::DepositaryReceiptManagerTests::test_dr_movement_minor_units_backfill_legacy_costs": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
-    "test_financial.py::FinancialTests::test_common_journal_company_mapping_replay_and_legacy_rebuild": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
     "test_fx_interest.py::FxInterestTests::test_legacy_account_close_can_be_reconstructed_from_bank_journal": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
-    "test_institution_maturity_gap.py::InstitutionMaturityGapTests::test_maturity_ladder_rounds_legacy_fractional_rows_to_native_currency": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
-    "test_movement_daily.py::MovementDailyTests::test_migration_seeds_last_trade_from_existing_history": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
     "test_realistic_rate_system.py::RealisticRateSystemTests::test_legacy_schedule_rows_backfill_currency_minor_units": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
     "test_shareholder_register.py::ShareholderRegisterTests::test_legacy_dividend_payment_key_migrates_without_losing_rows": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
     "test_shareholder_register.py::ShareholderRegisterTests::test_legacy_dr_withholding_rows_migrate_to_currency_minor_units": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
@@ -242,10 +237,8 @@ SQLITE_ONLY = {
     # Startup migrations of legacy SQLite data are not run on PostgreSQL, which starts
     # from the current schema.
     "test_currency_account_storage.py::CurrencyAccountStorageTests::test_market_order_reservation_migration_backfills_and_is_idempotent": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
-    # reads the amount-field registry that is not carried to PostgreSQL
     # build a reduced SQLite fixture schema with raw DDL and assert on it
     "test_web_api.py::WebApiTests::test_admin_countries_returns_auditable_income_source_tax_overrides": "adds legacy columns and tables with raw SQLite DDL (base_rate DEFAULT 3)",
-    "test_web_api.py::WebApiTests::test_admin_users_separates_people_from_company_accounts": "creates SQLite-only company_accounts and country_treasuries fixture tables",
     "test_web_api.py::WebApiTests::test_audit_and_events_are_read_from_the_database": "relies on a market_events fixture without the target_mode column",
     "test_web_api.py::WebApiTests::test_dr_web_ledgers_distinguish_holder_basis_from_custody_pool_basis": "creates reduced SQLite depositary-receipt fixture tables",
     # This test corrupts an SQLite file with disabled foreign keys.
