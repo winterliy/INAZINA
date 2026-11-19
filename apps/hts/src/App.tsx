@@ -65,6 +65,10 @@ const compactMoney = formatMoneyNumeric;
 const ORDER_TYPES = [["limit", "지정가"], ["market", "시장가"], ["current", "현재가"]] as const;
 // A missing or invalid time shows as a dash; one bad row must never blank the whole page.
 const date = (epoch: number) => Number.isFinite(epoch * 1000) ? new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "short" }).format(epoch * 1000) : "—";
+const CREDIT_EVENTS: Record<string, string> = {
+  payment_on_time: "정상 납부", payment_missed: "납부 연체", payment_cured: "연체 회차 사후 납부", loan_closed: "대출 완납",
+  acceleration: "기한이익상실", default: "부도", manual_adjustment: "관리자 정정", external_adjustment: "점수 정정 반영", legacy_baseline: "신용모델 도입",
+};
 const KYC_STATUS: Record<KycProfile["status"], string> = { pending: "확인 대기", verified: "확인 완료", rejected: "확인 거절", expired: "만료" };
 const KYC_RISK: Record<KycProfile["risk_tier"], string> = { standard: "일반", enhanced: "강화 심사", restricted: "송금 제한" };
 const fundCategoryName: Record<string, string> = { equity: "주식형", bond: "채권형", mixed: "혼합형", other: "기타형" };
@@ -825,10 +829,13 @@ export default function App() {
             {(portfolio?.accounts ?? []).filter((account) => account.resolution_status === "active").map((account) => <div className="wallet-row account-detail" key={account.number}><span>{account.product_name} · {account.currency_code}<small>{account.number}</small>{account.rate_type === "floating" && account.next_repricing_epoch != null && <small>현재 연 {(account.contract_rate == null ? undefined : Number(account.contract_rate).toFixed(4)) ?? "—"}% · 지표 관측 기준일 {date(Math.max(0, account.next_repricing_epoch - account.repricing_lag_seconds))} · 재산정 예정 {date(account.next_repricing_epoch)} · {RATE_BENCHMARK_LABELS[account.benchmark_key || ""] || account.benchmark_key || "기준금리"} {account.benchmark_tenor_days}일 · 새 금리는 재산정 시 확정</small>}{account.rate_resets.map((reset, index) => <small key={`${reset.applied_epoch}-${index}`}>이전 재산정 {date(reset.applied_epoch)} · {RATE_BENCHMARK_LABELS[reset.benchmark_key] || reset.benchmark_key} {reset.benchmark_tenor_days}일 · 연 {reset.old_rate}% → {reset.new_rate}%</small>)}</span><b>{money(account.balance, account.decimal_places)} {account.currency_code}</b></div>)}
           </section>
           {credit && <section className="data-panel wallet-credit" aria-label="신용점수">
-            <div className="panel-title"><h2>신용점수</h2><span>시뮬레이터 · 기준 {credit.anchor}점</span></div>
+            <div className="panel-title"><h2>신용점수</h2><span>기준 {credit.anchor}점</span></div>
             <div className="credit-score"><b>{credit.score}</b><span>/ 1000</span></div>
             <div className="credit-meter" role="meter" aria-label="신용점수" aria-valuemin={0} aria-valuemax={1000} aria-valuenow={credit.score}><i style={{ width: `${Math.min(100, Math.max(0, credit.score / 10))}%` }} /><em style={{ left: `${Math.min(100, Math.max(0, credit.anchor / 10))}%` }} title={`기준점수 ${credit.anchor}점`} /></div>
-            <p className="credit-note">기준점수에 요인을 더한 시뮬레이터 점수입니다. 연체 영향은 시간이 지나며 줄고, 정상 납부·완납은 점수를 올립니다. 실제 신용평가사 점수가 아닙니다.</p>
+            {credit.events.some((event) => event.type !== "legacy_baseline") && <details className="credit-events"><summary>이력 보기</summary>
+              {credit.events.filter((event) => event.type !== "legacy_baseline").slice(0, 5).map((event) => <div className="credit-factor" key={`${event.type}:${event.reference}`}><span>{CREDIT_EVENTS[event.type] ?? event.type}{event.loanId ? ` · 대출 #${event.loanId}` : ""}<small>{date(event.occurredEpoch)}{event.reason ? ` · ${event.reason}` : ""}</small></span></div>)}
+            </details>}
+            <p className="credit-note">기준점수에 요인을 더한 점수입니다. 연체 영향은 시간이 지나며 줄고, 정상 납부·완납은 점수를 올립니다. 실제 신용평가사 점수가 아닙니다.</p>
           </section>}
 
         </section>
