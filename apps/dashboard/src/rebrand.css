@@ -210,3 +210,20 @@ input.mono, select.mono { font-size: 13px; }
 /* a select sits at the height of the buttons next to it */
 .stage .btn, .stage .soft, .stage .outline { min-height: 40px; }
 .board-structure td, .board-structure tr:last-child td { box-shadow: none !important; }
+
+/* One chevron for every select, inset from the edge (the native arrow sat on the border) */
+.stage select:not([multiple]), .stage .mini-select { -webkit-appearance: none; appearance: none; padding-right: 34px; background-repeat: no-repeat; background-position: right 12px center; background-size: 12px 8px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%236c6c68' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
+.stage .mini-select { padding-right: 28px; background-position: right 9px center; }
+
+/* Wide tables scroll sideways: show that they do (a thin always-visible bar) and use less padding so more fits */
+.scroll-x { scrollbar-width: thin; scrollbar-color: var(--ink2) transparent; }
+.scroll-x::-webkit-scrollbar { height: 8px; width: 8px; }
+.scroll-x::-webkit-scrollbar-thumb { border-radius: 4px; background: rgba(128, 128, 128, .45); }
+.scroll-x::-webkit-scrollbar-track { background: transparent; }
+.scroll-x table th, .scroll-x table td { padding-left: 10px; padding-right: 10px; }
+.scroll-x table td:last-child .row-actions, .scroll-x table td.row-actions { flex-wrap: nowrap; }
+/* A table with many columns gets the full width: title on top, table below, instead of the narrow right-hand column */
+.content > .glass.card:has(.scroll-x th:nth-child(8)) { grid-template-columns: minmax(0, 1fr); }
+.content > .glass.card:has(.scroll-x th:nth-child(8)) > .card-head, .content > .glass.card:has(.scroll-x th:nth-child(8)) > .card-body { grid-column: 1; }
+.content > .glass.card:has(.scroll-x th:nth-child(8)) > .card-body { margin-top: 20px; }
+.scroll-x table select { max-width: 118px; }

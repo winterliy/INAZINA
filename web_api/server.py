@@ -583,7 +583,26 @@ def admin_board_action(actor, kind, target, action, payload=None):
 FEEDBACK_RETENTION_SECONDS = 365 * 86400  # 개인정보 처리방침: 접수 후 1년이 지나면 파기
 
 
+_feedback_state = {"ready": None, "purged": 0.0}
+_feedback_lock = threading.Lock()
+
+
 def ensure_feedback_table(connection):
+    """Create the table and destroy expired submissions. Two reads at once used to deadlock on PostgreSQL
+    (CREATE INDEX IF NOT EXISTS takes a share lock that the other request's DELETE waits behind), so the
+    schema work runs once per database and the purge at most once an hour, one request at a time."""
+    key = str(DATABASE)
+    with _feedback_lock:
+        if _feedback_state["ready"] == key and time.time() - _feedback_state["purged"] < 3600:
+            return
+        # On its own connection, committed before this returns: on a database that does not have the table yet,
+        # the other requests must be able to see it as soon as they get past the lock.
+        with connect_db(timeout=5) as setup:
+            _ensure_feedback_table(setup, purge=True)
+        _feedback_state["ready"], _feedback_state["purged"] = key, time.time()
+
+
+def _ensure_feedback_table(connection, purge=True):
     connection.execute("""CREATE TABLE IF NOT EXISTS site_feedback (
         feedback_id INTEGER PRIMARY KEY AUTOINCREMENT,
         kind TEXT NOT NULL CHECK(kind IN ('contact','report')),

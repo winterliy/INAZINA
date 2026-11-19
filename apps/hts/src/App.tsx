@@ -613,7 +613,7 @@ export default function App() {
     if (location.pathname !== "/") navigate("/");
   };
   const topbar = (here: "home" | "account" | "services") => <header className="hts-topbar">
-    <a className="brand" href="/" aria-label="나루 홈"><Logo className="brand-logo" /><span>나루</span></a>
+    <a className="brand" href="/" aria-label="나루 홈"><Logo className="brand-logo" /></a>
     <div className="top-search" ref={searchBoxRef}>
       <label className="top-search-field"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M20 20l-4-4" /></svg>
         <input ref={searchInputRef} value={search} aria-label="종목·상품코드·금리·지수 검색" aria-expanded={searchOpen} aria-controls="top-search-pop" placeholder="종목명·상품코드·국가·거래소 검색" onFocus={() => setSearchOpen(true)} onChange={(event) => { setSearch(event.target.value); setSearchOpen(true); }} onKeyDown={(event) => { if (event.key === "Enter" && filtered[0]) chooseInstrument(filtered[0].code); }} />
