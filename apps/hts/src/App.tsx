@@ -15,6 +15,7 @@ import { SearchIndicators } from "./SearchIndicators";
 import { ExchangeHeatmap } from "./ExchangeHeatmap";
 import { PortfolioPage } from "./PortfolioPage";
 import { HeatmapPage } from "./HeatmapPage";
+import { CreditPage, type CreditReport } from "./CreditPage";
 import { PasswordSection } from "./PasswordSection";
 import { NotificationBell } from "./NotificationBell";
 import { PayoutPage } from "./PayoutPage";
@@ -49,9 +50,6 @@ const RATE_BENCHMARK_LABELS: Record<string, string> = { policy: "정책금리", 
 type LoanScheduleView = { loan_id: number; product_code: string; quote_currency: string; decimal_places: number; outstanding_balance: Money; status: string; rate_type: string; contract_rate: number | null; next_repricing_epoch: number | null; benchmark_key: string | null; benchmark_tenor_days: number; repricing_lag_seconds: number; collection_status: string; maturity_epoch: number | null; stage_cure_since_epoch: number | null; underwriting_dsr: number | null; underwriting_stress_dsr: number | null; underwriting_stress_shock_bps: number; underwriting_fx_stress_shock_percent: number; origination_pd_12m: number | null; current_ecl_stage: number | null; current_ecl_pd_12m: number | null; installments: LoanSchedule[]; rate_resets: LoanRateReset[] };
 type TaxResidency = { nationality: string | null; taxResidency: string | null; countries: string[] };
 type Holding = { code: string; name: string; qty: number; price: Money; value: Money; type: string | null; quote_currency?: string; sell_reserved_qty?: number; is_collateral?: boolean };
-type CreditFactor = { key: string; label: string; points: number };
-type CreditEvent = { type: string; reference: string; loanId: number | null; occurredEpoch: number; reason: string | null };
-type CreditReport = { score: number; anchor: number; factors: CreditFactor[]; events: CreditEvent[]; history: { previous: number; score: number; trigger: string; epoch: number }[] };
 type Portfolio = { cash: Money; grand_total: Money; net_worth: Money; loan_total: Money; order_reserved_total: Money; stock_total: Money; account_total: Money; bond_total?: Money; national_currency?: string; nationality?: string; home_rate_nwx?: Money; home_decimal_places?: number; wallets?: Wallet[]; stocks: Holding[]; accounts?: AccountDetail[]; deposit_insurance_claims?: DepositInsuranceClaim[]; kyc_profile?: KycProfile | null };
 type Order = { order_id: number; asset_code: string; side: string; limit_price: Money; quantity: number; remaining_quantity: number; filled_quantity: number; status: string; quote_currency?: string };
 type Book = { bids: { limit_price: Money; quantity: number; order_count: number }[]; asks: { limit_price: Money; quantity: number; order_count: number }[] };
@@ -65,10 +63,6 @@ const compactMoney = formatMoneyNumeric;
 const ORDER_TYPES = [["limit", "지정가"], ["market", "시장가"], ["current", "현재가"]] as const;
 // A missing or invalid time shows as a dash; one bad row must never blank the whole page.
 const date = (epoch: number) => Number.isFinite(epoch * 1000) ? new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "short" }).format(epoch * 1000) : "—";
-const CREDIT_EVENTS: Record<string, string> = {
-  payment_on_time: "정상 납부", payment_missed: "납부 연체", payment_cured: "연체 회차 사후 납부", loan_closed: "대출 완납",
-  acceleration: "기한이익상실", default: "부도", manual_adjustment: "관리자 정정", external_adjustment: "점수 정정 반영", legacy_baseline: "신용모델 도입",
-};
 const KYC_STATUS: Record<KycProfile["status"], string> = { pending: "확인 대기", verified: "확인 완료", rejected: "확인 거절", expired: "만료" };
 const KYC_RISK: Record<KycProfile["risk_tier"], string> = { standard: "일반", enhanced: "강화 심사", restricted: "송금 제한" };
 const fundCategoryName: Record<string, string> = { equity: "주식형", bond: "채권형", mixed: "혼합형", other: "기타형" };
@@ -656,6 +650,12 @@ export default function App() {
     <main><HeatmapPage instruments={instruments} exchangeId={heatmapExchange} onExchangeChange={setHeatmapExchangeOverride} onSelect={chooseInstrument} /></main>
     <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
   </div>;
+  if (location.pathname === "/credit" || location.pathname === "/credit/") return <div className="hts-shell stage portfolio-page-shell">
+    <Backdrop />
+    {topbar("account")}
+    <main>{credit ? <CreditPage credit={credit} /> : <p className="page-loading" role="status">신용점수를 불러오는 중…</p>}</main>
+    <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
+  </div>;
   if (location.pathname === "/portfolio" || location.pathname === "/portfolio/") return <div className="hts-shell stage portfolio-page-shell">
     <Backdrop />
     {topbar("home")}
@@ -829,12 +829,9 @@ export default function App() {
             {(portfolio?.accounts ?? []).filter((account) => account.resolution_status === "active").map((account) => <div className="wallet-row account-detail" key={account.number}><span>{account.product_name} · {account.currency_code}<small>{account.number}</small>{account.rate_type === "floating" && account.next_repricing_epoch != null && <small>현재 연 {(account.contract_rate == null ? undefined : Number(account.contract_rate).toFixed(4)) ?? "—"}% · 지표 관측 기준일 {date(Math.max(0, account.next_repricing_epoch - account.repricing_lag_seconds))} · 재산정 예정 {date(account.next_repricing_epoch)} · {RATE_BENCHMARK_LABELS[account.benchmark_key || ""] || account.benchmark_key || "기준금리"} {account.benchmark_tenor_days}일 · 새 금리는 재산정 시 확정</small>}{account.rate_resets.map((reset, index) => <small key={`${reset.applied_epoch}-${index}`}>이전 재산정 {date(reset.applied_epoch)} · {RATE_BENCHMARK_LABELS[reset.benchmark_key] || reset.benchmark_key} {reset.benchmark_tenor_days}일 · 연 {reset.old_rate}% → {reset.new_rate}%</small>)}</span><b>{money(account.balance, account.decimal_places)} {account.currency_code}</b></div>)}
           </section>
           {credit && <section className="data-panel wallet-credit" aria-label="신용점수">
-            <div className="panel-title"><h2>신용점수</h2><span>기준 {credit.anchor}점</span></div>
+            <div className="panel-title"><h2>신용점수<a className="credit-link" href="/credit" aria-label="신용점수 자세히 보기">바로가기 ↗</a></h2><span>기준 {credit.anchor}점</span></div>
             <div className="credit-score"><b>{credit.score}</b><span>/ 1000</span></div>
             <div className="credit-meter" role="meter" aria-label="신용점수" aria-valuemin={0} aria-valuemax={1000} aria-valuenow={credit.score}><i style={{ width: `${Math.min(100, Math.max(0, credit.score / 10))}%` }} /><em style={{ left: `${Math.min(100, Math.max(0, credit.anchor / 10))}%` }} title={`기준점수 ${credit.anchor}점`} /></div>
-            {credit.events.some((event) => event.type !== "legacy_baseline") && <details className="credit-events"><summary>이력 보기</summary>
-              {credit.events.filter((event) => event.type !== "legacy_baseline").slice(0, 5).map((event) => <div className="credit-factor" key={`${event.type}:${event.reference}`}><span>{CREDIT_EVENTS[event.type] ?? event.type}{event.loanId ? ` · 대출 #${event.loanId}` : ""}<small>{date(event.occurredEpoch)}{event.reason ? ` · ${event.reason}` : ""}</small></span></div>)}
-            </details>}
             <p className="credit-note">기준점수에 요인을 더한 점수입니다. 연체 영향은 시간이 지나며 줄고, 정상 납부·완납은 점수를 올립니다. 실제 신용평가사 점수가 아닙니다.</p>
           </section>}
 

@@ -28,6 +28,35 @@ class RecoveryWaterfallTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     allocate_recovery(amount, claims)
 
+    def test_charged_off_preview_uses_actual_loan_balance(self):
+        import sqlite3
+        from functions.recovery_waterfall import preview_charged_off_loan
+        conn = sqlite3.connect(":memory:")
+        conn.execute("ATTACH DATABASE ':memory:' AS accounts")
+        conn.execute("CREATE TABLE accounts.loans (loan_id INTEGER, status TEXT, quote_currency TEXT, charged_off_balance_minor_units INTEGER)")
+        conn.execute("INSERT INTO accounts.loans VALUES (1, 'charged_off', 'USD', 80)")
+        result = preview_charged_off_loan(conn, loan_id=1, proceeds=100, bank_rank=2,
+                                          other_claims=[('other', 1, 30)])
+        self.assertEqual(result['currencyCode'], 'USD')
+        self.assertEqual(result['allocations'], {'other': 30, 'bank': 70})
+        self.assertEqual(result['shortfalls']['bank'], 10)
+        self.assertEqual(conn.execute('SELECT charged_off_balance_minor_units FROM accounts.loans').fetchone()[0], 80)
+        conn.close()
+
+    def test_charged_off_preview_rejects_missing_or_ambiguous_loan(self):
+        import sqlite3
+        from functions.recovery_waterfall import preview_charged_off_loan
+        conn = sqlite3.connect(':memory:')
+        conn.execute("ATTACH DATABASE ':memory:' AS accounts")
+        conn.execute('CREATE TABLE accounts.loans (loan_id INTEGER, status TEXT, quote_currency TEXT, charged_off_balance_minor_units INTEGER)')
+        conn.executemany('INSERT INTO accounts.loans VALUES (?, ?, ?, ?)',
+                         [(1, 'active', 'USD', 80), (2, 'charged_off', None, 80),
+                          (3, 'charged_off', 'USD', None)])
+        for loan in [1, 2, 3, 4, True]:
+            with self.subTest(loan=loan), self.assertRaises(ValueError):
+                preview_charged_off_loan(conn, loan_id=loan, proceeds=100, bank_rank=1, other_claims=[])
+        conn.close()
+
 
 class RecoveryApiTests(unittest.TestCase):
     def request(self, payload, role="admin", audit=None):
@@ -114,6 +143,30 @@ class RecoveryApiTests(unittest.TestCase):
                                      {"from_day": 0, "kind": "fixed", "rate": "3"}]}}, audit=audit)
         self.assertEqual(response["status"], 200)
         audit.assert_called_once_with("u", "contract_rate_reset.preview", {"segment_count": 1})
+
+    def test_charged_off_preview_requires_admin_and_uses_loan(self):
+        from unittest.mock import Mock, patch
+        from functions import recovery_waterfall
+        payload = {"action": "charged_off_waterfall_preview", "loanId": 1,
+                   "proceedsMinorUnits": 100, "bankRank": 1, "otherClaims": []}
+        result = {"loanId": 1, "currencyCode": "USD", "bankClaimMinorUnits": 80,
+                  "allocations": {"bank": 80}, "shortfalls": {"bank": 0},
+                  "unallocatedMinorUnits": 20, "simulationOnly": True,
+                  "otherClaimsAreAssumptions": True}
+        audit = Mock()
+        with patch.object(recovery_waterfall, 'preview_charged_off_loan', return_value=result) as preview:
+            self.assertEqual(self.request(payload, 'user', audit=audit)['status'], 403)
+            preview.assert_not_called()
+            self.assertEqual(self.request(payload, audit=audit)['value']['result'], result)
+        audit.assert_called_once_with('u', 'charged_off_waterfall.preview', {'loan_id': 1, 'claim_count': 0})
+
+    def test_charged_off_preview_rejects_unsafe_input(self):
+        base = {"action": "charged_off_waterfall_preview", "loanId": 1,
+                "proceedsMinorUnits": 100, "bankRank": 1, "otherClaims": []}
+        for change in [{"loanId": True}, {"bankRank": 0}, {"proceedsMinorUnits": 9007199254740992},
+                       {"otherClaims": [{"id": "x", "rank": 1, "amountMinorUnits": 1.5}]},
+                       {"otherClaims": "bad"}]:
+            self.assertEqual(self.request({**base, **change})['status'], 400)
 
 
 if __name__ == "__main__":

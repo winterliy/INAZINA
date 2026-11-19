@@ -186,9 +186,12 @@ class TreasuryBondFxSettlementTests(_BondFxFixture, unittest.TestCase):
             conn.execute("INSERT INTO accounting_lines(entry_id,account_code,debit_units,credit_units) "
                          "VALUES (?,'customer_cash_payable',5,0),(?,'fx_conversion_clearing',0,5)", (entry, entry))
             check = AccountingJournal.reconcile_treasury_bond_cash_events(conn)
+            close = AccountingJournal.reconcile_all_financial_ledgers(conn)
         self.assertEqual(check['status'], 'mismatch')
         self.assertTrue(any(gap['status'] == 'fx_clearing_position_mismatch' and gap['currency_code'] == 'NWX'
                             for gap in check['common_journal_gaps']), check)
+        self.assertEqual(close['status'], 'mismatch')
+        self.assertFalse(close['close_ready'])
 
     def test_holder_with_an_account_in_the_bond_currency_is_paid_without_conversion(self):
         number = CurrencyExchangeManager(self.db).open_account('us-user', 'FX_NWX')

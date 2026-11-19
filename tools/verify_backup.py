@@ -10,6 +10,8 @@ from pathlib import Path
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('backup', type=Path, help='SQLite backup snapshot to inspect')
+    parser.add_argument('--require-table', action='append', default=[], metavar='NAME',
+                        help='require this table in the snapshot (repeatable)')
     args = parser.parse_args()
     try:
         # Project CHECK constraints depend on deterministic SQLite functions.
@@ -24,11 +26,14 @@ def main():
         with sqlite3.connect(uri, uri=True) as db:
             register_cost(db)
             register_wide(db)
+            tables = {row[0] for row in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+            missing_tables = sorted(set(args.require_table) - tables)
             integrity = [row[0] for row in db.execute('PRAGMA integrity_check')]
             violations = [dict(zip(('table', 'rowid', 'parent', 'fk_index'), row))
                           for row in db.execute('PRAGMA foreign_key_check')]
-        report = {'ok': integrity == ['ok'] and not violations,
-                  'integrity': integrity, 'foreign_key_violations': violations}
+        report = {'ok': integrity == ['ok'] and not violations and not missing_tables,
+                  'integrity': integrity, 'foreign_key_violations': violations,
+                  'missing_tables': missing_tables}
     except (OSError, ValueError, sqlite3.Error) as exc:
         report = {'ok': False, 'error': str(exc)}
     print(json.dumps(report, ensure_ascii=False))

@@ -6,7 +6,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { landingPage, type LandingReason } from "./landing.js";
+import { FAVICON_PNG, landingPage, type LandingReason } from "./landing.js";
 import { browserAccess } from "./browserAccess.js";
 
 const projectRoot = findProjectRoot();
@@ -394,6 +394,11 @@ function sameSecret(left: string, right: string): boolean {
 async function handle(request: IncomingMessage, response: ServerResponse, browserAuthorized = false): Promise<void> {
   const url = new URL(request.url ?? "/", `http://${host}:${port}`);
 
+  if (request.method === "GET" && url.pathname === "/favicon.ico") {
+    response.writeHead(200, { "content-type": "image/png", "cache-control": "public, max-age=3600", "content-length": FAVICON_PNG.length });
+    response.end(FAVICON_PNG);
+    return;
+  }
   if (request.method === "POST" && url.pathname === "/__browser-access") {
     const key = request.socket.remoteAddress ?? "local";
     const now = Date.now();

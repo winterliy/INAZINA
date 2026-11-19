@@ -104,3 +104,6 @@ function gatePage(reason: "login_required" | "login", path: string, pythonConnec
 export function landingPage(reason: LandingReason, path: string, pythonConnected: boolean): string {
   return reason === "login" || reason === "login_required" ? gatePage(reason, path, pythonConnected) : homePage(reason, path, pythonConnected);
 }
+
+/** The tab icon as a file, for browsers that ask for /favicon.ico whatever the page says. */
+export const FAVICON_PNG = Buffer.from(/base64,([A-Za-z0-9+/=]+)/.exec(ICON)![1], "base64");

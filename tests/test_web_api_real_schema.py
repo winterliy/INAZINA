@@ -81,6 +81,22 @@ class RealSchemaWebApiTests(unittest.TestCase):
         self.assertGreater(bond["bondRisk"]["dv01"], 0)
         self.assertNotIn("warning", bond)
 
+    def test_savings_and_loan_products_are_found_under_their_old_table_names(self):
+        # On PostgreSQL `saving` and `liability` are rows of bank_products; the "does the table exist" guard in front of
+        # the product lists asked sqlite_master for the old names and answered no, so the lists came back empty.
+        with self.db.atomic(("users", "accounts", "assets", "product", "company", "tax")) as conn:
+            conn.execute("INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,issuer,status) "
+                         "VALUES ('SV1','저축 시험',0.03,1000,30,'은행','active')")
+            conn.execute("INSERT INTO liability(product_code,name,interest_rate,loan_limit,maturity_days,issuer,status) "
+                         "VALUES ('LN1','대출 시험',0.05,100000,90,'은행','active')")
+        with server.connect_readonly() as connection:
+            self.assertTrue(server._table_exists(connection, "saving"))
+            self.assertTrue(server._table_exists(connection, "liability"))
+            self.assertFalse(server._table_exists(connection, "no_such_table"))
+        found = server.user_lookups({"userId": "1", "role": "user", "nationality": "낙원"})
+        self.assertEqual([row["code"] for row in found["savingProducts"]], ["SV1"])
+        self.assertEqual([row["code"] for row in found["loanProducts"]], ["LN1"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1387,13 +1387,16 @@ class AccountingJournal:
                 key = (str(row[3]), int(row[4]))
                 debit, credit = expected.get(key, (0, 0))
                 expected[key] = (debit + int(row[5]), credit)
-        actual = {(str(row[0]), int(row[1])): (int(row[2]), int(row[3])) for row in conn.execute(
-            """SELECT e.currency_code,e.decimal_places,SUM(l.debit_units),SUM(l.credit_units)
+        actual = {}
+        for row in conn.execute(
+            """SELECT e.currency_code,e.decimal_places,l.debit_units,l.credit_units
                FROM accounting_entries e JOIN accounting_lines l ON l.entry_id=e.entry_id
                WHERE e.ledger_scope='treasury_bond' AND l.account_code=(
                    SELECT common_code FROM accounting_account_mappings
-                   WHERE ledger_scope='treasury_bond' AND local_code='fx_conversion_clearing' AND active=1)
-               GROUP BY e.currency_code,e.decimal_places""")}
+                   WHERE ledger_scope='treasury_bond' AND local_code='fx_conversion_clearing' AND active=1)"""):
+            key = (str(row[0]), int(row[1]))
+            debit, credit = actual.get(key, (0, 0))
+            actual[key] = (debit + int(row[2]), credit + int(row[3]))
         positions = []
         for key in sorted(set(expected) | set(actual)):
             have, want = actual.get(key, (0, 0)), expected.get(key, (0, 0))
@@ -1407,6 +1410,28 @@ class AccountingJournal:
                              "actual_debit_units": have[0], "actual_credit_units": have[1],
                              "status": "fx_clearing_position_mismatch"})
         return positions
+
+    @staticmethod
+    def treasury_fx_valuation(conn, positions):
+        """Indicative spot value of clearing positions; no gain or posting is inferred."""
+        from functions.money import base_currency_code, currency_precision, convert_minor_units
+        from managers.currency_manager import CurrencyManager
+
+        base = base_currency_code(conn)
+        places = currency_precision(conn, base)
+        valued = []
+        for position in positions:
+            currency = position['currency_code']
+            rate = CurrencyManager.quote(conn, currency, base)
+            units = int(position['balance_units'])
+            value = convert_minor_units(abs(units), position['decimal_places'], rate, places)
+            valued.append({**position, 'rate_numerator': str(rate.numerator),
+                           'rate_denominator': str(rate.denominator),
+                           'base_minor_units': value if units >= 0 else -value})
+        return {'base_currency': base, 'base_decimal_places': places, 'positions': valued,
+                'total_base_minor_units': sum(row['base_minor_units'] for row in valued),
+                'simulation_only': True,
+                'method': 'current spot value; historical base cost and revaluation gain are not calculated'}
 
     @classmethod
     def reconcile_treasury_bond_cash_events(cls, conn):
@@ -1530,10 +1555,15 @@ class AccountingJournal:
         if orphan_links:
             gaps.append({"orphan_settlement_links":orphan_links,"status":"mismatch"})
         fx_clearing_positions = cls._treasury_bond_fx_clearing_positions(conn, gaps)
+        try:
+            fx_valuation = cls.treasury_fx_valuation(conn, fx_clearing_positions)
+        except (ValueError, ArithmeticError) as exc:
+            fx_valuation = {'available': False, 'reason': str(exc)}
         return {"event_count":int(conn.execute("SELECT COUNT(*) FROM treasury_bond_cash_events").fetchone()[0]),
                 "fx_settlement_count":int(conn.execute(
                     "SELECT COUNT(*) FROM treasury_bond_cash_fx_settlements").fetchone()[0]),
                 "fx_clearing_positions":fx_clearing_positions,
+                "fx_valuation":fx_valuation,
                 "legacy_unlinked_baseline_through_rowid":baseline,
                 "common_journal_gaps":gaps,"status":"matched" if not gaps else "mismatch"}
 

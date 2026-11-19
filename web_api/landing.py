@@ -112,3 +112,10 @@ def landing_page(reason, path, database_ok):
     if reason in ("login", "login_required"):
         return _gate_page(reason, path, database_ok)
     return _home_page(reason, path, database_ok)
+
+
+def favicon_png():
+    """The tab icon as a file, for browsers that ask for /favicon.ico whatever the page says."""
+    import base64
+    import re
+    return base64.b64decode(re.search(r"base64,([A-Za-z0-9+/=]+)", ICON).group(1))

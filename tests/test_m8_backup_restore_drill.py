@@ -11,8 +11,8 @@ TOOL = Path(__file__).resolve().parents[1] / 'tools' / 'backup_restore_drill.py'
 
 
 class BackupRestoreDrillTests(unittest.TestCase):
-    def run_drill(self, path):
-        return subprocess.run([sys.executable, str(TOOL), str(path)], capture_output=True, text=True)
+    def run_drill(self, path, *options):
+        return subprocess.run([sys.executable, str(TOOL), str(path), *options], capture_output=True, text=True)
 
     def test_restores_and_verifies_without_modifying_source(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -23,9 +23,53 @@ class BackupRestoreDrillTests(unittest.TestCase):
             before = path.read_bytes()
             result = self.run_drill(path)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertTrue(json.loads(result.stdout)['ok'])
+            report = json.loads(result.stdout)
+            self.assertTrue(report['ok'])
+            self.assertGreaterEqual(report['elapsed_seconds'], 0)
             self.assertEqual(before, path.read_bytes())
             self.assertEqual(list(Path(temp).iterdir()), [path])
+
+    def test_required_tables_are_checked_on_restored_copy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'backup.db'
+            with sqlite3.connect(path) as db:
+                db.execute('CREATE TABLE users (id INTEGER PRIMARY KEY)')
+            good = self.run_drill(path, '--require-table', 'users')
+            self.assertEqual(good.returncode, 0, good.stdout + good.stderr)
+            missing = self.run_drill(path, '--require-table', 'users', '--require-table', 'accounts')
+            self.assertEqual(missing.returncode, 1, missing.stdout + missing.stderr)
+            self.assertEqual(json.loads(missing.stdout)['verification']['missing_tables'], ['accounts'])
+
+    def test_business_reconciliation_rejects_incomplete_schema(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'backup.db'
+            with sqlite3.connect(path) as db:
+                db.execute('CREATE TABLE users (id INTEGER PRIMARY KEY)')
+            result = self.run_drill(path, '--reconcile')
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertFalse(json.loads(result.stdout)['ok'])
+
+    def test_business_reconciliation_runs_on_isolated_restored_database(self):
+        from database import DatabaseManager
+        from database.backup import backup
+        from database.db_manager import DBManager
+        with tempfile.TemporaryDirectory() as temp:
+            old_root = DBManager.database_dir
+            try:
+                DBManager.database_dir = Path(temp)
+                manager = DatabaseManager()
+                path = backup(Path(temp) / 'inazina.db')
+                manager.close()
+                before = path.read_bytes()
+                result = self.run_drill(path, '--reconcile')
+                report = json.loads(result.stdout)
+                self.assertIn('reconciliation', report, result.stdout + result.stderr)
+                self.assertIn(report['reconciliation']['status'], ('matched', 'mismatch'))
+                self.assertIn('close_ready', report['reconciliation'])
+                self.assertEqual(result.returncode, 0 if report['ok'] else 1)
+                self.assertEqual(path.read_bytes(), before)
+            finally:
+                DBManager.database_dir = old_root
 
     def test_rejects_source_with_wal_sidecar(self):
         with tempfile.TemporaryDirectory() as temp:

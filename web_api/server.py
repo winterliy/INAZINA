@@ -4665,6 +4665,16 @@ class Handler(BaseHTTPRequestHandler):
                 )
 
     def do_GET(self):
+        if urlsplit(self.path).path == "/favicon.ico":
+            from web_api.landing import favicon_png
+            body = favicon_png()
+            self.send_response(200)
+            self.send_header("content-type", "image/png")
+            self.send_header("cache-control", "public, max-age=3600")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         _DELEGATION.by = unquote(self.headers.get("x-inazina-delegated-by", ""))
         if not INTERNAL_TOKEN or not hmac.compare_digest(
             self.headers.get("x-inazina-internal-token", ""), INTERNAL_TOKEN
@@ -5769,6 +5779,32 @@ class Handler(BaseHTTPRequestHandler):
                                   "simulationOnly": True}
                         audit_admin_access(user["userId"], "contract_rate_reset.preview", {
                             "segment_count": len(schedule["segments"])})
+                    elif action == "charged_off_waterfall_preview":
+                        safe_max = 9007199254740991
+                        if (set(payload) != {"action", "loanId", "proceedsMinorUnits", "bankRank", "otherClaims"}
+                                or type(payload["loanId"]) is not int or not 1 <= payload["loanId"] <= safe_max
+                                or type(payload["proceedsMinorUnits"]) is not int or not 0 <= payload["proceedsMinorUnits"] <= safe_max
+                                or type(payload["bankRank"]) is not int or not 1 <= payload["bankRank"] <= safe_max
+                                or not isinstance(payload["otherClaims"], list) or len(payload["otherClaims"]) > 999
+                                or any(not isinstance(item, dict) or set(item) != {"id", "rank", "amountMinorUnits"}
+                                       for item in payload["otherClaims"])):
+                            raise ValueError("invalid_charged_off_waterfall_payload")
+                        for item in payload["otherClaims"]:
+                            if (not isinstance(item["id"], str) or not 1 <= len(item["id"]) <= 128
+                                    or type(item["rank"]) is not int or not 1 <= item["rank"] <= safe_max
+                                    or type(item["amountMinorUnits"]) is not int
+                                    or not 0 <= item["amountMinorUnits"] <= safe_max):
+                                raise ValueError("invalid_charged_off_waterfall_payload")
+                        from functions.recovery_waterfall import preview_charged_off_loan
+                        result = preview_charged_off_loan(
+                            connection, loan_id=payload["loanId"], proceeds=payload["proceedsMinorUnits"],
+                            bank_rank=payload["bankRank"], other_claims=[
+                                (item["id"], item["rank"], item["amountMinorUnits"])
+                                for item in payload["otherClaims"]])
+                        if result["bankClaimMinorUnits"] > safe_max:
+                            raise ValueError("charged_off_balance_exceeds_json_safe_integer")
+                        audit_admin_access(user["userId"], "charged_off_waterfall.preview", {
+                            "loan_id": payload["loanId"], "claim_count": len(payload["otherClaims"])})
                     elif action == "recovery_waterfall_preview":
                         if (set(payload) != {"action", "proceedsMinorUnits", "claims"}
                                 or not isinstance(payload["claims"], list)

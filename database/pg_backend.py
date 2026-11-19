@@ -18,12 +18,13 @@ from pathlib import Path
 
 import psycopg
 import sqlglot
+from psycopg import sql as pg_sql
 from sqlglot import exp
 
 _TOOLS = Path(__file__).resolve().parents[1] / "tools"
 if str(_TOOLS) not in sys.path:
     sys.path.insert(0, str(_TOOLS))
-from build_postgres_schema import DROPPED, rewrite, target_table  # noqa: E402
+from build_postgres_schema import DROPPED, RENAMED, rewrite, target_table  # noqa: E402
 from build_postgres_triggers import ROW_FILTER, _filter_merged  # noqa: E402
 
 DSN_ENV = "INAZINA_PG_DSN"
@@ -119,8 +120,6 @@ def _pragma(sql):
                 "JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = rc.constraint_name "
                 "JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = rc.unique_constraint_name "
                 f"WHERE kcu.table_name = '{table}'"), ()
-    if name == "foreign_key_check":
-        return "SELECT NULL AS \"table\" WHERE false", ()
     if name in _NO_OP_PRAGMAS or name in {"user_version", "schema_version", "data_version"}:
         return "SELECT 0 WHERE false", ()
     return None
@@ -369,6 +368,19 @@ def translate(sql):
     return text, returning
 
 
+def _legacy_names_in_catalog_query(sql, parameters):
+    """`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?` asks whether a table exists. Tables that were
+    renamed or merged (saving, liability -> bank_products, ...) exist under their new name only, so the old name
+    is looked up as the new one. Without this every "is the saving table there?" guard answered no and the
+    savings and loan product lists came back empty."""
+    def mapped(value):
+        return target_table(value) if isinstance(value, str) else value
+    if isinstance(parameters, (tuple, list)):
+        parameters = tuple(mapped(value) for value in parameters)
+    sql = re.sub(r"(\bname\s*=\s*')(\w+)(')", lambda m: m[1] + target_table(m[2]) + m[3], sql, flags=re.I)
+    return sql, parameters
+
+
 # --------------------------------------------------------------------------- errors
 
 def _sqlite_error(error):
@@ -391,6 +403,57 @@ def _sqlite_error(error):
 
 # --------------------------------------------------------------------------- connection
 
+def _foreign_key_check_sql(raw, table=None):
+    """Build an audit query for declared foreign keys, including preexisting bad rows."""
+    constraints = raw.execute("""
+        WITH keys AS (
+          SELECT c.*, row_number() OVER (PARTITION BY c.conrelid ORDER BY c.oid) - 1 AS key_id
+          FROM pg_constraint c WHERE c.contype = 'f'
+        )
+        SELECT child.relname, parent_ns.nspname, parent.relname, keys.key_id, keys.confmatchtype,
+          ARRAY(SELECT a.attname FROM unnest(keys.conkey) WITH ORDINALITY AS k(n, ord)
+                JOIN pg_attribute a ON a.attrelid=keys.conrelid AND a.attnum=k.n ORDER BY k.ord),
+          ARRAY(SELECT a.attname FROM unnest(keys.confkey) WITH ORDINALITY AS k(n, ord)
+                JOIN pg_attribute a ON a.attrelid=keys.confrelid AND a.attnum=k.n ORDER BY k.ord),
+          COALESCE(
+            (SELECT a.attname FROM pg_attribute a WHERE a.attrelid=keys.conrelid
+             AND a.attname='rowid' AND NOT a.attisdropped),
+            (SELECT a.attname FROM pg_index i JOIN pg_attribute a
+             ON a.attrelid=i.indrelid AND a.attnum=i.indkey[0]
+             WHERE i.indrelid=keys.conrelid AND i.indisprimary AND i.indnkeyatts=1
+             AND a.atttypid IN ('int2'::regtype, 'int4'::regtype, 'int8'::regtype)))
+        FROM keys JOIN pg_class child ON child.oid=keys.conrelid
+        JOIN pg_namespace child_ns ON child_ns.oid=child.relnamespace
+        JOIN pg_class parent ON parent.oid=keys.confrelid
+        JOIN pg_namespace parent_ns ON parent_ns.oid=parent.relnamespace
+        WHERE child_ns.nspname='public' AND (%s::text IS NULL OR child.relname=%s)
+        ORDER BY child.relname, keys.key_id
+    """, (table, table)).fetchall()
+    checks = []
+    legacy_names = {target: source for source, target in RENAMED.items()}
+    for child, parent_schema, parent, key_id, match_type, child_cols, parent_cols, rowid_col in constraints:
+        pairs = [pg_sql.SQL('p.{} = c.{}').format(pg_sql.Identifier(p), pg_sql.Identifier(c))
+                 for c, p in zip(child_cols, parent_cols)]
+        nonnull = [pg_sql.SQL('c.{} IS NOT NULL').format(pg_sql.Identifier(c)) for c in child_cols]
+        missing = pg_sql.SQL('({}) AND NOT EXISTS (SELECT 1 FROM {}.{} p WHERE {})').format(
+            pg_sql.SQL(' AND ').join(nonnull), pg_sql.Identifier(parent_schema),
+            pg_sql.Identifier(parent), pg_sql.SQL(' AND ').join(pairs))
+        if match_type == 'f' and len(child_cols) > 1:
+            nulls = [pg_sql.SQL('c.{} IS NULL').format(pg_sql.Identifier(c)) for c in child_cols]
+            missing = pg_sql.SQL('({}) OR (({}) AND ({}))').format(
+                missing, pg_sql.SQL(' OR ').join(nulls), pg_sql.SQL(' OR ').join(nonnull))
+        rowid = pg_sql.SQL('c.{}::bigint').format(pg_sql.Identifier(rowid_col)) if rowid_col else pg_sql.SQL('NULL::bigint')
+        checks.append(pg_sql.SQL('SELECT {} AS "table", {} AS rowid, {} AS parent, '
+                                 '{}::bigint AS fkid FROM public.{} c WHERE {}').format(
+            pg_sql.Literal(legacy_names.get(child, child)), rowid,
+            pg_sql.Literal(legacy_names.get(parent, parent)),
+            pg_sql.Literal(key_id),
+            pg_sql.Identifier(child), missing))
+    if not checks:
+        return 'SELECT NULL AS "table", NULL::bigint AS rowid, NULL AS parent, NULL::bigint AS fkid WHERE false'
+    return pg_sql.SQL(' UNION ALL ').join(checks).as_string(raw)
+
+
 class PgCursor:
     def __init__(self, connection):
         self.connection = connection
@@ -409,7 +472,17 @@ class PgCursor:
         connection = self.connection
         if connection._trace is not None:
             connection._trace(sql)
-        text, returning = translate(sql)
+        foreign_key_check = re.fullmatch(
+            r"\s*PRAGMA\s+(?:main\.)?foreign_key_check\s*(?:\(\s*['\"]?([\w.]+)['\"]?\s*\))?\s*;?\s*",
+            sql, re.I)
+        if foreign_key_check:
+            table = target_table(foreign_key_check[1]) if foreign_key_check[1] else None
+            text = _foreign_key_check_sql(connection._raw, table)
+            returning = None
+        else:
+            if "sqlite_master" in sql.lower():
+                sql, parameters = _legacy_names_in_catalog_query(sql, parameters)
+            text, returning = translate(sql)
         if text == "BEGIN" or text.startswith("BEGIN;"):
             connection._begin(immediate=text.startswith("BEGIN;"))
             return self
@@ -450,7 +523,7 @@ class PgCursor:
             self.lastrowid = rows[0][0] if rows else None
             names, rows = None, []
         # The rowid column PostgreSQL tables carry for SQLite code shows up only when asked for.
-        if names is not None and "rowid" in names and "rowid" not in sql.lower():
+        if names is not None and "rowid" in names and "rowid" not in sql.lower() and not foreign_key_check:
             index = names.index("rowid")
             names = names[:index] + names[index + 1:]
             rows = [row[:index] + row[index + 1:] for row in rows]

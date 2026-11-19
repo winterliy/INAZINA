@@ -8,9 +8,12 @@ normal order book, so every fill, tax and ledger row is the regular one. A provi
 equity falls below half of the capital it started with.
 """
 import hashlib
+import json
 import math
 import random
 import time
+from decimal import Decimal
+from fractions import Fraction
 
 from functions.money import base_currency_code
 from managers.company_account_manager import CompanyAccounts
@@ -58,6 +61,10 @@ STRATEGIES = ("inventory", "noise", "value", "momentum")
 FAST_SECONDS, SLOW_SECONDS = 300, 1800      # momentum: short vs long average; value: the long average is the fundamental
 
 
+class LiquidityCurrencyError(ValueError):
+    """A provider's standing cannot safely be expressed in the base currency."""
+
+
 def quote_prices(price, held_value_ratio, profile):
     """Bid/ask ladders around the inventory-skewed reservation price (integers, best price first)."""
     cfg = PROFILES[profile]
@@ -86,13 +93,26 @@ class LiquidityManager:
                 "LEFT JOIN company_accounts a ON a.company_code=p.company_code ORDER BY p.company_code").fetchall()
             result = []
             for row in rows:
-                cash, holdings = self._standing(conn, row["user_id"]) if row["user_id"] else (0, 0)
-                equity = cash + holdings
+                evidence_row = conn.execute("SELECT currency_code,capital_minor_units FROM liquidity_capital_evidence "
+                                            "WHERE company_code=?", (row['company_code'],)).fetchone()
+                if (not evidence_row or evidence_row[0] != base_currency_code(conn)
+                        or int(evidence_row[1]) != int(row['initial_capital_minor_units'])):
+                    currency_error = "시작 자본의 통화 근거를 확인할 수 없습니다."
+                    cash, holdings, equity = None, None, None
+                else:
+                    currency_error = None
+                try:
+                    if currency_error is None:
+                        cash, holdings = self._standing(conn, row["user_id"]) if row["user_id"] else (0, 0)
+                        equity = cash + holdings
+                except LiquidityCurrencyError as exc:
+                    cash, holdings, equity, currency_error = None, None, None, str(exc)
                 result.append({
                     "companyCode": row["company_code"], "name": row["name"], "profile": row["profile"], "strategy": row["strategy"],
                     "enabled": bool(row["enabled"]), "halted": bool(row["halted"]),
                     "initialCapital": int(row["initial_capital_minor_units"]), "cash": cash, "holdingsValue": holdings,
-                    "equity": equity, "pnl": equity - int(row["initial_capital_minor_units"]),
+                    "equity": equity, "pnl": equity - int(row["initial_capital_minor_units"]) if equity is not None else None,
+                    "currencyError": currency_error,
                     "lastRunEpoch": int(row["last_run_epoch"]),
                     "openOrders": conn.execute(
                         "SELECT COUNT(*) FROM market_orders WHERE user_id=? AND status IN ('open','partial')",
@@ -131,17 +151,44 @@ class LiquidityManager:
             return result
 
     @staticmethod
-    def _standing(conn, user_id):
-        cash = int(conn.execute("SELECT cash FROM users WHERE user_id=?", (user_id,)).fetchone()[0] or 0)
+    def _standing(conn, user_id, *, evidence=False):
+        base = base_currency_code(conn)
+        user = conn.execute("SELECT u.cash,n.currency_code FROM users u LEFT JOIN country_currencies n "
+                            "ON n.nationality=u.nationality WHERE u.user_id=?", (user_id,)).fetchone()
+        if not user or not user[1] or str(user[1]).upper() != base:
+            raise LiquidityCurrencyError("현금 통화가 기준통화와 다르거나 확인되지 않습니다.")
+        cash = int(user[0] or 0)
         # Cash set aside for resting buy quotes still belongs to the company.
+        if conn.execute("SELECT 1 FROM market_orders WHERE user_id=? AND status IN ('open','partial') "
+                        "AND order_kind='asset' AND reserved_cash_minor_units<>0 "
+                        "AND (quote_currency IS NULL OR UPPER(quote_currency)<>?) LIMIT 1", (user_id, base)).fetchone():
+            raise LiquidityCurrencyError("예약 현금 통화가 기준통화와 다르거나 확인되지 않습니다.")
         cash += int(conn.execute(
             "SELECT COALESCE(SUM(reserved_cash_minor_units),0) FROM market_orders WHERE user_id=? AND status IN ('open','partial') "
             "AND order_kind='asset'", (user_id,)).fetchone()[0] or 0)
         holdings = 0
+        components = []
         for row in conn.execute(
-                "SELECT h.asset_code, SUM(h.quantity) q, COALESCE(c.share_price, 0) price FROM user_assets h "
-                "JOIN company c ON c.company_code=h.asset_code WHERE h.user_id=? GROUP BY h.asset_code", (user_id,)):
-            holdings += int(float(row["q"]) * int(row["price"] or 0))
+                "SELECT h.asset_code, SUM(h.quantity) q, COALESCE(c.share_price, 0) price, c.quote_currency, "
+                "c.company_code FROM user_assets h LEFT JOIN company c ON c.company_code=h.asset_code "
+                "WHERE h.user_id=? GROUP BY h.asset_code", (user_id,)):
+            if float(row['q'] or 0) != 0 and (not row['company_code'] or not row['quote_currency']):
+                raise LiquidityCurrencyError("보유자산 통화가 기준통화와 다르거나 확인되지 않습니다.")
+            currency = str(row['quote_currency'] or base).upper()
+            from managers.currency_manager import CurrencyManager
+            try:
+                rate = Fraction(1) if currency == base else CurrencyManager.quote(conn, currency, base)
+                value = Fraction(Decimal(str(row['q']))) * Fraction(Decimal(str(row['price'] or 0))) * rate
+                units = value.numerator // value.denominator
+            except (ValueError, ZeroDivisionError, ArithmeticError) as exc:
+                raise LiquidityCurrencyError(f"보유자산 통화 환율을 확인할 수 없습니다: {currency}") from exc
+            holdings += units
+            components.append({'asset_code': row['asset_code'], 'quantity': str(row['q']),
+                               'price': str(row['price']), 'currency_code': currency,
+                               'rate_numerator': rate.numerator, 'rate_denominator': rate.denominator,
+                               'base_minor_units': units})
+        if evidence:
+            return cash, holdings, {'cash_minor_units': cash, 'holdings': components}
         return cash, holdings
 
     def add_provider(self, company_code, profile, *, enabled=True, strategy="inventory"):
@@ -154,12 +201,19 @@ class LiquidityManager:
             if not company:
                 raise ValueError("활성 상태의 회사만 유동성 공급 회사로 넣을 수 있습니다.")
             user_id = CompanyAccounts.account_id(conn, company["company_code"])
-            cash, holdings = self._standing(conn, user_id)
+            cash, holdings, components = self._standing(conn, user_id, evidence=True)
+            is_new = not conn.execute("SELECT 1 FROM liquidity_providers WHERE company_code=?",
+                                      (company["company_code"],)).fetchone()
             conn.execute(
                 "INSERT INTO liquidity_providers(company_code,profile,strategy,enabled,initial_capital_minor_units,created_epoch,updated_epoch) "
                 "VALUES (?,?,?,?,?,?,?) ON CONFLICT(company_code) DO UPDATE SET profile=excluded.profile, strategy=excluded.strategy, "
                 "enabled=excluded.enabled, halted=0, updated_epoch=excluded.updated_epoch",
                 (company["company_code"], profile, strategy, int(bool(enabled)), cash + holdings, now, now))
+            if is_new:
+                conn.execute("INSERT INTO liquidity_capital_evidence(company_code,currency_code,decimal_places,"
+                             "capital_minor_units,components_json,recorded_epoch) VALUES (?,?,0,?,?,?)",
+                             (company['company_code'], base_currency_code(conn), cash + holdings,
+                              json.dumps(components, ensure_ascii=False), now))
         return True
 
     def set_profile(self, company_code, profile):
@@ -191,6 +245,7 @@ class LiquidityManager:
         """Take a company out of the set: its quotes are withdrawn, the company itself stays."""
         self.cancel_all(company_code)
         with self.db.atomic(("company",)) as conn:
+            conn.execute("DELETE FROM liquidity_capital_evidence WHERE company_code=?", (str(company_code),))
             conn.execute("DELETE FROM liquidity_providers WHERE company_code=?", (str(company_code),))
 
     # ------------------------------------------------------------------ orders
@@ -211,8 +266,8 @@ class LiquidityManager:
         base = base_currency_code(conn)
         rows = conn.execute(
             "SELECT company_code, share_price FROM company WHERE status='active' AND trading_status='active' "
-            "AND exchange_id IS NOT NULL AND share_price>0 AND COALESCE(quote_currency,?)=? AND Fractal=0 "
-            "AND company_code<>?", (base, base, firm_code)).fetchall()
+            "AND exchange_id IS NOT NULL AND share_price>0 AND UPPER(quote_currency)=? AND Fractal=0 "
+            "AND company_code<>?", (base, firm_code)).fetchall()
         rows = [row for row in rows if not conn.execute("SELECT 1 FROM liquidity_providers WHERE company_code=?", (row["company_code"],)).fetchone()]
         rows.sort(key=lambda row: hashlib.sha256(f"{firm_code}:{row['company_code']}".encode()).hexdigest())
         return [(row["company_code"], int(row["share_price"])) for row in rows[:count]]
@@ -261,6 +316,25 @@ class LiquidityManager:
                 "SELECT * FROM liquidity_providers WHERE enabled=1 AND halted=0 ORDER BY company_code")]
         for provider in due:
             cfg = PROFILES[provider["profile"]]
+            with self.db.readonly() as conn:
+                account = conn.execute("SELECT user_id FROM company_accounts WHERE company_code=?",
+                                       (provider["company_code"],)).fetchone()
+                evidence_row = conn.execute("SELECT currency_code,capital_minor_units FROM liquidity_capital_evidence "
+                                            "WHERE company_code=?", (provider['company_code'],)).fetchone()
+                if (not evidence_row or evidence_row[0] != base_currency_code(conn)
+                        or int(evidence_row[1]) != int(provider['initial_capital_minor_units'])):
+                    account = None
+                try:
+                    if account:
+                        self._standing(conn, account[0])
+                except LiquidityCurrencyError:
+                    account = None
+            if account is None:
+                self.cancel_all(provider["company_code"])
+                with self.db.atomic(("company",)) as conn:
+                    conn.execute("UPDATE liquidity_providers SET halted=1, updated_epoch=? WHERE company_code=?",
+                                 (now, provider["company_code"]))
+                continue
             if now - int(provider["last_run_epoch"]) < cfg["cycle_seconds"]:
                 continue
             try:

@@ -23,6 +23,11 @@ class CurrencyDB(DBManager):
 
     def __init__(self):
         super().__init__("forex")
+        from . import pg_backend
+        if pg_backend.enabled():
+            # PostgreSQL schema initialization is handled by its bootstrap;
+            # the SQLite table-rebuild migrations must not run against it.
+            return
         initial_config = load_initial_currency_config()
         initial_base = initial_config["baseCurrency"]
         initial_base_code = str(initial_base["code"]).strip().upper()
@@ -3820,6 +3825,9 @@ def ensure_liquidity_providers(execute):
                 "CHECK(strategy IN ('inventory','noise','value','momentum'))")
     if "initial_capital_units" in columns and "initial_capital_minor_units" not in columns:
         execute("ALTER TABLE liquidity_providers RENAME COLUMN initial_capital_units TO initial_capital_minor_units")
+    execute("""CREATE TABLE IF NOT EXISTS liquidity_capital_evidence (
+        company_code TEXT PRIMARY KEY, currency_code TEXT NOT NULL, decimal_places INTEGER NOT NULL,
+        capital_minor_units INTEGER NOT NULL, components_json TEXT NOT NULL, recorded_epoch INTEGER NOT NULL)""")
 
 
 def ensure_option_settlement_account_guard(execute):

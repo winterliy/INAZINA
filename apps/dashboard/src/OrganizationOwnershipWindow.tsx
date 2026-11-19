@@ -97,7 +97,7 @@ export function OrganizationOwnershipWindow({ route }: { route: string }) {
   const [selected, setSelected] = useState(initialCode);
   const [focusedNodeId, setFocusedNodeId] = useState(initialCode ? `company:${initialCode}` : "");
   const [focusRequest, setFocusRequest] = useState(0);
-  const [includeMinor, setIncludeMinor] = useState(initialDetail === "minor");
+  const [includeMinor, setIncludeMinor] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [organizationSearch, setOrganizationSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -163,7 +163,7 @@ export function OrganizationOwnershipWindow({ route }: { route: string }) {
         if (!active) return;
         const available = result.organizations ?? [];
         setOrganizations(available);
-        if (!initialCode && available[0]) void loadOrganization(available[0].organization_code, false);
+        if (!initialCode && available[0]) void loadOrganization(available[0].organization_code, true);
         else if (!initialCode) {
           setError("표시할 법인이 없습니다.");
           setLoading(false);
@@ -175,7 +175,7 @@ export function OrganizationOwnershipWindow({ route }: { route: string }) {
           setLoading(false);
         }
       });
-    if (initialCode) void loadOrganization(initialCode, initialDetail === "minor", false);
+    if (initialCode) void loadOrganization(initialCode, true, false);
     return () => { active = false; requestId.current += 1; };
   }, [initialCode, initialDetail, loadOrganization, personal]);
 
@@ -188,7 +188,6 @@ export function OrganizationOwnershipWindow({ route }: { route: string }) {
     </header>
     <div className="ownership-toolbar">
       {!personal && <button className="soft ownership-sidebar-toggle" type="button" aria-expanded={sidebarOpen} onClick={() => setSidebarOpen((open) => !open)}>{sidebarOpen ? "사이드바 닫기" : "법인 트리 열기"}</button>}
-      {!personal && <label className="check ownership-minor-toggle"><input type="checkbox" checked={includeMinor} disabled={loading} onChange={(event) => { if (selected) void loadOrganization(selected, event.target.checked); }} />1% 미만 지분도 표시</label>}
       {graph?.truncated && <small>표시 한도로 일부 소수 지분 또는 상위 주주 경로가 생략됐습니다.</small>}
     </div>
     <div className={!personal && sidebarOpen ? "ownership-workspace" : "ownership-workspace sidebar-collapsed"}>

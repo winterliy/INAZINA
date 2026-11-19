@@ -12,8 +12,8 @@ TOOL = ROOT / 'tools' / 'verify_backup.py'
 
 
 class BackupVerificationTests(unittest.TestCase):
-    def run_check(self, path):
-        return subprocess.run([sys.executable, str(TOOL), str(path)], capture_output=True, text=True)
+    def run_check(self, path, *options):
+        return subprocess.run([sys.executable, str(TOOL), str(path), *options], capture_output=True, text=True)
 
     def test_healthy_snapshot_is_read_only(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -26,6 +26,16 @@ class BackupVerificationTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(json.loads(result.stdout)['ok'])
             self.assertEqual(path.read_bytes(), before)
+
+    def test_required_tables_must_exist_as_tables(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'backup.db'
+            with sqlite3.connect(path) as db:
+                db.execute('CREATE TABLE users (id INTEGER PRIMARY KEY)')
+                db.execute('CREATE VIEW accounts AS SELECT * FROM users')
+            result = self.run_check(path, '--require-table', 'users', '--require-table', 'accounts')
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)['missing_tables'], ['accounts'])
 
     def test_project_check_constraints_are_supported(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -121,26 +121,26 @@ function BoardStructure({ busy, boards, onSubmit }: { busy: boolean; boards: Boa
   const send = (values: typeof blank) => ({ name: values.name, description: values.description, adminOnly: values.adminOnly, allowAsset: values.allowAsset, secret: values.secret, news: values.news, sortOrder: Number(values.sortOrder) || 0 });
 
   return <Card title="게시판 · 카테고리" caption="게시판을 만들고 이름·설명·순서·쓰기 권한을 바꿉니다. 비밀게시판은 허용 목록의 Discord 아이디와 관리자만 보고 씁니다. 정지한 게시판은 읽기·신고만 됩니다(관리자는 계속 씀). 글이 있는 게시판을 지우려면 글을 옮길 게시판을 고르세요.">
-    <div className="scroll-x"><table><thead><tr><th>ID</th><th>이름</th><th>설명</th><th className="r">순서</th><th>쓰기</th><th>종목 코드</th><th>비밀</th><th>뉴스</th><th className="r">글</th><th>카테고리</th><th>정지</th><th /></tr></thead><tbody>
+    <div className="scroll-x board-structure"><table><thead><tr><th>ID</th><th>이름</th><th>설명</th><th className="r">순서</th><th>쓰기</th><th>종목 코드</th><th>비밀</th><th>뉴스</th><th className="r">글</th><th>카테고리</th><th>정지</th><th /></tr></thead><tbody>
       {boards.map((item) => {
         const values = valuesOf(item);
         const others = boards.filter((other) => other.board_id !== item.board_id);
         return <tr key={item.board_id}>
-          <td className="mono">{item.board_id}</td>
-          <td><input className="mini-input" aria-label={`${item.board_id} 이름`} value={values.name} maxLength={30} onChange={(event) => edit(item, { name: event.target.value })} /></td>
-          <td><input className="mini-input wide" aria-label={`${item.board_id} 설명`} value={values.description} maxLength={200} onChange={(event) => edit(item, { description: event.target.value })} /></td>
-          <td className="r"><input className="mini-input narrow" type="number" aria-label={`${item.board_id} 순서`} value={values.sortOrder} onChange={(event) => edit(item, { sortOrder: event.target.value })} /></td>
-          <td><label className="check"><input type="checkbox" checked={values.adminOnly} onChange={(event) => edit(item, { adminOnly: event.target.checked })} />관리자만</label></td>
-          <td><label className="check"><input type="checkbox" checked={values.allowAsset} onChange={(event) => edit(item, { allowAsset: event.target.checked })} />허용</label></td>
-          <td><label className="check"><input type="checkbox" checked={values.secret} onChange={(event) => edit(item, { secret: event.target.checked })} />비밀</label>
+          <td className="mono" data-label="ID">{item.board_id}</td>
+          <td data-label="이름"><input className="mini-input" aria-label={`${item.board_id} 이름`} value={values.name} maxLength={30} onChange={(event) => edit(item, { name: event.target.value })} /></td>
+          <td data-label="설명"><input className="mini-input wide" aria-label={`${item.board_id} 설명`} value={values.description} maxLength={200} onChange={(event) => edit(item, { description: event.target.value })} /></td>
+          <td className="r" data-label="순서"><input className="mini-input narrow" type="number" aria-label={`${item.board_id} 순서`} value={values.sortOrder} onChange={(event) => edit(item, { sortOrder: event.target.value })} /></td>
+          <td data-label="쓰기"><label className="check"><input type="checkbox" checked={values.adminOnly} onChange={(event) => edit(item, { adminOnly: event.target.checked })} />관리자만</label></td>
+          <td data-label="종목 코드"><label className="check"><input type="checkbox" checked={values.allowAsset} onChange={(event) => edit(item, { allowAsset: event.target.checked })} />허용</label></td>
+          <td data-label="비밀"><label className="check"><input type="checkbox" checked={values.secret} onChange={(event) => edit(item, { secret: event.target.checked })} />비밀</label>
             {item.secret === 1 && <div className="chips">{(item.members ?? []).map((member) => <span key={member.user_id} className="category-chip"><span className="tag" title={member.user_id}>{member.nickname || member.user_id} <small className="mono muted">{member.user_id}</small></span>
               <button className="soft small danger" type="button" disabled={busy} title="허용 목록에서 빼기" onClick={() => onSubmit("board", item.board_id, { action: "member_remove", userId: member.user_id }, `${member.nickname || member.user_id}을(를) ${item.name} 허용 목록에서 뺄까요?`)}>✕</button></span>)}
               <span className="category-chip"><input className="mini-input mono" aria-label={`${item.name}에 허용할 Discord 아이디`} placeholder="Discord 아이디" value={newMember[item.board_id] ?? ""} onChange={(event) => setNewMember({ ...newMember, [item.board_id]: event.target.value.trim() })} />
                 <button className="soft small" type="button" disabled={busy || !(newMember[item.board_id] ?? "")} onClick={() => { onSubmit("board", item.board_id, { action: "member_add", userId: newMember[item.board_id] }); setNewMember({ ...newMember, [item.board_id]: "" }); }}>허용</button></span>
               {!(item.members ?? []).length && <small className="muted">아직 허용된 사람이 없습니다(관리자만 봄).</small>}</div>}</td>
-          <td><label className="check" title="관리자 글에 시장 영향(호재·악재)을 넣을 수 있는 게시판"><input type="checkbox" checked={values.news} onChange={(event) => edit(item, { news: event.target.checked })} />뉴스</label></td>
-          <td className="r">{number(item.post_count)}</td>
-          <td><div className="chips">{item.categories.map((category) => <span key={category.category_id} className="category-chip">
+          <td data-label="뉴스"><label className="check" title="관리자 글에 시장 영향(호재·악재)을 넣을 수 있는 게시판"><input type="checkbox" checked={values.news} onChange={(event) => edit(item, { news: event.target.checked })} />뉴스</label></td>
+          <td className="r" data-label="글">{number(item.post_count)}</td>
+          <td data-label="카테고리"><div className="chips">{item.categories.map((category) => <span key={category.category_id} className="category-chip">
             <input className="mini-input" aria-label={`카테고리 ${category.name}`} value={categoryNames[category.category_id] ?? category.name} maxLength={20} onChange={(event) => setCategoryNames({ ...categoryNames, [category.category_id]: event.target.value })} />
             {(categoryNames[category.category_id] ?? category.name) !== category.name && <button className="soft small" type="button" disabled={busy} onClick={() => onSubmit("category", category.category_id, { action: "edit", name: categoryNames[category.category_id], sortOrder: category.sort_order })}>저장</button>}
             <button className="soft small danger" type="button" disabled={busy} title="카테고리 삭제" onClick={() => onSubmit("category", category.category_id, { action: "delete" }, `카테고리 "${category.name}"을(를) 지울까요? 그 글은 카테고리 없이 남습니다.`)}>✕</button>
@@ -148,7 +148,7 @@ function BoardStructure({ busy, boards, onSubmit }: { busy: boolean; boards: Boa
             <span className="category-chip"><input className="mini-input" aria-label={`${item.name} 새 카테고리`} placeholder="새 카테고리" maxLength={20} value={newCategory[item.board_id] ?? ""} onChange={(event) => setNewCategory({ ...newCategory, [item.board_id]: event.target.value })} />
               <button className="soft small" type="button" disabled={busy || !(newCategory[item.board_id] ?? "").trim()} onClick={() => { onSubmit("category", "new", { action: "create", boardId: item.board_id, name: newCategory[item.board_id], sortOrder: item.categories.length }); setNewCategory({ ...newCategory, [item.board_id]: "" }); }}>추가</button></span>
           </div></td>
-          <td>{item.suspension
+          <td data-label="정지">{item.suspension
             ? <><span className="tag warn" title={item.suspension}>정지 중{item.suspended_until ? ` · ${date(item.suspended_until)}까지` : ""}</span>{item.suspended_reason && <small className="muted block">{item.suspended_reason}</small>}
                 <button className="soft small" type="button" disabled={busy} onClick={() => onSubmit("board", item.board_id, { action: "resume" }, `${item.name} 게시판의 정지를 풀까요?`)}>정지 해제</button></>
             : suspend[item.board_id]

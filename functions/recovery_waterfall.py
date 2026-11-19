@@ -48,3 +48,24 @@ def allocate_recovery(proceeds, claims):
         remaining -= available
     shortfalls = {claim_id: amount - allocations[claim_id] for claim_id, _, amount in claims}
     return RecoveryAllocation(allocations, shortfalls, remaining)
+
+
+def preview_charged_off_loan(conn, *, loan_id, proceeds, bank_rank, other_claims):
+    """Preview using the bank's recorded memo balance and assumed other claims.
+
+    Does not change balances, post journals, or establish other claims' validity.
+    An absent currency or canonical balance must be resolved before simulation.
+    """
+    if type(loan_id) is not int or loan_id <= 0:
+        raise ValueError("invalid loan id")
+    row = conn.execute(
+        "SELECT status, quote_currency, charged_off_balance_minor_units "
+        "FROM accounts.loans WHERE loan_id=?", (loan_id,)
+    ).fetchone()
+    if not row or row[0] != "charged_off" or not row[1] or type(row[2]) is not int or row[2] < 0:
+        raise ValueError("charged-off loan with canonical balance and currency required")
+    result = allocate_recovery(proceeds, [("bank", bank_rank, row[2]), *other_claims])
+    return {"loanId": loan_id, "currencyCode": str(row[1]), "bankClaimMinorUnits": row[2],
+            "allocations": result.allocations, "shortfalls": result.shortfalls,
+            "unallocatedMinorUnits": result.unallocated, "simulationOnly": True,
+            "otherClaimsAreAssumptions": True}

@@ -1,0 +1,41 @@
+/* 신용점수 page: summary gauge, factors, trend, tips and history. Dark surface like the rest of 나루. */
+.credit-page { display: grid; gap: 16px; width: min(1040px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 56px; color: var(--ink); }
+.credit-head h1 { margin: 4px 0 0; font-size: 32px; font-weight: 600; letter-spacing: -.02em; }
+.credit-summary, .credit-card { padding: 22px 24px; border-radius: 8px; background: rgba(var(--glass-rgb), .78); box-shadow: inset 0 0 0 1px var(--line); }
+.credit-summary { display: grid; grid-template-columns: minmax(240px, 340px) 1fr; align-items: center; gap: 32px; }
+.credit-card h2 { margin: 0 0 14px; font-size: 16px; font-weight: 600; }
+.credit-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.credit-gauge { width: 100%; height: auto; display: block; }
+.gauge-track { fill: none; stroke: rgba(128, 128, 128, .2); stroke-width: 16; stroke-linecap: round; }
+.gauge-fill { fill: none; stroke: var(--accent); stroke-width: 16; stroke-linecap: round; }
+.gauge-anchor { fill: var(--ink); stroke: rgb(var(--glass-rgb)); stroke-width: 2; }
+.gauge-score { fill: var(--ink); font-size: 52px; font-weight: 700; }
+.gauge-max, .gauge-edge, .trend-label { fill: var(--ink2); font-size: 12px; }
+.credit-summary-text { display: grid; gap: 12px; min-width: 0; }
+.credit-summary-text p { margin: 0; color: var(--ink2); font-size: 14px; }
+.credit-summary-text p b { color: var(--ink); font-weight: 600; }
+.credit-band { justify-self: start; padding: 4px 12px; border-radius: 4px; background: var(--accent); color: var(--accent-ink); font-size: 14px; font-weight: 600; }
+.credit-band.warn, .credit-band.low { background: var(--credit-bad, #d92d20); }
+.credit-band.mid { background: #8e8e93; }
+.credit-scale { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin: 4px 0 0; padding: 0; list-style: none; }
+.credit-scale li { display: grid; gap: 2px; padding: 8px 6px; border-radius: 4px; text-align: center; font-size: 12px; color: var(--ink2); box-shadow: inset 0 0 0 1px var(--line); }
+.credit-scale li small { font-size: 11px; opacity: .8; }
+.credit-scale li.on { color: var(--accent-ink); background: var(--accent); box-shadow: none; }
+.credit-scale li.on.warn, .credit-scale li.on.low { background: var(--credit-bad, #d92d20); }
+.credit-scale li.on.mid { background: #8e8e93; }
+.credit-factors, .credit-tips, .credit-timeline { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.credit-factors li { display: grid; grid-template-columns: minmax(90px, 1.2fr) 2fr auto; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.credit-factors li:first-child, .credit-tips li:first-child, .credit-timeline li:first-child { border-top: 0; }
+.credit-factors i { display: block; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.credit-factors i em { display: block; height: 100%; border-radius: 3px; background: currentColor; }
+.credit-factors .plus, .credit-page .plus { color: var(--accent); }
+.credit-factors .minus, .credit-page .minus { color: var(--credit-bad, #d92d20); }
+.credit-factors b { min-width: 3.5em; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.credit-tips li, .credit-timeline li { display: grid; gap: 3px; padding: 11px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.credit-tips span, .credit-timeline span { color: var(--ink2); font-size: 13px; }
+.credit-trend { width: 100%; height: 180px; display: block; }
+.trend-axis { stroke: var(--line); }
+.trend-line { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.trend-dot { fill: var(--accent); }
+.credit-empty { margin: 0; color: var(--ink2); font-size: 14px; }
+@media (max-width: 760px) { .credit-summary, .credit-columns { grid-template-columns: minmax(0, 1fr); } .credit-scale { grid-template-columns: repeat(3, 1fr); } }

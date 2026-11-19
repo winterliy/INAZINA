@@ -7,7 +7,8 @@ type Profile = "low" | "medium" | "high";
 type Strategy = "inventory" | "noise" | "value" | "momentum";
 type Provider = {
   companyCode: string; name: string; profile: Profile; strategy: Strategy; enabled: boolean; halted: boolean; initialCapital: number;
-  cash: number; holdingsValue: number; equity: number; pnl: number; lastRunEpoch: number; openOrders: number;
+  cash: number | null; holdingsValue: number | null; equity: number | null; pnl: number | null;
+  currencyError: string | null; lastRunEpoch: number; openOrders: number;
 };
 type Overview = {
   providers: Provider[]; candidates: { code: string; name: string }[]; firmsPending: string[];
@@ -28,6 +29,7 @@ const STATE_LABEL: Record<Stock["state"], [string, string]> = {
   off: ["꺼짐", "warn"], waiting: ["다음 갱신 대기", "warn"],
 };
 const list = (prices: number[]) => prices.length ? prices.map(number).join(" · ") : "—";
+const optionalNumber = (value: number | null) => value === null ? "확인 불가" : number(value);
 
 /** 유동성: companies whose algorithm quotes the order book under their own names. */
 export function LiquidityPage({ ctx }: { ctx: Ctx }) {
@@ -63,11 +65,11 @@ export function LiquidityPage({ ctx }: { ctx: Ctx }) {
   if (!data) return <p className="cap">불러오는 중…</p>;
   const spec = (profile: Profile) => { const item = data.profiles[profile]; return `스프레드 ${(item.spreadBps / 100).toFixed(2)}% · ${item.levels}단계 · ${item.assets}종목 · ${item.cycleSeconds}초`; };
   const providers = data.providers;
-  const active = providers.filter((item) => item.enabled && !item.halted).length;
+  const active = providers.filter((item) => item.enabled && !item.halted && !item.currencyError).length;
   const halted = providers.filter((item) => item.halted).length;
   const initial = providers.reduce((sum, item) => sum + item.initialCapital, 0);
-  const equity = providers.reduce((sum, item) => sum + item.equity, 0);
-  const pnl = equity - initial;
+  const equity = providers.some((item) => item.equity === null) ? null : providers.reduce((sum, item) => sum + (item.equity ?? 0), 0);
+  const pnl = equity === null ? null : equity - initial;
   const orders = providers.reduce((sum, item) => sum + item.openOrders, 0);
   const lastRun = Math.max(0, ...providers.map((item) => item.lastRunEpoch));
   return <>
@@ -80,11 +82,11 @@ export function LiquidityPage({ ctx }: { ctx: Ctx }) {
 
     <div className="tile-row">
       <div className="tile"><div className="tile-label">공급 중인 회사</div><div className="tile-value">{active} / {providers.length}</div>
-        <p className="cap liq-tile-note">{providers.length - active - halted}곳 꺼짐 · {halted}곳 자본 부족 중지</p></div>
-      <div className="tile"><div className="tile-label">총 순자산</div><div className="tile-value liq-tile-number">{number(equity)}</div>
+        <p className="cap liq-tile-note">{providers.length - active - halted}곳 꺼짐 · {halted}곳 중지</p></div>
+      <div className="tile"><div className="tile-label">총 순자산</div><div className="tile-value liq-tile-number">{optionalNumber(equity)}</div>
         <p className="cap liq-tile-note">시작 자본 {number(initial)} NWX</p></div>
-      <div className="tile"><div className="tile-label">총 손익</div><div className={`tile-value liq-tile-number ${pnl > 0 ? "up" : pnl < 0 ? "down" : ""}`}>{pnl > 0 ? "+" : ""}{number(pnl)}</div>
-        <p className="cap liq-tile-note">{initial ? `${pnl > 0 ? "+" : ""}${(pnl / initial * 100).toFixed(2)}%` : "—"}</p></div>
+      <div className="tile"><div className="tile-label">총 손익</div><div className={`tile-value liq-tile-number ${pnl !== null && pnl > 0 ? "up" : pnl !== null && pnl < 0 ? "down" : ""}`}>{pnl !== null && pnl > 0 ? "+" : ""}{optionalNumber(pnl)}</div>
+        <p className="cap liq-tile-note">{pnl === null ? "통화를 확인하지 못한 회사가 있습니다" : initial ? `${pnl > 0 ? "+" : ""}${(pnl / initial * 100).toFixed(2)}%` : "—"}</p></div>
       <div className="tile"><div className="tile-label">올려 둔 호가</div><div className="tile-value">{orders}건</div>
         <p className="cap liq-tile-note">{lastRun ? `마지막 갱신 ${date(lastRun)}` : "아직 호가를 올리지 않았습니다"}</p></div>
     </div>
@@ -94,7 +96,7 @@ export function LiquidityPage({ ctx }: { ctx: Ctx }) {
         <thead><tr><th>회사</th><th>성향</th><th>전략</th><th>상태</th><th>자본 (시작 대비)</th><th>순자산</th><th>손익</th><th>호가</th><th /></tr></thead>
         <tbody>
           {providers.map((item) => {
-            const ratio = item.initialCapital ? item.equity / item.initialCapital : 1;
+            const ratio = item.equity === null ? null : item.initialCapital ? item.equity / item.initialCapital : 1;
             const expanded = open === item.companyCode;
             return <Fragment key={item.companyCode}>
               <tr className={expanded ? "liq-open" : ""}>
@@ -108,13 +110,13 @@ export function LiquidityPage({ ctx }: { ctx: Ctx }) {
                   onChange={(event) => act({ action: "strategy", companyCode: item.companyCode, strategy: event.target.value }, "전략을 바꾸지 못했습니다.")}>
                   {(Object.keys(STRATEGY_LABEL) as Strategy[]).map((key) => <option key={key} value={key}>{STRATEGY_LABEL[key]}</option>)}
                 </select></td>
-                <td>{item.halted ? <span className="tag danger">자본 부족으로 중지</span> : item.enabled ? <span className="tag ok">공급 중</span> : <span className="tag warn">꺼짐</span>}</td>
-                <td><div className="liq-capbar" role="img" aria-label={`시작 자본의 ${(ratio * 100).toFixed(0)}%`}><i style={{ width: `${Math.min(100, ratio * 50)}%` }} /><u /></div></td>
-                <td>{number(item.equity)}</td>
-                <td><span className={item.pnl > 0 ? "liq-up" : item.pnl < 0 ? "liq-down" : ""}>{item.pnl > 0 ? "+" : ""}{number(item.pnl)}</span></td>
+                <td>{item.currencyError ? <span className="tag danger" title={item.currencyError}>통화 확인 필요</span> : item.halted ? <span className="tag danger">자본 부족으로 중지</span> : item.enabled ? <span className="tag ok">공급 중</span> : <span className="tag warn">꺼짐</span>}</td>
+                <td>{ratio === null ? "확인 불가" : <div className="liq-capbar" role="img" aria-label={`시작 자본의 ${(ratio * 100).toFixed(0)}%`}><i style={{ width: `${Math.min(100, ratio * 50)}%` }} /><u /></div>}</td>
+                <td>{optionalNumber(item.equity)}</td>
+                <td><span className={item.pnl !== null && item.pnl > 0 ? "liq-up" : item.pnl !== null && item.pnl < 0 ? "liq-down" : ""}>{item.pnl !== null && item.pnl > 0 ? "+" : ""}{optionalNumber(item.pnl)}</span></td>
                 <td>{item.openOrders}건</td>
                 <td>
-                  <button type="button" className="outline" disabled={busy}
+                  <button type="button" className="outline" disabled={busy || (!!item.currencyError && (!item.enabled || item.halted))}
                     onClick={() => act({ action: "enable", companyCode: item.companyCode, enabled: !item.enabled || item.halted }, "상태를 바꾸지 못했습니다.")}>
                     {item.enabled && !item.halted ? "끄기" : "켜기"}
                   </button>{" "}
@@ -125,13 +127,14 @@ export function LiquidityPage({ ctx }: { ctx: Ctx }) {
                 </td>
               </tr>
               {expanded && <tr className="liq-detail"><td colSpan={9}>
-                <p className="cap">{item.name} · 종목별 호가 · 현금 {number(item.cash)} · 보유 주식 {number(item.holdingsValue)}</p>
+                <p className="cap">{item.name} · 종목별 호가 · 현금 {optionalNumber(item.cash)} · 보유 주식 {optionalNumber(item.holdingsValue)}</p>
+                {item.currencyError && <p className="cap">{item.currencyError}</p>}
                 {!stocks ? <p className="cap">불러오는 중…</p> : stocks.length === 0 ? <p className="cap">아직 호가를 올린 종목이 없습니다.</p> :
                   <div className="scroll-x"><table><thead><tr><th>종목</th><th>현재가</th><th>보유</th><th>매수 호가</th><th>매도 호가</th><th>상태</th></tr></thead><tbody>
                     {stocks.map((stock) => <tr key={stock.assetCode}>
                       <td>{stock.name} <span className="mono">{stock.assetCode}</span></td><td>{number(stock.price)}</td><td>{number(stock.held)}주</td>
                       <td>{list(stock.buys)}</td><td>{list(stock.sells)}</td>
-                      <td><span className={`tag ${STATE_LABEL[stock.state][1]}`}>{STATE_LABEL[stock.state][0]}</span></td></tr>)}
+                      <td><span className={`tag ${STATE_LABEL[stock.state][1]}`}>{item.currencyError && stock.state === "halted" ? "통화 확인 필요" : STATE_LABEL[stock.state][0]}</span></td></tr>)}
                   </tbody></table></div>}
               </td></tr>}
             </Fragment>;

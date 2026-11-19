@@ -38,7 +38,7 @@ const AccountPage = lazy(() => import("./AccountPage").then((module) => ({ defau
 const OrganizationPage = lazy(() => import("./OrganizationPage").then((module) => ({ default: module.OrganizationPage })));
 const OrganizationOwnershipWindow = lazy(() => import("./OrganizationOwnershipWindow").then((module) => ({ default: module.OrganizationOwnershipWindow })));
 
-type Page = "home" | "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "court" | "feedback" | "board" | "documents" | "credit" | "accounting" | "close" | "events" | "liquidity" | "commands" | "database" | "security" | "audit" | "ownership";
+type Page = "home" | "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "court" | "feedback" | "board" | "documents" | "credit" | "accounting" | "close" | "events" | "liquidity" | "commands" | "database" | "security"  | "ownership";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
 type Instrument = { code: string; name: string; type: string; price: Money; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
 type Exchange = { exchange_id: string; status: string; reason: string | null; trading_halted: number; updated_epoch: number | null; resume_epoch: number | null; circuit_stage: number | null };
@@ -76,7 +76,6 @@ const pages: { id: Page; label: string }[] = [
   { id: "commands", label: "관리자 명령어" },
   { id: "database", label: "DB 편집" },
   { id: "security", label: "보안" },
-  { id: "audit", label: "작업 기록" },
   { id: "ownership", label: "조직도" },
 ];
 const subtitles: Record<Page, string> = {
@@ -102,7 +101,6 @@ const subtitles: Record<Page, string> = {
   commands: "Discord의 모든 $ 명령어와 도움말을 같은 검증과 기록으로 실행합니다.",
   database: "DB Browser에서 하던 설정 편집을 감사 기록과 함께 처리합니다.",
   security: "4312·4313 접속 비밀번호를 바꾸고, 접속 시도와 적용 중인 보호를 확인합니다.",
-  audit: "모든 관리자 작업과 관리자 계정 로그인의 최근 기록입니다.",
   ownership: "기업 지분과 의결권 관계를 넓은 화면에서 확인합니다.",
 };
 const number = formatMoney;
@@ -197,7 +195,7 @@ export default function App() {
     if (!user || user.role !== "admin") return;
     try {
       if (page === "overview" || page === "home") setOverview(await api<Overview>("/api/admin/overview"));
-      if (page === "audit") setAudit((await api<{ entries: Audit[] }>("/api/admin/audit")).entries);
+      if (page === "overview") setAudit((await api<{ entries: Audit[] }>("/api/admin/audit")).entries);
       if (page === "events") {
         const [eventResult, instrumentResult] = await Promise.all([
           api<{ events: Event[]; flows?: Flow[] }>("/api/admin/events"),
@@ -500,12 +498,12 @@ export default function App() {
         {page === "database" && <DatabasePage ctx={ctx} />}
         {page === "security" && <SecurityPage ctx={ctx} />}
 
-        {page === "audit" && <Card title="최근 관리자 작업" caption="최근 50건 · 작업 기록은 append-only이며 수정·삭제할 수 없습니다.">
+        {page === "overview" && <Card title="작업 기록"  caption="최근 50건 · 작업 기록은 append-only이며 수정·삭제할 수 없습니다.">
           <div className="scroll-x tall"><table><thead><tr><th>시각</th><th>관리자 ID</th><th>작업</th><th>세부 내용</th></tr></thead><tbody>{audit.map((entry) => <tr key={entry.auditId}>
             <td>{date(entry.time)}</td><td className="mono">{entry.actorId}</td><td><span className="tag">{entry.action}</span></td><td className="audit-payload mono" title={JSON.stringify(entry.payload)}>{JSON.stringify(entry.payload)}</td>
           </tr>)}</tbody></table>{!audit.length && <p className="empty">기록이 없습니다.</p>}</div>
         </Card>}
-        {page === "audit" && <LoginHistoryCard ctx={ctx} />}
+        {page === "overview" && <LoginHistoryCard ctx={ctx} />}
         {page === "account" && <AccountPage ctx={ctx} user={user} onLogout={logout} />}
         </Suspense>
         <Footer connected={connected} />

@@ -69,7 +69,7 @@ export function HomePage({ market, bankDeficits, labels, badges, onPage }: {
 
     <section className="sec">
       <div className="lab"><small>03 / 최근 관리자 작업</small><p>가장 최근 5건입니다. 전체 기록은 작업 기록 탭에서 봅니다.</p>
-        <a className="link-out" href="#audit" onClick={(event) => { event.preventDefault(); onPage("audit"); }}>작업 기록</a></div>
+        <a className="link-out" href="#overview" onClick={(event) => { event.preventDefault(); onPage("overview"); }}>작업 기록</a></div>
       <div className="sec-body"><div className="scroll-x"><table><thead><tr><th>시각</th><th>관리자</th><th>작업</th></tr></thead><tbody>
         {audit.map((entry) => <tr key={entry.auditId}><td>{date(entry.time)}</td><td className="mono">{entry.actorId}</td><td className="mono">{entry.action}</td></tr>)}
       </tbody></table>{!audit.length && <p className="empty">기록이 없습니다.</p>}</div></div>
