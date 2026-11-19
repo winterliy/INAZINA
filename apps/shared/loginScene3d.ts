@@ -5,13 +5,14 @@
  * replaced by the plain SVG (scene.svg) when WebGL is missing or the person asked for less motion.
  */
 import {
-  AmbientLight, DirectionalLight, DoubleSide, ExtrudeGeometry, Group,
-  HalfFloatType, InstancedMesh, Matrix4, Mesh, MeshBasicMaterial, MeshPhysicalMaterial, MeshStandardMaterial, PerspectiveCamera,
+  AdditiveBlending, AmbientLight, DirectionalLight, DoubleSide, ExtrudeGeometry, Group,
+  HalfFloatType, InstancedMesh, Matrix4, Mesh, MeshBasicMaterial, MeshPhysicalMaterial, MeshStandardMaterial, PerspectiveCamera, TorusGeometry, Vector3,
   PMREMGenerator, RingGeometry, Scene, SphereGeometry, WebGLRenderer,
 } from "three";
 import { SVGLoader } from "three/examples/jsm/loaders/SVGLoader.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
-import { BloomEffect, EffectComposer, EffectPass, RenderPass } from "postprocessing";
+import { BloomEffect, EffectComposer, EffectPass, RenderPass, VignetteEffect } from "postprocessing";
+import { BatchedRenderer, Bezier, Vector4, ConstantColor, ConstantValue, IntervalValue, ParticleSystem, PiecewiseBezier, RenderMode, SizeOverLife, SphereEmitter } from "three.quarks";
 import { LETTERS, PERIOD } from "./Logo";
 
 const S = 0.001;                       // one SVG unit in scene units
@@ -95,6 +96,69 @@ export function mountLoginScene(container: HTMLElement): () => void {
     return { mesh, material, offset: index * 1.4 };
   });
 
+  // ---- floor reflection: the same wordmark mirrored under the baseline, faint ------------------------------------------
+  const mirror = new Group();
+  mirror.scale.set(1, -1, 1);                       // flip over the baseline (svg y = 0)
+  mirror.position.y = 120;
+  word.add(mirror);
+  const mirrored: Mesh[] = [];
+  letters.forEach(({ mesh }) => {
+    const copy = new Mesh(mesh.geometry, new MeshBasicMaterial({ color: 0x0c0c12, transparent: true, opacity: 0, depthWrite: false }));
+    copy.position.copy(mesh.position); copy.visible = false;
+    mirror.add(copy); mirrored.push(copy); disposables.push(copy.material as MeshBasicMaterial);
+  });
+
+  // ---- an orbiting ring around the period ------------------------------------------------------------------------------
+  const orbitGeometry = new TorusGeometry(1, 0.045, 12, 120);
+  disposables.push(orbitGeometry);
+  const orbits = [0, 1].map((index) => {
+    const material = new MeshBasicMaterial({ color: BLUE, transparent: true, opacity: 0.0, blending: AdditiveBlending, depthWrite: false });
+    const mesh = new Mesh(orbitGeometry, material);
+    mesh.scale.setScalar(PERIOD_CENTER.r * (2.1 + index * 0.9));
+    mesh.position.set(PERIOD_CENTER.x, PERIOD_CENTER.y, 75);
+    word.add(mesh); disposables.push(material);
+    return { mesh, material, speed: 0.5 + index * 0.35, tilt: 1.0 + index * 0.55 };
+  });
+
+  // ---- big soft blue spheres at different depths (they go out of focus and read as bokeh) -------------------------------
+  const bokehGeometry = new SphereGeometry(1, 32, 20);
+  disposables.push(bokehGeometry);
+  const bokeh = Array.from({ length: 9 }, (_, index) => {
+    const material = new MeshBasicMaterial({ color: index % 3 === 0 ? 0x7c8dff : BLUE, transparent: true, opacity: 0.28 + (index % 3) * 0.08, blending: AdditiveBlending, depthWrite: false });
+    const mesh = new Mesh(bokehGeometry, material);
+    const angle = (index / 9) * Math.PI * 2 + 0.6;
+    const radius = 1.4 + (index % 4) * 0.35;
+    mesh.position.set(Math.cos(angle) * radius, Math.sin(angle * 1.3) * 0.7, -1.2 + (index % 5) * 0.75);
+    mesh.scale.setScalar(0.05 + (index % 4) * 0.035);
+    scene.add(mesh); disposables.push(material);
+    return { mesh, base: mesh.position.clone(), phase: index * 1.7 };
+  });
+
+  // ---- particle bursts (three.quarks): the dots and the period spark when they land ------------------------------------
+  const batch = new BatchedRenderer();
+  scene.add(batch);
+  const burstMaterial = new MeshBasicMaterial({ color: 0x3b5bff, transparent: true, blending: AdditiveBlending, depthWrite: false });
+  disposables.push(burstMaterial);
+  const makeBurst = () => {
+    const system = new ParticleSystem({
+      duration: 1.2, looping: false, autoDestroy: false,
+      startLife: new IntervalValue(0.7, 1.4), startSpeed: new IntervalValue(0.35, 1.1), startSize: new IntervalValue(0.008, 0.022),
+      startColor: new ConstantColor(new Vector4(0.12, 0.25, 1, 0.8)), worldSpace: true,
+      emissionOverTime: new ConstantValue(0), emissionBursts: [{ time: 0, count: new ConstantValue(46), cycle: 1, interval: 0.01, probability: 1 }],
+      shape: new SphereEmitter({ radius: 0.04, thickness: 1, arc: Math.PI * 2 }),
+      material: burstMaterial, renderMode: RenderMode.BillBoard, renderOrder: 3,
+    });
+    system.addBehavior(new SizeOverLife(new PiecewiseBezier([[new Bezier(1, 0.85, 0.4, 0), 0]])));
+    scene.add(system.emitter); batch.addSystem(system);
+    return system;
+  };
+  const bursts = { a: makeBurst(), b: makeBurst(), c: makeBurst() };
+  const burstFired = { a: false, b: false, c: false };
+  const fire = (system: ParticleSystem, mesh: Mesh) => {
+    const position = new Vector3(); mesh.getWorldPosition(position);
+    system.emitter.position.copy(position); system.restart();
+  };
+
   // ---- sparks ------------------------------------------------------------------------------------------------------
   const SPARKS = 110;
   const sparkMaterial = new MeshBasicMaterial({ color: BLUE, transparent: true, opacity: 0.85 });
@@ -109,10 +173,11 @@ export function mountLoginScene(container: HTMLElement): () => void {
   // ---- composer ----------------------------------------------------------------------------------------------------
   const composer = new EffectComposer(renderer, { frameBufferType: HalfFloatType, multisampling: 4, alpha: true });
   composer.addPass(new RenderPass(scene, camera));
-  composer.addPass(new EffectPass(camera, new BloomEffect({ intensity: 0.8, luminanceThreshold: 0.45, luminanceSmoothing: 0.3, mipmapBlur: true, radius: 0.72 })));
+  composer.addPass(new EffectPass(camera, new BloomEffect({ intensity: 0.8, luminanceThreshold: 0.45, luminanceSmoothing: 0.3, mipmapBlur: true, radius: 0.72 }), new VignetteEffect({ offset: 0.35, darkness: 0.35 })));
 
   container.appendChild(renderer.domElement);
 
+  let baseDistance = 7, lastPeriodBurst = 0;
   const resize = () => {
     const width = Math.max(1, container.clientWidth), height = Math.max(1, container.clientHeight);
     renderer.setSize(width, height, false);
@@ -120,8 +185,7 @@ export function mountLoginScene(container: HTMLElement): () => void {
     camera.aspect = width / height;
     const visibleWidth = WORD_WIDTH * 1.32;
     const distance = visibleWidth / (2 * Math.tan((camera.fov * Math.PI) / 360) * Math.min(camera.aspect, 1.6));
-    camera.position.set(0, 0.05, distance);
-    camera.lookAt(0, 0, 0);
+    baseDistance = distance;
     camera.updateProjectionMatrix();
   };
   const observer = new ResizeObserver(resize);
@@ -142,18 +206,24 @@ export function mountLoginScene(container: HTMLElement): () => void {
     if (!running || !visible) { last = now; return; }
     const delta = Math.min(1, (now - last) / 1000); last = now; time += delta;   // wall clock: a slow machine still gets the whole intro
 
-    for (const { mesh, delay } of letters) {
+    letters.forEach(({ mesh, delay }, index) => {
       const p = clamp01((time - delay) / INTRO.letterTime);
       mesh.visible = p > 0;
       mesh.position.y = 900 * (1 - easeOutBack(p));
+      mesh.rotation.x = -1.15 * (1 - easeOutBack(p));       // each letter tips up from the baseline as it rises
       (mesh.material as MeshPhysicalMaterial).opacity = clamp01(p * 2.2);
-    }
-    for (const { mesh, rest, delay } of dots) {
+      const copy = mirrored[index];
+      copy.visible = p > 0; copy.position.copy(mesh.position); copy.rotation.copy(mesh.rotation);
+      (copy.material as MeshBasicMaterial).opacity = 0.055 * clamp01(p * 1.5);
+    });
+    dots.forEach(({ mesh, rest, delay }, index) => {
       const p = clamp01((time - delay) / INTRO.dotTime);
       mesh.visible = p > 0;
       mesh.position.y = rest - 1700 * (1 - bounce(p));
       (mesh.material as MeshStandardMaterial).opacity = clamp01(p * 3);
-    }
+      const key = index === 0 ? "a" : "b";
+      if (!burstFired[key] && p >= 0.56) { burstFired[key] = true; fire(bursts[key], mesh); }
+    });
     const pp = clamp01((time - 1.45) / 1.1);
     period.visible = pp > 0;
     period.scale.setScalar(Math.max(0.001, PERIOD_CENTER.r * easeOutBack(pp)));
@@ -166,6 +236,24 @@ export function mountLoginScene(container: HTMLElement): () => void {
       ring.mesh.scale.setScalar(scale);
       ring.material.opacity = active ? 0.5 * (1 - t) ** 1.6 : 0;
     }
+
+    if (!burstFired.c && pp >= 0.55) { burstFired.c = true; lastPeriodBurst = time; fire(bursts.c, period); }
+    else if (burstFired.c && time - lastPeriodBurst > 6.5) { lastPeriodBurst = time; fire(bursts.c, period); }
+    const orbitIn = clamp01((time - 2.4) / 1.2);
+    for (const orbit of orbits) {
+      orbit.mesh.rotation.set(orbit.tilt, time * orbit.speed, time * 0.2);
+      orbit.material.opacity = 0.42 * orbitIn;
+    }
+    for (const item of bokeh) {
+      item.mesh.position.set(item.base.x + Math.sin(time * 0.25 + item.phase) * 0.12, item.base.y + Math.cos(time * 0.3 + item.phase) * 0.09, item.base.z);
+      (item.mesh.material as MeshBasicMaterial).opacity = Math.min(0.4, clamp01((time - 0.4) / 2) * 0.4);
+    }
+    // camera: sweeps in from the side and a little closer, settles in front of the wordmark
+    const sweep = clamp01(time / 3.4), eased = 1 - Math.pow(1 - sweep, 3);
+    const angle = (1 - eased) * 0.62, distance = baseDistance * (1 + (1 - eased) * 0.5);
+    camera.position.set(Math.sin(angle) * distance, 0.05 + (1 - eased) * 0.3, Math.cos(angle) * distance);
+    camera.lookAt(0, 0, 0);
+    batch.update(delta);
 
     pointer.x += (pointer.tx - pointer.x) * 0.05; pointer.y += (pointer.ty - pointer.y) * 0.05;
     stage.rotation.y = pointer.x * 0.16 + Math.sin(time * 0.35) * 0.05;
@@ -197,7 +285,7 @@ export function mountLoginScene(container: HTMLElement): () => void {
     window.removeEventListener("pointermove", onPointer);
     document.removeEventListener("visibilitychange", onVisibility);
     for (const item of disposables) item.dispose();
-    sparks.dispose();
+    sparks.dispose(); batch.dispose?.();
     composer.dispose(); pmrem.dispose(); renderer.dispose();
     renderer.domElement.remove();
   };
