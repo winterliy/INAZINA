@@ -26,8 +26,8 @@ export function OwnershipGraph({ graph, fullScreen = false, focusedNodeId, focus
   const scrollRef = useRef<HTMLDivElement>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
   const [zoom, setZoom] = useState(1);
-  const [showAllRelationships, setShowAllRelationships] = useState(false);
-  useEffect(() => setShowAllRelationships(false), [graph]);
+  const [showAllRelationships, setShowAllRelationships] = useState(true);
+  useEffect(() => setShowAllRelationships(true), [graph]);
   useEffect(() => {
     const element = scrollRef.current;
     if (!element) return;
@@ -242,7 +242,6 @@ export function OwnershipGraph({ graph, fullScreen = false, focusedNodeId, focus
   });
 
   return <figure className={`ownership-diagram${fullScreen ? " ownership-diagram-full" : ""}${radial ? " ownership-diagram-radial" : ""}`} aria-label={userRoot ? "개인 보유 기업 지배구조" : "기업 지분 및 의결권 구조"}>
-    {graph.truncated && <p className="hint">표시 한도 때문에 일부 소수 지분이나 하위 기업이 생략됐습니다.</p>}
     {complex && <div className="ownership-layout-controls" role="group" aria-label="조직도 관계 표시">
       <button type="button" aria-pressed={simplified} onClick={() => setShowAllRelationships(false)}>주요 지배 경로</button>
       <button type="button" aria-pressed={showAllRelationships} onClick={() => setShowAllRelationships(true)}>전체 지분 관계 · {edges.length}</button>

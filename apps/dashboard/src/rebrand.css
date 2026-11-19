@@ -204,3 +204,9 @@ input.mono, select.mono { font-size: 13px; }
 .board-create-form label { display: grid; gap: 6px; color: var(--ink2); font-size: 13px; font-weight: 500; }
 .board-create-form label small { color: var(--ink2); font-size: 12px; font-weight: 400; }
 .board-create-form input { width: 100%; min-height: 40px; }
+.board-structure td, .board-structure td:first-child { border: 0 !important; border-bottom: 0 !important; }
+.board-structure .mono { font-size: 13px; }
+.board-create-form .board-create-fields { align-items: end; }
+/* a select sits at the height of the buttons next to it */
+.stage .btn, .stage .soft, .stage .outline { min-height: 40px; }
+.board-structure td, .board-structure tr:last-child td { box-shadow: none !important; }

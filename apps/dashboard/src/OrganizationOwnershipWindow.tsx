@@ -188,7 +188,6 @@ export function OrganizationOwnershipWindow({ route }: { route: string }) {
     </header>
     <div className="ownership-toolbar">
       {!personal && <button className="soft ownership-sidebar-toggle" type="button" aria-expanded={sidebarOpen} onClick={() => setSidebarOpen((open) => !open)}>{sidebarOpen ? "사이드바 닫기" : "법인 트리 열기"}</button>}
-      {graph?.truncated && <small>표시 한도로 일부 소수 지분 또는 상위 주주 경로가 생략됐습니다.</small>}
     </div>
     <div className={!personal && sidebarOpen ? "ownership-workspace" : "ownership-workspace sidebar-collapsed"}>
       {!personal && sidebarOpen && <aside className="ownership-sidebar" aria-label="법인 지분 관계 트리">
