@@ -157,3 +157,32 @@ class FundingManager:
             del entry["ladder"]
         return {"issuer": str(issuer), "as_of_epoch": when, "currencies": currencies,
                 "method": "simulator funding ledger; ACT/365 simple interest; not a regulatory measure"}
+
+    @staticmethod
+    def cashflow_projection(conn, issuer, *, now):
+        """Project active draws to contractual maturity, or to now if already overdue.
+
+        This is a current-status projection, not a historical reconstruction: rows
+        since repaid are excluded even when querying an earlier as-of time.
+        """
+        when = int(BankJournal.validate_epoch(now))
+        cashflows = []
+        for row in conn.execute("""SELECT funding_id,source_type,currency_code,decimal_places,
+                principal_minor_units,rate_bps,start_epoch,maturity_epoch FROM institution_funding
+                WHERE issuer=? AND status='active' AND start_epoch<=?
+                ORDER BY maturity_epoch,funding_id""", (str(issuer), when)):
+            maturity = int(row['maturity_epoch'])
+            settlement = max(when, maturity)
+            principal = int(row['principal_minor_units'])
+            interest = int((Decimal(principal) * int(row['rate_bps']) * (settlement - int(row['start_epoch']))
+                            / (Decimal(10000) * 365 * DAY)).to_integral_value(rounding=ROUND_HALF_UP))
+            cashflows.append({
+                'funding_id': int(row['funding_id']), 'source_type': row['source_type'],
+                'currency_code': row['currency_code'], 'decimal_places': int(row['decimal_places']),
+                'maturity_epoch': maturity, 'projected_settlement_epoch': settlement,
+                'overdue': maturity < when, 'principal_minor_units': principal,
+                'interest_minor_units': interest, 'total_minor_units': principal + interest,
+            })
+        return {'issuer': str(issuer), 'as_of_epoch': when, 'cashflows': cashflows,
+                'method': 'current active draws; ACT/365 simple interest; overdue accrues to as-of; '
+                          'not a historical reconstruction or regulatory measure'}

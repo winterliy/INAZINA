@@ -203,10 +203,6 @@ def pytest_report_to_serializable(config, report):
 SQLITE_ONLY = {
     # Fixtures built on SQLite specifics (reduced tables, the database file itself).
     "test_log_delete.py::LogDeleteTests::test_flows_are_listed_and_deleted": "creates its own reduced SQLite tables with CREATE TABLE; PostgreSQL already has the full schema",
-    "test_market_features.py::MarketFeatureTests::test_database_browser_rate_edits_apply_live": "opens the test's SQLite database file directly; PostgreSQL has no such file",
-    "test_market_features.py::MarketFeatureTests::test_system_reinitialization_preserves_browser_rates": "opens the test's SQLite database file directly; PostgreSQL has no such file",
-    "test_market_features.py::MarketFeatureTests::test_database_browser_rejects_invalid_rates": "opens the test's SQLite database file directly; PostgreSQL has no such file",
-    "test_market_features.py::MarketFeatureTests::test_equivalent_rate_and_other_settings_remain_valid": "opens the test's SQLite database file directly; PostgreSQL has no such file",
     "test_inazina.py::InazinaTests::test_only_one_database_and_cross_manager_atomic_rollback": "asserts the single SQLite database file in the test directory; PostgreSQL has no such file",
     "test_web_api.py::WebApiTests::test_compliance_overview_exposes_ecl_discount_factor": "inserts positionally into a reduced SQLite table; PostgreSQL's real table has other columns",
     "test_web_api.py::WebApiTests::test_db_editor_masks_password_columns": "creates its own reduced SQLite table with CREATE TABLE; PostgreSQL already has the full schema",
@@ -237,39 +233,27 @@ SQLITE_ONLY = {
     "test_realistic_rate_system.py::RealisticRateSystemTests::test_legacy_schedule_rows_backfill_currency_minor_units": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
     "test_shareholder_register.py::ShareholderRegisterTests::test_legacy_dividend_payment_key_migrates_without_losing_rows": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
     "test_shareholder_register.py::ShareholderRegisterTests::test_legacy_dr_withholding_rows_migrate_to_currency_minor_units": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
-    # financial_amount_snapshots is not carried to PostgreSQL (redesign pending)
-    "test_currency_account_storage.py::CurrencyAccountStorageTests::test_amount_audit_checks_registered_schema_even_when_source_table_is_empty": "financial_amount_snapshots is not carried to PostgreSQL (redesign pending)",
-    "test_currency_account_storage.py::CurrencyAccountStorageTests::test_amount_audit_supports_rowid_keys_for_legacy_composite_tables": "financial_amount_snapshots is not carried to PostgreSQL (redesign pending)",
-    "test_currency_account_storage.py::CurrencyAccountStorageTests::test_amount_field_coverage_flags_new_unregistered_money_columns": "financial_amount_snapshots is not carried to PostgreSQL (redesign pending)",
-    "test_currency_account_storage.py::CurrencyAccountStorageTests::test_late_dividend_amount_field_uses_each_currency_scale": "financial_amount_snapshots is not carried to PostgreSQL (redesign pending)",
-    "test_currency_account_storage.py::CurrencyAccountStorageTests::test_late_initialized_financial_schemas_are_included_in_amount_registry": "financial_amount_snapshots is not carried to PostgreSQL (redesign pending)",
-    "test_currency_account_storage.py::CurrencyAccountStorageTests::test_registered_currency_amount_snapshots_reconcile_to_source_rows": "financial_amount_snapshots is not carried to PostgreSQL (redesign pending)",
-    "test_currency_account_storage.py::CurrencyAccountStorageTests::test_market_event_target_snapshots_use_asset_code_and_rowid": "inspects the SQLite-only financial_amount_snapshots table; PostgreSQL inventory redesign is pending",
-    "test_financial.py::FinancialTests::test_closed_wallet_period_survives_restart_and_reports_snapshot_drift": "financial_amount_snapshots is not carried to PostgreSQL (redesign pending)",
+    # financial_amount_snapshots is SQLite-only; PostgreSQL checks the NUMERIC *_units columns instead (amount_field_coverage)
+    "test_currency_account_storage.py::CurrencyAccountStorageTests::test_amount_audit_supports_rowid_keys_for_legacy_composite_tables": "financial_amount_snapshots is SQLite-only; PostgreSQL checks the NUMERIC *_units columns instead (amount_field_coverage)",
+    "test_currency_account_storage.py::CurrencyAccountStorageTests::test_late_dividend_amount_field_uses_each_currency_scale": "financial_amount_snapshots is SQLite-only; PostgreSQL checks the NUMERIC *_units columns instead (amount_field_coverage)",
+    "test_currency_account_storage.py::CurrencyAccountStorageTests::test_registered_currency_amount_snapshots_reconcile_to_source_rows": "financial_amount_snapshots is SQLite-only; PostgreSQL checks the NUMERIC *_units columns instead (amount_field_coverage)",
+    "test_currency_account_storage.py::CurrencyAccountStorageTests::test_market_event_target_snapshots_use_asset_code_and_rowid": "inspects the SQLite-only financial_amount_snapshots table; PostgreSQL checks the NUMERIC *_units columns instead",
+    "test_financial.py::FinancialTests::test_closed_wallet_period_survives_restart_and_reports_snapshot_drift": "financial_amount_snapshots is SQLite-only; PostgreSQL checks the NUMERIC *_units columns instead (amount_field_coverage)",
     # Startup migrations of legacy SQLite data are not run on PostgreSQL, which starts
     # from the current schema.
     "test_currency_account_storage.py::CurrencyAccountStorageTests::test_market_order_reservation_migration_backfills_and_is_idempotent": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
-    "test_credit_score.py::CreditScoreTests::test_year_scale_policy_rows_move_to_simulator_defaults": "exercises SQLite startup migration of legacy policy rows; PostgreSQL starts from the current schema",
     # reads the amount-field registry that is not carried to PostgreSQL
-    "test_currency_account_storage.py::CurrencyAccountStorageTests::test_mode_dependent_price_event_value_is_not_blanket_exempted": "financial_amount_snapshots is not carried to PostgreSQL (redesign pending)",
     # build a reduced SQLite fixture schema with raw DDL and assert on it
     "test_web_api.py::WebApiTests::test_admin_countries_returns_auditable_income_source_tax_overrides": "adds legacy columns and tables with raw SQLite DDL (base_rate DEFAULT 3)",
     "test_web_api.py::WebApiTests::test_admin_users_separates_people_from_company_accounts": "creates SQLite-only company_accounts and country_treasuries fixture tables",
     "test_web_api.py::WebApiTests::test_audit_and_events_are_read_from_the_database": "relies on a market_events fixture without the target_mode column",
     "test_web_api.py::WebApiTests::test_dr_web_ledgers_distinguish_holder_basis_from_custody_pool_basis": "creates reduced SQLite depositary-receipt fixture tables",
-    # These tests explicitly lock or corrupt a separate SQLite file; PostgreSQL
-    # needs its own concurrent-writer and integrity-audit coverage.
-    "test_auto_target_market.py::AutoTargetMarketTests::test_busy_price_database_rolls_back_cycle_creation_and_stochastic_state": "uses sqlite3 BEGIN IMMEDIATE on the local database file",
-    "test_stochastic_market.py::StochasticMarketTests::test_busy_price_database_rolls_back_its_stochastic_state": "uses sqlite3 BEGIN IMMEDIATE on the local database file",
-    "test_stochastic_market.py::StochasticMarketTests::test_busy_event_price_rolls_back_goal_noise_jump_marker_and_model_state": "uses sqlite3 BEGIN IMMEDIATE on the local database file",
-    "test_movement_daily.py::MovementDailyTests::test_external_write_lock_skips_quickly_and_retries_without_marking_date": "uses sqlite3 BEGIN IMMEDIATE on the local database file",
+    # This test corrupts an SQLite file with disabled foreign keys.
     "test_currency_account_storage.py::CurrencyAccountStorageTests::test_financial_reconciliation_reports_dangling_declared_references": "uses a raw SQLite connection with PRAGMA foreign_keys=OFF to inject corruption",
     # asserts SQLite EXPLAIN QUERY PLAN output
     "test_market_features.py::MarketFeatureTests::test_exercise_cash_link_lookup_uses_event_index": "asserts SQLite EXPLAIN QUERY PLAN output",
     # plants a corrupt row with PRAGMA ignore_check_constraints, which PostgreSQL cannot do
     "test_market_features.py::MarketFeatureTests::test_put_collateral_reconciliation_detects_invalid_event_precision": "plants a corrupt row with PRAGMA ignore_check_constraints",
-    "test_query_plans.py::QueryPlanTests::test_active_loan_total_uses_user_partial_index": "asserts SQLite EXPLAIN QUERY PLAN output",
-    "test_query_plans.py::QueryPlanTests::test_recent_user_orders_use_updated_index": "asserts SQLite EXPLAIN QUERY PLAN output",
 }
 
 

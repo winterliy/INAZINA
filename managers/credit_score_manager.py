@@ -244,9 +244,18 @@ class CreditScoreManager:
             NotificationManager.add(
                 conn, user_id, "credit_score",
                 "신용점수가 올랐습니다" if change > 0 else "신용점수가 내려갔습니다",
-                f"{previous}점 → {int(result['score'])}점 ({change:+d})",
+                cls._change_text(previous, result, change),
                 dedupe_key=f"credit:{user_id}:{time.time_ns()}", now=int(now))
         return result["score"]
+
+    @staticmethod
+    def _change_text(previous, result, change):
+        """The notification body: the move, then what the score is made of (the wallet only keeps the bar)."""
+        parts = sorted(((FACTOR_LABELS.get(key, key), value) for key, value in result["factors"].items() if abs(value) >= 0.5),
+                       key=lambda item: -abs(item[1]))[:8]
+        lines = [f"{previous}점 → {int(result['score'])}점 ({change:+d})"]
+        lines += [f"{label} {value:+g}" for label, value in parts]
+        return "\n".join(lines)
 
     @classmethod
     def record(cls, conn, user_id, event_type, reference, *, occurred_epoch=None, now=None,

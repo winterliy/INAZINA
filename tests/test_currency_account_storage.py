@@ -737,7 +737,6 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             for item in after["unclassified"]
         ), after)
 
-    @unittest.skipIf(pg_backend.enabled(), "the amount-field registry and exemptions are not carried to PostgreSQL")
     def test_market_event_target_value_is_a_documented_exemption_because_price_targets_are_registered_elsewhere(self):
         with self.db.atomic() as conn:
             conn.execute("""INSERT INTO market_events

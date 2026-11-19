@@ -80,3 +80,5 @@ button.rate-refresh.rate-refresh.spinning svg { animation: rate-spin .8s linear 
 @keyframes rate-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { button.rate-refresh.rate-refresh.spinning svg { animation: none; opacity: .5; } }
 .hts-topbar .top-actions button.rate-refresh.rate-refresh { min-height: 22px; padding: 0; }
+
+.bell-body p { white-space: pre-line; }

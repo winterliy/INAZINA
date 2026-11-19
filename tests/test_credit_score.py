@@ -201,6 +201,9 @@ class CreditScoreTests(unittest.TestCase):
             notes = [n for n in NotificationManager.list(conn, "borrower") if n["kind"] == "credit_score"]
         self.assertEqual([n["title"] for n in notes], ["신용점수가 올랐습니다", "신용점수가 내려갔습니다"])
         self.assertRegex(notes[1]["body"], r"점 → .*\(-\d+\)")
+        # what the score is made of travels in the notification; the wallet keeps only the bar
+        self.assertIn("\n", notes[1]["body"])
+        self.assertRegex(notes[1]["body"], r"납부 연체 기록 -\d")
 
     def test_only_stacked_new_loans_lower_the_score(self):
         for code in ("N1", "N2", "N3"):

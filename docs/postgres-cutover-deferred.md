@@ -6,18 +6,19 @@ PostgreSQL을 운영 DB로 전환할 때(`INAZINA_DB_BACKEND=postgres`) 반드�
 현재 상태: 테스트는 SQLite 전체 통과, PostgreSQL 전체 통과(`SQLITE_ONLY` 제외).
 
 ## 1. 금액 스냅샷 점검은 PostgreSQL에서 원본 직접 점검으로 대체했다
-- `financial_amount_snapshots`, 필드 등록부, 면제 목록은 PostgreSQL에 싣지 않는다(`DROPPED`). PostgreSQL의 금액은
-  정확한 NUMERIC이라 SQLite의 정수 복사본이 필요 없다.
-- `audit_amount_snapshots`는 PostgreSQL에서 모든 NUMERIC `*_units` 열에 소수 단위가 섞였는지 원본 표를 직접 점검한다
+- `financial_amount_snapshots`는 PostgreSQL에 싣지 않는다(`DROPPED`). PostgreSQL의 금액은
+  정확한 NUMERIC이며 필드 등록부와 면제 목록은 이관한다.
+- `audit_amount_snapshots`는 PostgreSQL에서 등록된 원본 필드의 존재와 모든 NUMERIC `*_units` 열의 소수 단위를 직접 점검한다
   (`tests/test_pg_amount_audit.py`). 삭제된 행의 스냅샷이나 미등록 열 후보 점검은 SQLite 전용이다.
-- `audit_amount_field_coverage`는 여전히 `skipped`로 이유를 남긴다. 전환 시 운영 화면에도 이 차이를 알린다.
+- `audit_amount_field_coverage`는 이관된 등록부와 면제 목록을 사용해 미분류 금액 필드를 확인한다.
+  기존 PostgreSQL DB에는 현재 코드로 초기화한 SQLite DB 사본을 사용해
+  `tools/migrate_postgres_amount_registry.py`를 실행해야 한다. 등록부가 없으면 정상으로 처리하지 않는다.
 
-## 2. `INSERT OR REPLACE` 위험 4가지
-`docs/postgres-replace-audit.md`에 기록돼 있다. 코드는 고치지 않았다.
-- 금리 이력 트리거: SQLite는 INSERT, PostgreSQL은 UPDATE 이벤트로 기록해 원장 대조 기준이 다르다.
-- ELS 상품 이전: 청약이 있으면 불변 트리거가 거부할 수 있다.
-- 저축·대출 등록 헬퍼: `bank_products`에서 같은 코드를 공유해 서로 덮을 수 있다.
-- 회생·파산 정책 REPLACE.
+## 2. ELS 이전 시 중복 상품 처리
+금리 이력, 상품 등록 및 회생·파산 정책의 REPLACE 위험은 명시적인 갱신으로 처리했다.
+ELS 이전은 기존 상품과 이전 데이터의 코드가 겹치면 자동 이전을 중단하고 양쪽 데이터를
+보존한다. 중복이 있으면 운영자가 내용과 청약을 확인해 정리한 뒤 이전을 다시 실행해야 한다.
+세부 내용은 `docs/postgres-replace-audit.md`를 참고한다.
 
 ## 3. `SQLITE_ONLY` 테스트는 PostgreSQL 커버리지가 없다
 `tests/conftest.py`의 `SQLITE_ONLY` 목록(이유가 각 항목에 적혀 있다). 전환 전에 목록을 다시 검토해,

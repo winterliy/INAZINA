@@ -29,7 +29,7 @@ export type Ctx = {
 export function Card({ title, caption, actions, children, className = "" }: { title: string; caption?: ReactNode; actions?: ReactNode; children?: ReactNode; className?: string }) {
   return <section className={`glass card mb rise ${className}`}>
     <div className="card-head"><div><h2>{title}</h2>{caption && <p className="cap">{caption}</p>}</div>{actions && <div className="actions">{actions}</div>}</div>
-    {children}
+    <div className="card-body">{children}</div>
   </section>;
 }
 

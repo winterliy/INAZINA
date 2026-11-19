@@ -28,8 +28,9 @@ function run(args: string[]): Promise<string> {
 // Entry password attempts: one JSON line each (time, address, location, verdict, and only the
 // LENGTH of what was typed — no password, right or wrong, is ever written down). Read back, newest first, by
 // the entry screen's hidden log view. This is the one thing the viewer writes.
-const ENTRY_LOG = join(root, "database/wl-entry-log.jsonl");
-const security = wlSecurity(root);
+// Both files can be moved with an environment variable (used by tests that must not touch the real ones).
+const ENTRY_LOG = process.env.INAZINA_WL_ENTRY_LOG ?? join(root, "database/wl-entry-log.jsonl");
+const security = wlSecurity(root, process.env.INAZINA_WL_SECURITY_PATH);
 
 // A small JSON body (at most 4 KB), read whole; a bad one answers 400.
 function readJson(request: IncomingMessage, response: ServerResponse, done: (body: Record<string, unknown>) => void) {

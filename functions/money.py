@@ -135,13 +135,28 @@ def _audit_postgres_minor_units(conn):
     The risk the snapshots guard against there (a drifted or fractional amount) is checked on the
     source tables directly: every NUMERIC ``*_units`` column must hold whole minor units.
     """
+    from database import pg_backend
+
     findings = []
     columns = conn.execute(
-        "SELECT table_name, column_name FROM information_schema.columns "
-        "WHERE table_schema = current_schema() AND data_type = 'numeric' "
-        "AND column_name LIKE '%\\_units' ESCAPE '\\' ORDER BY table_name, column_name").fetchall()
+        "SELECT table_name, column_name, data_type FROM information_schema.columns "
+        "WHERE table_schema = current_schema() ORDER BY table_name, column_name").fetchall()
+    by_table = {}
+    for table, field, _ in columns:
+        by_table.setdefault(str(table), set()).add(str(field))
+    if "financial_amount_field_registry" not in by_table:
+        return [{"status": "missing_inventory"}]
+    for source_table, key_field, field in conn.execute(
+            "SELECT source_table,source_key_field,amount_field FROM financial_amount_field_registry"):
+        table = pg_backend.target_table(str(source_table))
+        available = by_table.get(table, set())
+        if str(key_field) not in available or str(field) not in available:
+            findings.append({"source_table": str(source_table), "source_key": "*",
+                             "amount_field": str(field), "status": "missing_source_field"})
     for row in columns:
         table, field = str(row[0]), str(row[1])
+        if row[2] != "numeric" or not field.endswith("_units"):
+            continue
         if not all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in (table, field)):
             continue
         bad = conn.execute(
@@ -270,13 +285,6 @@ def audit_amount_field_coverage(conn):
     ``price`` always represent currency.
     """
     from database import pg_backend
-    if pg_backend.enabled():
-        # "matched" only because nothing could be compared: callers can see this
-        # report covers fewer checks than SQLite via ``skipped``.
-        return {"status": "matched", "registered_count": 0,
-                "exempt_count": 0, "unclassified": [],
-                "skipped": "amount_field_registry is not carried to PostgreSQL; "
-                           "audit_amount_snapshots checks NUMERIC *_units columns for fractional values instead"}
     table_exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='financial_amount_field_registry'"
     ).fetchone()
@@ -293,6 +301,10 @@ def audit_amount_field_coverage(conn):
     exemptions = {(str(row[0]), str(row[1])) for row in conn.execute(
         "SELECT source_table,amount_field FROM financial_amount_field_exemptions"
     ).fetchall()}
+    if pg_backend.enabled():
+        # PostgreSQL consolidates some SQLite source tables under new names.
+        registered = {(pg_backend.target_table(table), field) for table, field in registered}
+        exemptions = {(pg_backend.target_table(table), field) for table, field in exemptions}
     money_tokens = {
         "amount", "balance", "price", "cost", "fee", "tax", "cash", "principal",
         "income", "revenue", "proceeds", "premium", "capital", "allowance", "payout",
@@ -305,7 +317,7 @@ def audit_amount_field_coverage(conn):
         "volatility", "liquidity", "kind", "status", "type", "cycle", "number", "mode",
         "active", "insured", "priority", "remainder", "factor", "weight", "stage", "date", "time",
     }
-    numeric_types = {"REAL", "FLOAT", "DOUBLE", "NUMERIC", "INTEGER", "INT"}
+    numeric_types = {"REAL", "FLOAT", "DOUBLE", "DOUBLE PRECISION", "NUMERIC", "DECIMAL", "INTEGER", "INT", "BIGINT"}
     unclassified = []
     tables = conn.execute("PRAGMA table_list").fetchall()
     for table_row in tables:
@@ -315,7 +327,7 @@ def audit_amount_field_coverage(conn):
         for column in conn.execute(f'PRAGMA table_info("{table}")').fetchall():
             field, declared_type = str(column[1]), str(column[2] or "").upper()
             key = (table, field)
-            if declared_type not in numeric_types:
+            if declared_type not in numeric_types and key != ("market_events", "target_value"):
                 continue
             # target_value is a percentage for most events, but a quote-currency
             # amount for explicit price-target events. Do not blanket-exempt the

@@ -6,6 +6,7 @@ import { api, appUrl, clearToken, signedOut, type ApiUser } from "../../shared/a
 import { AuthPanel } from "../../shared/AuthPanel";
 import { Card, plain, type Ctx } from "./common";
 import { TopBar } from "./TopBar";
+import { Logo } from "../../shared/Logo";
 import { PageHead } from "./PageHead";
 import { HomePage } from "./HomePage";
 import { Footer } from "./Footer";
@@ -16,6 +17,7 @@ const ExchangesPage = lazy(() => import("./ExchangesPage").then((module) => ({ d
 const CompaniesPage = lazy(() => import("./CompaniesPage").then((module) => ({ default: module.CompaniesPage })));
 const WarningsCard = lazy(() => import("./WarningsCard").then((module) => ({ default: module.WarningsCard })));
 const IdentityCard = lazy(() => import("./IdentityCard").then((module) => ({ default: module.IdentityCard })));
+const CourtPage = lazy(() => import("./CourtPage").then((module) => ({ default: module.CourtPage })));
 const FeedbackPage = lazy(() => import("./FeedbackPage").then((module) => ({ default: module.FeedbackPage })));
 const LoginHistoryCard = lazy(() => import("./LoginHistoryCard").then((module) => ({ default: module.LoginHistoryCard })));
 // lazy() erases the generic parameter of LogCard<T>; restore the component type so rows/idOf keep their row type.
@@ -36,7 +38,7 @@ const AccountPage = lazy(() => import("./AccountPage").then((module) => ({ defau
 const OrganizationPage = lazy(() => import("./OrganizationPage").then((module) => ({ default: module.OrganizationPage })));
 const OrganizationOwnershipWindow = lazy(() => import("./OrganizationOwnershipWindow").then((module) => ({ default: module.OrganizationOwnershipWindow })));
 
-type Page = "home" | "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "feedback" | "board" | "documents" | "credit" | "accounting" | "close" | "events" | "liquidity" | "commands" | "database" | "security" | "audit" | "ownership";
+type Page = "home" | "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "court" | "feedback" | "board" | "documents" | "credit" | "accounting" | "close" | "events" | "liquidity" | "commands" | "database" | "security" | "audit" | "ownership";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
 type Instrument = { code: string; name: string; type: string; price: Money; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
 type Exchange = { exchange_id: string; status: string; reason: string | null; trading_halted: number; updated_epoch: number | null; resume_epoch: number | null; circuit_stage: number | null };
@@ -62,6 +64,7 @@ const pages: { id: Page; label: string }[] = [
   { id: "organizations", label: "기업 구조" },
   { id: "users", label: "계정관리" },
   { id: "naturalization", label: "귀화심사" },
+  { id: "court", label: "회생·파산" },
   { id: "feedback", label: "문의·신고" },
   { id: "board", label: "게시판 관리" },
   { id: "credit", label: "신용위험" },
@@ -86,6 +89,7 @@ const subtitles: Record<Page, string> = {
   companies: "법인 현금·보유자산·통장·대출을 보고 법인 계정으로 매수·매도·송금·대출을 실행합니다.",
   organizations: "기업 규모와 공공 분류, 주식 종류별 권리, 기업집단 및 지분·의결권 구조를 관리합니다.",
   naturalization: "Discord /귀화신청으로 들어온 신청을 심사합니다. 승인하면 신청자의 자산을 정리하고 국적을 옮깁니다.",
+  court: "나루 회생 · 파산 탭으로 들어온 신청을 심리하고 인가·기각합니다. 결정은 신청자에게 Discord DM으로 전달됩니다.",
   feedback: "공식 사이트의 Contact·Report로 들어온 문의와 신고를 확인하고 처리합니다.",
   documents: "약관·처리방침·규칙·도움말과 Discord 등록 안내문을 고치고 확정합니다.",
   board: "나루 게시판의 신고를 처리하고 글을 숨기거나 고정합니다. 익명 글의 실제 작성자와 IP를 확인할 수 있습니다.",
@@ -384,20 +388,20 @@ export default function App() {
   if (user.role !== "admin") {
     return <Stage><div className="shell">
       <header className="gnav"><div className="gnav-in">
-        <div className="brand"><strong>INAZINA</strong><small>내 Dashboard</small></div>
-        <div className="gnav-meta"><a className="gnav-link" href={appUrl("hts")}>나루 열기</a><button type="button" onClick={logout}>{user.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button></div>
+        <a className="gnav-logo" href="#account" aria-label="inazina 내 대시보드"><Logo /></a>
+        <div className="gnav-meta"><a className="gnav-text" href={appUrl("hts")}>나루 열기 ↗</a><button type="button" className="gnav-text" onClick={logout}>{user.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button></div>
       </div></header>
-      <main className="content">
+      <main className="content user-view">
         {user.delegatedBy && <div className="notice" role="status"><span>관리자 {user.delegatedByName ?? user.delegatedBy}님이 {user.nickname} 계정으로 로그인 중입니다.</span></div>}
         {notice && <div className={notice.error ? "notice error" : "notice"} role={notice.error ? "alert" : "status"}><span>{notice.text}</span><button type="button" className="ghost" aria-label="알림 닫기" onClick={() => setNotice(null)}>×</button></div>}
         <Suspense fallback={<p className="loading">계정 화면을 불러오는 중…</p>}><AccountPage ctx={ctx} user={user} onLogout={logout} /></Suspense>
-        <p className="foot">© INAZINA. All rights reserved.</p>
+        <footer className="bot"><div className="bot-in"><span className="bot-status"><b>inazina</b></span><span>© INAZINA. All rights reserved.</span></div></footer>
       </main>
     </div></Stage>;
   }
 
   const current = pages.find((item) => item.id === page)!;
-  const searchable = page === "instruments" || page === "finance" || page === "exchanges" || page === "companies" || page === "users" || page === "feedback" || page === "board" || page === "database" || page === "accounting";
+  const searchable = page === "instruments" || page === "finance" || page === "exchanges" || page === "companies" || page === "users" || page === "court" || page === "feedback" || page === "board" || page === "database" || page === "accounting";
   const labels = new Map<string, string>(pages.filter((item) => item.id !== "account" && item.id !== "ownership").map((item) => [item.id, item.label]));
   const badges = { feedback: unreadFeedback, naturalization: pendingNaturalization };
 
@@ -431,6 +435,7 @@ export default function App() {
         {page === "documents" && <DocumentsPage ctx={ctx} />}
         {page === "credit" && <CompliancePage ctx={ctx} />}
         {page === "accounting" && <BanksPage ctx={ctx} />}
+        {page === "court" && <CourtPage ctx={ctx} />}
         {page === "feedback" && <FeedbackPage ctx={ctx} onChange={() => void loadUnread()} />}
         {page === "naturalization" && <NaturalizationPage ctx={ctx} onChange={() => void loadUnread()} />}
         {page === "liquidity" && <LiquidityPage ctx={ctx} />}

@@ -1,6 +1,4 @@
-import hashlib
 import io
-import os
 import tempfile
 import unittest
 from contextlib import closing
@@ -19,10 +17,9 @@ class CountryAccountTests(unittest.TestCase):
         self.old_database_dir = DBManager.database_dir
         self.old_database = server.DATABASE
         from web_api import security_store
-        self.old_security = (security_store.STORE, security_store.ATTEMPTS, os.environ.get("INAZINA_BROWSER_PASSWORD_SHA256"))
-        security_store.STORE = Path(self.tempdir.name) / "security.json"
+        self.old_attempts = security_store.ATTEMPTS
         security_store.ATTEMPTS = Path(self.tempdir.name) / "browser-access.log.jsonl"
-        os.environ["INAZINA_BROWSER_PASSWORD_SHA256"] = hashlib.sha256(b"TestPass123").hexdigest()
+        server._browser_login_attempts.clear()
         root = Path(self.tempdir.name)
         DBManager.database_dir = root
         server.DATABASE = root / "inazina.db"
@@ -53,11 +50,7 @@ class CountryAccountTests(unittest.TestCase):
         DBManager.database_dir = self.old_database_dir
         server.DATABASE = self.old_database
         from web_api import security_store
-        security_store.STORE, security_store.ATTEMPTS, previous = self.old_security
-        if previous is None:
-            os.environ.pop("INAZINA_BROWSER_PASSWORD_SHA256", None)
-        else:
-            os.environ["INAZINA_BROWSER_PASSWORD_SHA256"] = previous
+        security_store.ATTEMPTS = self.old_attempts
         self.tempdir.cleanup()
 
     def test_country_id_is_the_treasury_id_and_country_password_login_works(self):
@@ -187,48 +180,69 @@ class CountryAccountTests(unittest.TestCase):
         handler.do_GET()
         return handler.send_response.call_args[0][0], b"".join(call.args[0] for call in handler.wfile.write.call_args_list)
 
-    def test_browser_on_data_service_port_requires_one_shot_password_for_json(self):
-        status, body = self._get("/", "text/html,application/xhtml+xml")
-        self.assertEqual(status, 200)
-        self.assertIn("상태 확인 (JSON)".encode(), body)
-        self.assertIn(b'href="/internal/health"', body)
-        status, body = self._get("/internal/health", "text/html,application/xhtml+xml")
-        self.assertEqual(status, 401)
-        self.assertIn("API 비밀번호".encode(), body)
-        self.assertIn(b"/__browser-access", body)
+    def _post_access(self, fields, port=12345):
+        from urllib.parse import urlencode
         handler = object.__new__(server.Handler)
-        payload = b"password=TestPass123&target=%2Finternal%2Fhealth"
+        payload = urlencode({"target": "/internal/health", **fields}).encode()
         handler.path = "/__browser-access"
         handler.headers = {"content-length": str(len(payload))}
         handler.rfile = io.BytesIO(payload)
-        handler.client_address = ("127.0.0.1", 12345)
+        handler.client_address = ("127.0.0.1", port)
         handler.send_response = Mock()
         handler.send_header = Mock()
         handler.end_headers = Mock()
         handler.wfile = Mock()
         handler.do_POST()
+        return handler
+
+    def test_browser_on_data_service_port_signs_in_with_an_administrator_account(self):
+        from unittest.mock import patch
+        status, body = self._get("/", "text/html,application/xhtml+xml")
+        self.assertEqual(status, 200)
+        # the first screen is the plain information page; the sign-in only opens from "상태 확인"
+        self.assertNotIn(b"/__browser-access", body)
+        self.assertIn("/?login".encode(), body)
+        status, body = self._get("/?login", "text/html,application/xhtml+xml")
+        self.assertEqual(status, 200)
+        self.assertIn("관리자 로그인".encode(), body)
+        self.assertIn(b"/__browser-access", body)
+        self.assertNotIn(b"0000000", body)  # the emergency passcode is never printed
+        status, body = self._get("/internal/health", "text/html,application/xhtml+xml")
+        self.assertEqual(status, 401)
+        self.assertIn("로그인이 필요합니다".encode(), body)
+        self.assertIn(b"/internal/health", body)
+
+        # An administrator's dashboard id and password open it; nothing is set as a cookie.
+        with patch.object(server, "authenticate_login_identifier", return_value=({"userId": "1", "role": "admin"}, True)), \
+                patch.object(server, "record_admin_login"):
+            handler = self._post_access({"loginId": "admin-id", "password": "whatever"})
         self.assertEqual(handler.send_response.call_args.args[0], 200)
         self.assertFalse(any(call.args[0].lower() == "set-cookie" for call in handler.send_header.call_args_list))
-        self.assertIn(("content-type", "application/json; charset=utf-8"),
-                      [call.args for call in handler.send_header.call_args_list])
         response = b"".join(call.args[0] for call in handler.wfile.write.call_args_list)
         self.assertIn(b'"service":"inazina-python-data"', response)
-        status, body = self._get("/internal/health", "text/html")
-        self.assertEqual(status, 401)
-        self.assertIn("API 비밀번호".encode(), body)
-        wrong = object.__new__(server.Handler)
-        wrong_payload = b"password=wrong&target=%2Finternal%2Fhealth"
-        wrong.path = "/__browser-access"
-        wrong.headers = {"content-length": str(len(wrong_payload))}
-        wrong.rfile = io.BytesIO(wrong_payload)
-        wrong.client_address = ("127.0.0.1", 12346)
-        wrong.send_response = Mock()
-        wrong.send_header = Mock()
-        wrong.end_headers = Mock()
-        wrong.wfile = Mock()
-        wrong.do_POST()
+
+        # A user who is not an administrator, and a wrong password, are turned away.
+        with patch.object(server, "authenticate_login_identifier", return_value=({"userId": "2", "role": "user"}, True)), \
+                patch.object(server, "record_admin_login"):
+            plain = self._post_access({"loginId": "someone", "password": "x"}, 12346)
+        self.assertEqual(plain.send_response.call_args.args[0], 303)
+        with patch.object(server, "authenticate_login_identifier", return_value=(None, True)), patch.object(server, "record_admin_login"):
+            wrong = self._post_access({"loginId": "admin-id", "password": "wrong"}, 12347)
         self.assertEqual(wrong.send_response.call_args.args[0], 303)
         self.assertIn(("Location", "/"), [call.args for call in wrong.send_header.call_args_list])
+
+        # The emergency passcode opens it with no id and no database lookup, and the log says so.
+        with patch.object(server, "authenticate_login_identifier", side_effect=AssertionError("the database must not be asked")):
+            emergency = self._post_access({"password": "0000000"}, 12348)
+        self.assertEqual(emergency.send_response.call_args.args[0], 200)
+        # ... and only the up/down answer, even when another address was asked for
+        with patch.object(server, "authenticate_login_identifier", side_effect=AssertionError("the database must not be asked")):
+            other = self._post_access({"password": "0000000", "target": "/internal/auth/countries"}, 12349)
+        self.assertEqual(other.send_response.call_args.args[0], 200)
+        self.assertIn(b'"service":"inazina-python-data"', b"".join(call.args[0] for call in other.wfile.write.call_args_list))
+        from web_api import security_store
+        rows = security_store.recent_attempts(10)
+        self.assertEqual([(row["ok"], row["via"]) for row in rows[:5]], [(True, "emergency"), (True, "emergency"), (False, "login"), (False, "login"), (True, "login")])
         # Programmatic callers without the internal token still get the JSON error.
         status, body = self._get("/internal/me", "*/*")
         self.assertEqual(status, 401)

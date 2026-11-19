@@ -1,8 +1,17 @@
 # PostgreSQL 전환 전 REPLACE 점검
 
+## 처리 결과 (2026-11-18 이후)
+
+- 금리 이력은 명시적인 충돌 갱신을 사용해 두 DB에서 같은 감사 이벤트를 남긴다.
+- ELS 이전은 기존 상품 코드가 겹치면 이전을 중단하고 기존 상품·청약·이전 원본을 보존한다. 중복은 운영자가 확인해야 한다.
+- 저축·대출 등록은 다른 종류의 같은 코드를 거부하고 거래 제한 등 생략된 설정을 보존한다. 투자 상품과 자산도 명시적으로 갱신한다.
+- 회생·파산 정책은 기본키 충돌 시 명시적으로 갱신해 삭제·재삽입을 피한다.
+
+아래는 수정 전 점검 기록이다. 임의의 `INSERT OR REPLACE`에 대한 변환기의 모든 SQLite·PostgreSQL 차이가 사라진 것은 아니다.
+
 점검 기준: `INSERT OR REPLACE`와 `REPLACE INTO` 소스 검색, DB 사본의 고유 인덱스·외래 키·트리거, PostgreSQL SQL 변환기 및 생성 트리거. SQLite는 기본 설정에서 REPLACE의 암묵적 삭제에 DELETE 트리거를 실행하지 않는다. `recursive_triggers` 설정을 바꾸면 동작이 달라진다. PostgreSQL 변환은 기본키 충돌에서 `ON CONFLICT DO UPDATE`를 사용하므로 UPDATE 트리거가 실행되고, 기본키 외의 고유 제약 충돌을 REPLACE로 처리하지 않는다.
 
-## 운영 전환 전 처리할 위험
+## 수정 전 확인한 위험
 
 1. `database/currency_db.py`의 국가 금리 이력 트리거 4곳, 시장 금리 곡선 이력 트리거 2곳과 `managers/rate_manager.py`의 시장 금리 이력 기록 2곳은 복합 기본키를 사용한다. 같은 키를 덮을 때 SQLite는 삽입 이벤트를 남기지만 PostgreSQL은 UPDATE 이벤트를 남긴다. 시장 금리 이력은 BEFORE INSERT의 `replace` 기록도 있어서 PostgreSQL에서 `replace`와 `update`가 함께 남을 수 있다. 이력 이벤트의 의미와 원장 대조를 양쪽에서 동일하게 정의하고 충돌 재현 테스트를 추가한 뒤 전환해야 한다.
 2. `database/els_db.py`의 이전 ELS 상품 이전은 `els_products` 기본키 충돌 시 PostgreSQL에서 UPDATE를 실행한다. 이미 청약이 있으면 발행조건 UPDATE 불변 트리거가 이를 거부할 수 있다. 이전 DB 사본에서 상품 중복과 청약 존재를 점검하고, 불변 계약을 덮지 않는 이전 정책과 양쪽 DB 검증을 마련해야 한다.

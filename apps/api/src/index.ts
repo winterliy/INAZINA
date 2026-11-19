@@ -33,7 +33,8 @@ const pythonWorkers = Math.max(1, Math.min(8, Number(process.env.INAZINA_PYTHON_
 const pythonPorts = Array.from({ length: pythonWorkers }, (_, index) => pythonPort + index);
 let nextPythonPort = 0;
 const internalToken = randomBytes(32).toString("hex");
-const browserPasswordHash = process.env.INAZINA_BROWSER_PASSWORD_SHA256 || "04b2ad6979a436129b5f30cd00a3804bd87fc8bef73b0bb38640bf49a8479c64";
+// Typed as the password with no id (or any id), this opens the API pages even when the database or Python service is down.
+const emergencyPasscode = "0000000";
 const browserLoginAttempts = new Map<string, { count: number; resetAt: number }>();
 const authSecret = process.env.INAZINA_AUTH_SECRET || randomBytes(32).toString("hex");
 const sessionCookie = "inazina_session";
@@ -57,7 +58,7 @@ function startPython(workerPort: number): ChildProcess {
   const child = spawn(python, [join(projectRoot, "web_api", "server.py")], {
     cwd: projectRoot,
     env: { ...process.env, INAZINA_INTERNAL_TOKEN: internalToken,
-      INAZINA_BROWSER_PASSWORD_SHA256: browserPasswordHash, INAZINA_PYTHON_PORT: String(workerPort) },
+      INAZINA_PYTHON_PORT: String(workerPort) },
     stdio: ["ignore", "inherit", "inherit"],
   });
   child.once("exit", (code, signal) => {
@@ -117,12 +118,7 @@ function cookieHeader(name: string, value: string, maxAge: number): string {
   return `${name}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${secure}`;
 }
 
-function browserAccessPage(target: string): string {
-  const escapedTarget = target.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[character]!);
-  return `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>INAZINA · 비밀번호</title><style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#f8e9ee;color:#1d1d1f;font:16px -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif}main{width:min(420px,100%);padding:32px;border-radius:24px;background:#ffffffd9;box-shadow:0 24px 60px #3c1e642e}h1{font-size:24px;margin:0}form{display:flex;gap:8px;margin-top:22px}input,button{font:inherit;padding:12px;border-radius:12px}input{min-width:0;flex:1;border:1px solid #ccc}button{border:0;background:#0071e3;color:white;cursor:pointer}</style><main><h1>API 비밀번호</h1><form method="post" action="/__browser-access"><input type="hidden" name="target" value="${escapedTarget}"><input type="password" name="password" autocomplete="current-password" aria-label="비밀번호" required autofocus><button>확인</button></form></main></html>`;
-}
-
-async function requestBrowserAccess(request: IncomingMessage): Promise<{ password: string; target: string }> {
+async function requestBrowserAccess(request: IncomingMessage): Promise<{ loginId: string; password: string; target: string }> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
@@ -131,7 +127,7 @@ async function requestBrowserAccess(request: IncomingMessage): Promise<{ passwor
     chunks.push(Buffer.from(chunk));
   }
   const body = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
-  return { password: body.get("password") ?? "", target: body.get("target") ?? "" };
+  return { loginId: (body.get("loginId") ?? "").trim().slice(0, 80), password: body.get("password") ?? "", target: body.get("target") ?? "" };
 }
 
 function redirectBrowserToMain(response: ServerResponse): void {
@@ -390,6 +386,11 @@ async function requestJson(request: IncomingMessage, limit = 32_768): Promise<un
   }
 }
 
+/** Constant-time comparison of two secrets (compared as digests so the lengths do not leak). */
+function sameSecret(left: string, right: string): boolean {
+  return timingSafeEqual(createHash("sha256").update(left).digest(), createHash("sha256").update(right).digest());
+}
+
 async function handle(request: IncomingMessage, response: ServerResponse, browserAuthorized = false): Promise<void> {
   const url = new URL(request.url ?? "/", `http://${host}:${port}`);
 
@@ -402,13 +403,26 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
       return;
     }
     try {
-      const { password, target } = await requestBrowserAccess(request);
+      const form = await requestBrowserAccess(request);
+      const { loginId, password } = form;
+      let target = form.target;
       if (!target.startsWith("/api/") || target.startsWith("//") || target.includes("\\") || target.includes("#__browser-access")) {
         send(response, 400, { error: "invalid_target" });
         return;
       }
-      const passed = access.verify(password);
-      access.record(key, passed);
+      // The same id and password as the dashboard and 나루, and only administrators get in.
+      const emergency = sameSecret(password, emergencyPasscode);
+      let passed = emergency;
+      if (!passed && loginId && password) {
+        try {
+          const meta = { clientIp: clientIp(request), userAgent: String(request.headers["user-agent"] ?? "").slice(0, 300), app: "api-gate" };
+          const result = await internalRequest("POST", "/internal/auth/login", undefined, { loginId, password, meta });
+          passed = result.status === 200 && result.body?.user?.role === "admin";
+        } catch { passed = false; }
+      }
+      access.record(key, passed, loginId, emergency ? "emergency" : "login");
+      // The passcode is written in the source, so it only ever opens the up/down answer, whatever was asked for.
+      if (emergency) target = "/api/health";
       if (!passed) {
         browserLoginAttempts.set(key, { count: attempt && attempt.resetAt > now ? attempt.count + 1 : 1, resetAt: attempt && attempt.resetAt > now ? attempt.resetAt : now + 10 * 60_000 });
         redirectBrowserToMain(response);
@@ -428,10 +442,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     ((request.headers.accept ?? "").includes("text/html") || request.headers["sec-fetch-mode"] === "navigate");
   const browserAuthExempt = url.pathname === "/api/auth/discord/start" || url.pathname === "/api/auth/discord/callback";
   if (browserNavigation && url.pathname.startsWith("/api/") && !browserAuthExempt && !browserAuthorized) {
-    response.writeHead(401, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
-      "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'",
-      "x-content-type-options": "nosniff" });
-    response.end(browserAccessPage(`${url.pathname}${url.search}`));
+    await sendLanding(response, "login_required", `${url.pathname}${url.search}`, 401);
     return;
   }
 
@@ -439,7 +450,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
   // the apps' fetch calls (Accept: */*) keep receiving JSON.
   const browser = browserNavigation;
   if (browser && (url.pathname === "/" || url.pathname === "/api" || !url.pathname.startsWith("/api/"))) {
-    await sendLanding(response, url.pathname === "/" || url.pathname === "/api" ? "home" : "not_found", url.pathname);
+    await sendLanding(response, url.pathname === "/" && url.searchParams.has("login") ? "login" : url.pathname === "/" || url.pathname === "/api" ? "home" : "not_found", url.pathname);
     return;
   }
 

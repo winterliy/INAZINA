@@ -576,9 +576,7 @@ export default function App() {
   }
 
   if (!user && !checked) return <div className="stage"><Backdrop /><p className="page-loading" role="status">불러오는 중…</p></div>;
-  if (!user) return <div className="stage"><Backdrop /><AuthPanel app="hts" onAuthenticated={(next) => { const back = new URLSearchParams(location.search).get("return"); if (back?.startsWith("/board")) location.assign(back); else setUser(next); }} />
-    <a className="board-guest-button" href={boardUrl()}>로그인 없이 게시판 보기</a>
-  </div>;
+  if (!user) return <div className="stage"><Backdrop /><AuthPanel app="hts" onAuthenticated={(next) => { const back = new URLSearchParams(location.search).get("return"); if (back?.startsWith("/board")) location.assign(back); else setUser(next); }} extra={<a className="board-guest-button" href={boardUrl()}>로그인 없이 게시판 보기</a>} /></div>;
 
   const current = quote?.code === selectedCode ? quote.price : selected?.price ?? 0;
   // Market orders are priced by the server against the live book; this estimate uses the visible levels.
@@ -641,7 +639,7 @@ export default function App() {
     </div>
     <nav className="top-nav" aria-label="서비스">{SERVICES.slice(0, 4).map((item) => <a key={item.path} href={item.path} aria-current={here === "services" && location.pathname.startsWith(item.path) ? "page" : undefined}>{item.label}</a>)}<a href={boardUrl()}>게시판</a></nav>
     <div className="top-actions">
-      {here === "home" && <span className="connection"><i />API {health}</span>}
+      {here === "home" && <span className={`connection ${health === "연결됨" ? "ok" : health === "확인 중" ? "pending" : "bad"}`} role="img" aria-label={`API ${health}`} title={`API ${health}`}><i /></span>}
       <a className="header-action account-action" href="/account" aria-current={here === "account" ? "page" : undefined}>{user.nickname} <small>{htsId || "아이디 만들기"}</small></a>
       <NotificationBell />
       <button className="icon-button" title={user.delegatedBy ? "관리자 계정으로 돌아갑니다" : "로그아웃"} onClick={() => void logout()}>{user.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button>
@@ -844,13 +842,6 @@ export default function App() {
             <div className="panel-title"><h2>신용점수</h2><span>시뮬레이터 · 기준 {credit.anchor}점</span></div>
             <div className="credit-score"><b>{credit.score}</b><span>/ 1000</span></div>
             <div className="credit-meter" role="meter" aria-label="신용점수" aria-valuemin={0} aria-valuemax={1000} aria-valuenow={credit.score}><i style={{ width: `${Math.min(100, Math.max(0, credit.score / 10))}%` }} /><em style={{ left: `${Math.min(100, Math.max(0, credit.anchor / 10))}%` }} title={`기준점수 ${credit.anchor}점`} /></div>
-            <div className="credit-factors">
-              {credit.factors.map((factor) => <div className="credit-factor" key={factor.key}><span>{factor.label}{factor.points < 0 && CREDIT_TIPS[factor.key] && <small>{CREDIT_TIPS[factor.key]}</small>}</span><b className={factor.points < 0 ? "minus" : "plus"}>{signedPoints(factor.points)}</b></div>)}
-              {!credit.factors.length && <div className="credit-factor"><span>아직 점수에 반영된 신용 이력이 없습니다.</span></div>}
-            </div>
-            {credit.events.some((event) => event.type !== "legacy_baseline") && <details className="credit-events"><summary>최근 신용 이력</summary>
-              {credit.events.filter((event) => event.type !== "legacy_baseline").slice(0, 5).map((event) => <div className="credit-factor" key={`${event.type}:${event.reference}`}><span>{CREDIT_EVENTS[event.type] ?? event.type}{event.loanId ? ` · 대출 #${event.loanId}` : ""}<small>{date(event.occurredEpoch)}{event.reason ? ` · ${event.reason}` : ""}</small></span></div>)}
-            </details>}
             <p className="credit-note">기준점수에 요인을 더한 시뮬레이터 점수입니다. 연체 영향은 시간이 지나며 줄고, 정상 납부·완납은 점수를 올립니다. 실제 신용평가사 점수가 아닙니다.</p>
           </section>}
 

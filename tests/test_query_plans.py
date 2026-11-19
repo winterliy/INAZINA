@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,6 +23,12 @@ class QueryPlanTests(unittest.TestCase):
 
     @staticmethod
     def _details(connection, sql, parameters):
+        if os.environ.get("INAZINA_DB_BACKEND", "sqlite").lower() == "postgres":
+            # The test database is nearly empty, so the planner would scan; ask what it does when it may not.
+            connection.execute("SET LOCAL enable_seqscan = off")
+            for value in parameters:  # EXPLAIN is passed through untranslated, so write the values in
+                sql = sql.replace("?", f"'{value}'" if isinstance(value, str) else str(value), 1)
+            return " ".join(str(row[0]) for row in connection.execute("EXPLAIN (FORMAT JSON) " + sql))
         return " ".join(
             str(row[3]) for row in connection.execute(
                 "EXPLAIN QUERY PLAN " + sql, parameters
@@ -38,6 +45,7 @@ class QueryPlanTests(unittest.TestCase):
             )
         self.assertIn("idx_loans_active_user", details)
         self.assertNotIn("SCAN loans", details)
+        self.assertNotIn("Seq Scan", details)
 
     def test_recent_user_orders_use_updated_index(self):
         with self.db.readonly() as connection:

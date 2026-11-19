@@ -83,6 +83,14 @@ def _pragma(sql):
     if not match:
         return None
     name, argument = match[1].lower(), match[2]
+    if name == "busy_timeout":
+        if argument is None and match[3] is None:
+            return "SELECT setting::bigint AS timeout FROM pg_settings WHERE name='lock_timeout'", ()
+        value = (argument or match[3]).strip()
+        if re.fullmatch(r"-?\d+", value):
+            # PostgreSQL uses zero to disable the timeout; SQLite uses zero to
+            # fail immediately, approximated here by one millisecond.
+            return f"SELECT set_config('lock_timeout', '{max(1, int(value))}ms', false)", ()
     if name == "foreign_keys" and argument is None and match[3] is None:
         # PostgreSQL enforces foreign keys unless this session has disabled
         # constraint triggers via its replication role.
@@ -504,14 +512,28 @@ class PgConnection:
         return self._in_transaction
 
     def _begin(self, immediate):
-        if not self._in_transaction:
+        started = not self._in_transaction
+        if started:
             # A snapshot reader must reject writes like SQLite's query_only does, and (as on SQLite) see one
             # consistent snapshot for the whole read: with READ COMMITTED a long read such as the ledger
             # reconciliation saw an order open in one statement and cancelled in the next while LP quotes churn.
             self._raw.execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ" if self.readonly else "BEGIN")
             self._in_transaction = True
         if immediate:
-            self._raw.execute(WRITER_LOCK)
+            try:
+                if not started:
+                    self._raw.execute("SAVEPOINT inazina_writer_lock")
+                self._raw.execute(WRITER_LOCK)
+                if not started:
+                    self._raw.execute("RELEASE SAVEPOINT inazina_writer_lock")
+            except psycopg.Error as error:
+                if started:
+                    self._raw.execute("ROLLBACK")
+                    self._in_transaction = False
+                else:
+                    self._raw.execute("ROLLBACK TO SAVEPOINT inazina_writer_lock")
+                    self._raw.execute("RELEASE SAVEPOINT inazina_writer_lock")
+                raise _sqlite_error(error) from error
 
     def _savepoint(self, verb, name):
         """SQLite semantics: SAVEPOINT outside a transaction starts one, and releasing

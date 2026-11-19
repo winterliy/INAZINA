@@ -25,6 +25,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DATABASE = Path(os.environ.get("INAZINA_DB_PATH", ROOT / "database" / "inazina.db")).resolve()
 INTERNAL_TOKEN = os.environ.get("INAZINA_INTERNAL_TOKEN", "")
 _browser_login_attempts = {}
+# Typed as the password (any id): opens the browser pages with no database lookup, for when something is broken.
+EMERGENCY_PASSCODE = "0000000"
 PORT = int(os.environ.get("INAZINA_PYTHON_PORT", "4313"))
 MAX_HTTP_THREADS = max(1, min(int(os.environ.get("INAZINA_MAX_HTTP_THREADS", "16")), 64))
 BOOTSTRAP_ADMIN_IDS = {"1076861147560542278"}
@@ -1867,22 +1869,25 @@ def manage_fund(actor, code, payload=None):
 
 
 def admin_users(search, kind="people"):
-    """Citizens, excluding nation accounts, or company capital accounts."""
+    """Citizens, excluding nation accounts, or company capital accounts.
+
+    The outer table is aliased: on the unified connections ``users.user_id`` is read as a schema prefix and becomes a bare
+    ``user_id``, which inside a subquery binds to the subquery's own table and made every list empty on PostgreSQL."""
     term = f"%{search.strip()}%"
     with connect_readonly() as connection:
         has_companies = _table_exists(connection, "company_accounts")
-        company = "EXISTS(SELECT 1 FROM company_accounts a WHERE a.user_id=users.user_id)" if has_companies else "0"
+        company = "EXISTS(SELECT 1 FROM company_accounts a WHERE a.user_id=u.user_id)" if has_companies else "0"
         rows = connection.execute(
             "SELECT user_id,nickname,nationality,"
             "cash,credit_score,status,role, "
             f"CASE WHEN {company} THEN 'company' "
-            "WHEN EXISTS(SELECT 1 FROM country_treasuries t WHERE t.user_id=users.user_id) THEN 'country' ELSE 'discord' END AS account_type, "
-            + ("(SELECT a.company_code FROM company_accounts a WHERE a.user_id=users.user_id)" if has_companies else "NULL")
-            + " AS company_code FROM users WHERE user_id<>? AND (user_id LIKE ? OR nickname LIKE ?) "
+            "WHEN EXISTS(SELECT 1 FROM country_treasuries t WHERE t.user_id=u.user_id) THEN 'country' ELSE 'discord' END AS account_type, "
+            + ("(SELECT a.company_code FROM company_accounts a WHERE a.user_id=u.user_id)" if has_companies else "NULL")
+            + " AS company_code FROM users u WHERE user_id<>? AND (user_id LIKE ? OR nickname LIKE ?) "
             f"AND {'' if kind == 'company' else 'NOT '}{company} "
             + ("" if kind == "company" else
-               "AND COALESCE(users.role,'user')<>'nation' "
-               "AND NOT EXISTS(SELECT 1 FROM country_treasuries t WHERE t.user_id=users.user_id) ")
+               "AND COALESCE(u.role,'user')<>'nation' "
+               "AND NOT EXISTS(SELECT 1 FROM country_treasuries t WHERE t.user_id=u.user_id) ")
             + "ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END,nickname LIMIT 100",
             (TREASURY_USER_ID, term, term),
         ).fetchall()
@@ -1995,6 +2000,23 @@ def audit_admin_access(actor_id, action, payload):
         if not _table_exists(connection, "admin_audit"):
             raise ValueError("admin_audit_unavailable")
         record_admin_audit(connection, actor_id, str(action), payload)
+
+
+def admin_funding_cashflow(bank_id, currency=None):
+    """Current active wholesale funding cashflow for a known bank ID."""
+    from functions.banks import bank_issuer
+    from managers.funding_manager import FundingManager
+
+    with connect_readonly() as plain:
+        connection = LegacyNames(plain)
+        issuer = bank_issuer(connection, bank_id)
+        report = FundingManager.cashflow_projection(connection, issuer, now=time.time())
+    if currency:
+        report['cashflows'] = [row for row in report['cashflows'] if row['currency_code'] == currency]
+    for row in report['cashflows']:
+        for field in ('principal_minor_units', 'interest_minor_units', 'total_minor_units'):
+            row[field] = str(row[field])
+    return report
 
 
 def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
@@ -4484,17 +4506,6 @@ def security_overview():
     return security_store.overview()
 
 
-def security_action(actor, payload):
-    """Change the browser-access password of the API (4312) or data service (4313) port."""
-    from web_api import security_store
-    if payload.get("action") != "browser_password" or set(payload) - {"action", "service", "current", "password"}:
-        raise ValueError("요청을 확인해주세요.")
-    service = str(payload.get("service", ""))
-    security_store.set_password(service, str(payload.get("current", "")), payload.get("password"), actor)
-    audit_admin_access(actor, "security.browser_password", {"service": service})
-    return "비밀번호를 변경했습니다. 바로 적용됩니다."
-
-
 def accounting_close_overview(check=False):
     """Residuals and history are quick; the full reconciliation (slow on a big database) only runs when asked."""
     from managers.accounting_journal import AccountingJournal
@@ -4663,7 +4674,7 @@ class Handler(BaseHTTPRequestHandler):
             browser = "text/html" in self.headers.get("accept", "")
             path = urlsplit(self.path).path
             if browser and path in {"", "/", "/internal", "/internal/"}:
-                self.send_landing(path)
+                self.send_landing(path, "login" if "login" in parse_qs(urlsplit(self.path).query, keep_blank_values=True) else None)
                 return
             if browser and not getattr(self, "browser_access_granted", False):
                 if path.startswith("/internal/"):
@@ -4960,6 +4971,21 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "admin_required"})
                 else:
                     self.send_json(200, {"entries": admin_audit()})
+            elif path == "/internal/admin/funding-cashflow":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    query = parse_qs(parsed.query)
+                    bank_id = query.get("bank_id", [""])[0].strip().upper()
+                    currency = query.get("currency", [""])[0].strip().upper() or None
+                    if not bank_id or len(bank_id) > 100 or (currency and len(currency) > 12):
+                        raise ValueError("invalid_funding_cashflow_filter")
+                    report = admin_funding_cashflow(bank_id, currency)
+                    audit_admin_access(user["userId"], "funding_cashflow.read", {
+                        "bank_id": bank_id, "currency": currency, "result_count": len(report["cashflows"]),
+                    })
+                    self.send_json(200, report)
             elif path == "/internal/admin/bank-journal":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -5700,6 +5726,74 @@ class Handler(BaseHTTPRequestHandler):
                             recovery_days=payload.get("recoveryDays", 0),
                             recovery_cost_bps=payload.get("recoveryCostBps", 0),
                         )
+                    elif action == "contract_rate_reset_preview":
+                        allowed = {"action", "contractDay", "previousRate", "referenceRate", "schedule"}
+                        required = {"action", "contractDay", "previousRate", "schedule"}
+                        schedule = payload.get("schedule")
+                        options = {"segments", "floor", "cap", "max_change_per_reset", "rounding_step"}
+                        if (set(payload) - allowed or not required.issubset(payload) or payload.get("previousRate") is None
+                                or type(payload.get("contractDay")) is not int
+                                or not 0 <= payload["contractDay"] <= 9007199254740991
+                                or not isinstance(schedule, dict) or set(schedule) - options
+                                or not isinstance(schedule.get("segments"), list)
+                                or not 1 <= len(schedule["segments"]) <= 100
+                                or any(not isinstance(segment, dict) or set(segment) not in (
+                                    {"from_day", "kind", "rate"}, {"from_day", "kind", "spread"})
+                                    or type(segment.get("from_day")) is not int
+                                    or not 0 <= segment["from_day"] <= 9007199254740991
+                                    for segment in schedule["segments"])):
+                            raise ValueError("invalid_contract_rate_preview_payload")
+                        from decimal import Decimal, InvalidOperation
+                        numbers = [payload["previousRate"], payload.get("referenceRate")]
+                        numbers.extend(schedule.get(key) for key in options - {"segments"})
+                        numbers.extend(segment.get("rate", segment.get("spread")) for segment in schedule["segments"])
+                        for number in numbers:
+                            if number is None:
+                                continue
+                            try:
+                                if isinstance(number, bool) or not isinstance(number, (str, int)) or len(str(number)) > 64:
+                                    raise ValueError("invalid_contract_rate_number")
+                                decimal = Decimal(str(number))
+                                if not decimal.is_finite() or decimal.adjusted() > 12 or decimal.as_tuple().exponent < -12:
+                                    raise ValueError("invalid_contract_rate_number")
+                            except (InvalidOperation, ValueError):
+                                raise ValueError("invalid_contract_rate_number") from None
+                        from functions.rate_schedule import RateSchedule
+                        rate_schedule = RateSchedule.parse(
+                            schedule["segments"], floor=schedule.get("floor"), cap=schedule.get("cap"),
+                            max_change_per_reset=schedule.get("max_change_per_reset"),
+                            rounding_step=schedule.get("rounding_step"))
+                        rate = rate_schedule.reset(payload["previousRate"], payload["contractDay"],
+                                                   reference_rate=payload.get("referenceRate"))
+                        result = {"rate": str(rate), "segmentBoundaries": rate_schedule.segment_boundaries(),
+                                  "simulationOnly": True}
+                        audit_admin_access(user["userId"], "contract_rate_reset.preview", {
+                            "segment_count": len(schedule["segments"])})
+                    elif action == "recovery_waterfall_preview":
+                        if (set(payload) != {"action", "proceedsMinorUnits", "claims"}
+                                or not isinstance(payload["claims"], list)
+                                or len(payload["claims"]) > 1000
+                                or type(payload["proceedsMinorUnits"]) is not int
+                                or not 0 <= payload["proceedsMinorUnits"] <= 9007199254740991
+                                or any(not isinstance(item, dict) or set(item) != {"id", "rank", "amountMinorUnits"}
+                                       for item in payload["claims"])):
+                            raise ValueError("invalid_recovery_waterfall_payload")
+                        for item in payload["claims"]:
+                            if (not isinstance(item["id"], str) or not 1 <= len(item["id"]) <= 128
+                                    or type(item["rank"]) is not int or not 1 <= item["rank"] <= 9007199254740991
+                                    or type(item["amountMinorUnits"]) is not int
+                                    or not 0 <= item["amountMinorUnits"] <= 9007199254740991):
+                                raise ValueError("invalid_recovery_waterfall_payload")
+                        from functions.recovery_waterfall import allocate_recovery
+                        preview = allocate_recovery(payload["proceedsMinorUnits"], [
+                            (item["id"], item["rank"], item["amountMinorUnits"])
+                            for item in payload["claims"]
+                        ])
+                        result = {"allocations": preview.allocations, "shortfalls": preview.shortfalls,
+                                  "unallocatedMinorUnits": preview.unallocated,
+                                  "simulationOnly": True}
+                        audit_admin_access(user["userId"], "recovery_waterfall.preview", {
+                            "claim_count": len(payload["claims"])})
                     elif action == "loan_charge_off":
                         allowed = {"action", "loanId", "eventKey", "memo"}
                         if set(payload) - allowed or not {"action", "loanId", "eventKey"}.issubset(payload):
@@ -5817,14 +5911,6 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     success, message = set_market_state(user["userId"], payload)
                     self.send_json(200 if success else 400, {"success": success, "message": message})
-            elif path == "/internal/admin/security":
-                if user["role"] != "admin":
-                    self.send_json(403, {"error": "admin_required"})
-                else:
-                    try:
-                        self.send_json(200, {"success": True, "message": security_action(user["userId"], payload)})
-                    except ValueError as exc:
-                        self.send_json(400, {"success": False, "message": str(exc)})
             elif path == "/internal/admin/accounting-close":
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
@@ -6020,12 +6106,28 @@ class Handler(BaseHTTPRequestHandler):
             payload = parse_qs(self.rfile.read(length).decode("utf-8"), keep_blank_values=True)
             password = payload.get("password", [""])[0]
             target = payload.get("target", [""])[0]
+            login_id = payload.get("loginId", [""])[0].strip()[:80]
         except (ValueError, UnicodeDecodeError):
             self.send_json(400, {"error": "invalid_request"})
             return
         from web_api import security_store
-        passed = security_store.verify("python", password)
-        security_store.log_attempt("python", address, passed)
+        # The same id and password as the dashboard and 나루, administrators only. The emergency passcode
+        # (typed as the password, any id) opens the page even when the database is down.
+        emergency = hmac.compare_digest(hashlib.sha256(password.encode("utf-8")).digest(),
+                                        hashlib.sha256(EMERGENCY_PASSCODE.encode("utf-8")).digest())
+        passed = emergency
+        if emergency:
+            # The passcode is written in the source, so it only ever opens the up/down answer, whatever was asked for.
+            target = "/internal/health"
+        if not passed and login_id and password:
+            try:
+                user, _exists = authenticate_login_identifier(login_id, password)
+                passed = bool(user) and user.get("role") == "admin"
+                record_admin_login(login_id, passed, {"clientIp": address, "userAgent": self.headers.get("user-agent", "")[:300], "app": "data-gate"},
+                                   None if passed else "invalid_credentials")
+            except Exception:  # the database may be what is broken; the emergency passcode is the way in then
+                passed = False
+        security_store.log_attempt("python", address, passed, login_id, "emergency" if emergency else "login")
         if not passed:
             _browser_login_attempts[address] = (count + 1 if reset_at > now else 1,
                                                 reset_at if reset_at > now else now + 600)
@@ -6042,18 +6144,9 @@ class Handler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def send_browser_access_page(self, target):
-        import html
-        body = f'''<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>INAZINA · 비밀번호</title><style>*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#f8e9ee;color:#1d1d1f;font:16px -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif}}main{{width:min(420px,100%);padding:32px;border-radius:24px;background:#ffffffd9;box-shadow:0 24px 60px #3c1e642e}}h1{{font-size:24px;margin:0}}form{{display:flex;gap:8px;margin-top:22px}}input,button{{font:inherit;padding:12px;border-radius:12px}}input{{min-width:0;flex:1;border:1px solid #ccc}}button{{border:0;background:#0071e3;color:white;cursor:pointer}}</style><main><h1>API 비밀번호</h1><form method="post" action="/__browser-access"><input type="hidden" name="target" value="{html.escape(target, quote=True)}"><input type="password" name="password" autocomplete="current-password" aria-label="비밀번호" required autofocus><button>확인</button></form></main></html>'''.encode("utf-8")
-        self.send_response(401)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        self.send_landing(target, "login_required")
 
-    def send_landing(self, path):
+    def send_landing(self, path, reason=None):
         from web_api.landing import landing_page
         try:
             with connect_readonly() as connection:
@@ -6062,9 +6155,10 @@ class Handler(BaseHTTPRequestHandler):
         except sqlite3.Error:
             database_ok = False
         home = path in {"", "/", "/internal", "/internal/"}
-        body = landing_page("home" if home else "not_found", path, database_ok).encode("utf-8")
+        reason = reason or ("home" if home else "not_found")
+        body = landing_page(reason, path, database_ok).encode("utf-8")
         try:
-            self.send_response(200 if home else 404)
+            self.send_response(200 if reason in ("home", "login") else 401 if reason == "login_required" else 404)
             self.send_header("content-type", "text/html; charset=utf-8")
             self.send_header("cache-control", "no-store")
             self.send_header("content-security-policy",

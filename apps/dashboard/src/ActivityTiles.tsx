@@ -56,6 +56,9 @@ function IsoHeatmap({ counts, max, first }: { counts: number[][]; max: number; f
   const left = px(-1, 6) - TW * 2, right = px(23, 0) + TW + 6, top = -TALL - 6, bottom = py(23, 8) + TH * 2 + 14;
   return <div className="heatmap-iso">
     <svg viewBox={`${left} ${top} ${right - left} ${bottom - top}`} role="img" aria-label="시간대별 관리자 작업 3D 보기">
+      {/* drawn first, so the columns stand in front of the labels */}
+      {counts.map((_, day) => <text key={day} className="iso-label" x={px(-1, day) - 4} y={py(-1, day) + TH + 4} textAnchor="end">{WEEKDAYS[new Date((first + day * DAY) * 1000).getDay()]}</text>)}
+      {[0, 6, 12, 18].map((hour) => <text key={hour} className="iso-label" x={px(hour, 8) + TW} y={py(hour, 8) + TH}>{hour}시</text>)}
       {cells.map(({ day, hour, count }) => {
         const x = px(hour, day), y = py(hour, day), rise = count ? Math.max(6, Math.round(count / max * TALL)) : 0, a = count ? 0.3 + 0.7 * count / max : 0;
         const topFace = `${x},${y - rise} ${x + TW},${y + TH - rise} ${x},${y + TH * 2 - rise} ${x - TW},${y + TH - rise}`;
@@ -69,8 +72,6 @@ function IsoHeatmap({ counts, max, first }: { counts: number[][]; max: number; f
           {count > 0 && <polygon className="iso-top-on" points={topFace} fillOpacity={a} />}
         </g>;
       })}
-      {counts.map((_, day) => <text key={day} className="iso-label" x={px(-1, day) - 4} y={py(-1, day) + TH + 4} textAnchor="end">{WEEKDAYS[new Date((first + day * DAY) * 1000).getDay()]}</text>)}
-      {[0, 6, 12, 18].map((hour) => <text key={hour} className="iso-label" x={px(hour, 8) + TW} y={py(hour, 8) + TH}>{hour}시</text>)}
     </svg>
   </div>;
 }

@@ -44,3 +44,7 @@
 - **SQLite 파일을 읽는 도구**: `tools/repair_ledger.py`는 PG로 운영 중이면 실행을 거부한다(`--sqlite-file`로 의도했을 때만 허용). `sqlite_to_postgres.py`와 `build_postgres_schema.py`는 SQLite 원본이 필요한 도구라 그대로 둔다. `benchmark_price_native.py`는 백업을 읽기 전용으로 쓴다.
 - **개발용 DB**: `inazina_dev`(2026-11-01 이후 사용 없음)와 `inazina_schema`는 코드·문서가 이름을 참조해서 지우지 않았다. `inazina_test_*`는 시험 실행이 정상 종료되지 않았을 때 남는 임시 DB라 시험이 끝난 뒤 지운다.
 - **PR #123**: 병합 커밋 `aba8781`이 현재 master에 이미 들어 있어 따로 맞출 것이 없다.
+
+## 옛 SQLite 파일 보관 (2026-11-19)
+
+전환 시점의 SQLite 파일(`inazina.db`, `-wal`, `-shm`)은 `database/backups/sqlite-frozen-20261119/`로 옮겼다. 실수로 SQLite로 켜지는 일을 막기 위해서다. 세 파일은 함께 보관해야 한다. 되돌릴 때는 세 파일을 `database/`로 복사하고 `.env`의 `INAZINA_DB_BACKEND`/`INAZINA_PG_DSN` 두 줄을 지운다. 그 사이에 PostgreSQL에 쌓인 쓰기는 SQLite에 없으므로 먼저 `pg_dump`로 보존한다.

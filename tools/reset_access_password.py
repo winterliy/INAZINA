@@ -1,11 +1,10 @@
-"""Set a new browser-access password from the terminal when the current one is not known.
+"""Set a new Wide-Learning (port 4315) password from the terminal when the current one is not known.
 
-    python tools/reset_access_password.py api        # API server, port 4312
-    python tools/reset_access_password.py python     # data service, port 4313
-    python tools/reset_access_password.py wl-entry   # Wide-Learning entry password, port 4315
-    python tools/reset_access_password.py wl-code    # Wide-Learning login-attempt log code (digits)
+    python tools/reset_access_password.py wl-entry   # entry password
+    python tools/reset_access_password.py wl-code    # login-attempt log code (digits)
 
-The new value is typed twice without echo and stored salted in the git-ignored files under database/.
+The 4312 and 4313 pages no longer have a password of their own: they take an administrator's dashboard id and
+password. The new value is typed twice without echo and stored salted in database/wl-security.json (git-ignored).
 It applies at once (no restart). Needs local access to this folder, which is the point.
 """
 import getpass
@@ -17,10 +16,9 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from web_api import security_store as store  # noqa: E402
-
-WL_STORE = Path(os.environ.get("INAZINA_WL_SECURITY_PATH", store.ROOT / "database" / "wl-security.json"))
+ROOT = Path(__file__).resolve().parents[1]
+ITERATIONS = 210_000
+WL_STORE = Path(os.environ.get("INAZINA_WL_SECURITY_PATH", ROOT / "database" / "wl-security.json"))
 
 
 def reset_wl(kind, secret):
@@ -34,8 +32,8 @@ def reset_wl(kind, secret):
         data = {}
     stamp = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
     salt = secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac("sha256", secret.encode("utf-8"), bytes.fromhex(salt), store.ITERATIONS).hex()
-    stored = f"pbkdf2${store.ITERATIONS}${salt}${digest}"
+    digest = hashlib.pbkdf2_hmac("sha256", secret.encode("utf-8"), bytes.fromhex(salt), ITERATIONS).hex()
+    stored = f"pbkdf2${ITERATIONS}${salt}${digest}"
     if kind == "wl-entry":
         data["entry"] = {"hash": stored, "updatedAt": stamp}
     else:
@@ -48,7 +46,7 @@ def reset_wl(kind, secret):
 
 
 def main(argv):
-    targets = {"api", "python", "wl-entry", "wl-code"}
+    targets = {"wl-entry", "wl-code"}
     if len(argv) != 2 or argv[1] not in targets:
         print(__doc__)
         return 2
@@ -58,7 +56,7 @@ def main(argv):
         print("두 값이 다릅니다. 아무것도 바꾸지 않았습니다.")
         return 1
     try:
-        store.reset_password(target, first) if target in store.SERVICES else reset_wl(target, first)
+        reset_wl(target, first)
     except ValueError as error:
         print(error)
         return 1

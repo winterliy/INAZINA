@@ -1,6 +1,6 @@
 import type { ApiUser } from "../../shared/api";
 import { NAV_GROUPS, groupOf } from "./nav";
-import { Logo } from "./Logo";
+import { Logo } from "../../shared/Logo";
 
 type Props = {
   user: ApiUser;

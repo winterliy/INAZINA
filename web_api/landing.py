@@ -1,11 +1,15 @@
-"""Friendly page for people who open the private data-service port in a browser.
+"""What a browser sees on the private data-service port.
 
-Same look as the API server's page (apps/api/src/landing.ts). The service only
-answers the API server, which authenticates with an internal token and asks for
-JSON; a browser asking for HTML gets this page instead of a raw JSON error.
+The first screen is the friendly "this is the API server" page. The administrator sign-in (the shared layout,
+apps/shared/gate.html, also used by the API server) opens only from "상태 확인" or when a protected address
+is opened directly.
 """
 import html
+import json
+from pathlib import Path
 
+TEMPLATE = (Path(__file__).resolve().parents[1] / "apps" / "shared" / "gate.html").read_text(encoding="utf-8")
+ICON = '<link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAAXNSR0IArs4c6QAAAjdJREFUeJztm0FrE0EYhp8dGpoeitIgFq0SwaqH6qXSXsRLCbS33ES8C/070v/gYS85CuJFcmmhh2IhtAhKxECUhYZeIjSpB6chNpFutc673ZkHvkMGkrzfuzs7s5u8EemoAKvAMnAPKAEm5Xtd0QcSYB/YBN4Ab//1Q9eBBnB8Sathezg3i0A9Aw1cVNVtT6l4BvQyIPqiq2d7O7N5tdD/XX80YTGnR37cmTB2OuRpzp9V9dPNr2dAlOv6bXW4zEvd31bjpPlKBsSoqmLsDs9XVo3d3vrKcgR8A66plYj4Htl1MWs3Nq7oR/ZiIGGyeAWAH92OSgITii+9WX7K/YfPuXH7CQCtZp29D6/5+vm9cy0SAxYev+TBoxeD16XrCxQmpyUGOJ/7s3NLlOfXRsbL82vMzi25luPeAGMKFKdmRsaLUzMYU3Atx70B7dY2SXt3ZDxp79JubbuW496A3lGXna0NDjvNwdhhp8nO1ga9o65rOciWwaulu9y6swLAl0/vOEg+KmToDMgKvu4AB3hvgGQjVK1Wx47XajXnWlA8iIjj+Pg0cRxLHop4PwWCAWoBaoIBagFqggFqAWqCAWoBaoIBagFqggFqAWqCAWoBaoIBagFqggFqAWqCAWoBarw3IPw0ZpMWvtI3NmbiK4mxGRtf2Tc2YOQrm8amq3xl0Lu3f5c/2Qe8kh0DHSM9ex2ZIYSmfuF1bG7YhDyeCamCk8PTIU/XhHNFZ4fJfXg6SmlEbuPzPwHcXCuP81/MBwAAAABJRU5ErkJggg==">'
 REASONS = {
     "home": ("여기는 API 서버예요",
              "이 주소는 앱이 데이터를 주고받는 통로라서 화면이 없어요. 아래에서 가려던 곳을 골라 주세요."),
@@ -45,16 +49,14 @@ footer a{{color:var(--accent);text-decoration:none}}footer a:hover{{text-decorat
 """
 
 
-MODAL_CSS = '\ndialog.pw{width:min(420px,calc(100% - 32px));padding:28px;border:0;border-radius:24px;color:var(--ink);background:var(--canvas);box-shadow:0 24px 70px rgba(0,0,0,.35),inset 0 0 0 1px var(--line)}\ndialog.pw::backdrop{background:rgba(0,0,0,.42);backdrop-filter:blur(6px)}\ndialog.pw h2{margin:0 0 4px;font-size:22px;font-weight:600}\ndialog.pw p{margin:0;max-width:none;font-size:14px;text-align:left}\ndialog.pw form{display:flex;gap:8px;margin-top:20px}\ndialog.pw input{min-width:0;flex:1;padding:12px;border:1px solid var(--line);border-radius:12px;color:var(--ink);background:var(--surface);font:inherit}\ndialog.pw button{padding:12px 18px;border:0;border-radius:12px;color:#fff;background:var(--focus);font:inherit;cursor:pointer}\ndialog.pw button.ghost{color:var(--ink);background:var(--surface)}\ndialog.pw .err{min-height:20px;margin-top:10px;color:#d93025;font-size:13px;text-align:left}\ndialog.pw pre{max-height:50vh;overflow:auto;margin:16px 0 0;padding:14px;border-radius:14px;background:var(--surface);font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;text-align:left;white-space:pre-wrap;word-break:break-word}\ndialog.pw .row{display:flex;justify-content:flex-end;margin-top:16px}\ndialog.pw [hidden]{display:none!important}\n'
-MODAL_HTML = '<dialog class="pw" id="pw" aria-labelledby="pw-title">\n  <h2 id="pw-title">API 비밀번호</h2>\n  <p>상태를 확인하려면 비밀번호를 입력하세요.</p>\n  <form id="pw-form"><input type="password" name="password" autocomplete="current-password" aria-label="비밀번호" required><button type="submit">확인</button><button type="button" class="ghost" data-close>취소</button></form>\n  <div class="err" id="pw-err" role="alert"></div>\n  <pre id="pw-out" hidden></pre>\n  <div class="row" id="pw-done" hidden><button type="button" data-close>닫기</button></div>\n</dialog>\n<script>\n(function(){\n  var link=document.getElementById("health-link"),dlg=document.getElementById("pw"),form=document.getElementById("pw-form"),\n      err=document.getElementById("pw-err"),out=document.getElementById("pw-out"),done=document.getElementById("pw-done"),input=form.elements.password;\n  if(!link||!dlg||!dlg.showModal)return;\n  link.addEventListener("click",function(e){e.preventDefault();form.hidden=false;out.hidden=true;done.hidden=true;err.textContent="";input.value="";dlg.showModal();input.focus()});\n  Array.prototype.forEach.call(dlg.querySelectorAll("[data-close]"),function(b){b.addEventListener("click",function(){dlg.close()})});\n  form.addEventListener("submit",function(e){\n    e.preventDefault();err.textContent="";\n    var body=new URLSearchParams({target:link.getAttribute("href"),password:input.value});\n    fetch("/__browser-access",{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body:body,redirect:"manual",cache:"no-store"}).then(function(r){\n      if(r.type==="opaqueredirect"||r.status===0||(r.status>=300&&r.status<400)){err.textContent="비밀번호가 맞지 않습니다.";input.select();return}\n      return r.text().then(function(t){\n        var s;try{s=JSON.stringify(JSON.parse(t),null,2)}catch(x){err.textContent="상태를 읽지 못했습니다.";return}\n        out.textContent=s;out.hidden=false;done.hidden=false;form.hidden=true;\n      });\n    }).catch(function(){err.textContent="서버에 연결하지 못했습니다."});\n  });\n})();\n</script>'
 
 
-def landing_page(reason, path, database_ok):
+def _home_page(reason, path, database_ok):
     title, text = REASONS[reason]
-    style = STYLE.format(dot="#30d158" if database_ok else "#ff453a") + MODAL_CSS
-    modal = MODAL_HTML
+    style = STYLE.format(dot="#30d158" if database_ok else "#ff453a")
     path_chip = "" if reason == "home" else f'<span class="path">{html.escape(path)}</span>'
     status = "서비스 정상" if database_ok else "서비스 점검 필요"
+    icon = ICON
     return f"""<!doctype html>
 <html lang="ko">
 <head>
@@ -63,7 +65,7 @@ def landing_page(reason, path, database_ok):
 <meta name="robots" content="noindex">
 <meta name="theme-color" content="#ffffff">
 <title>INAZINA API</title>
-<link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAAXNSR0IArs4c6QAAAv9JREFUeJztmz9LI0EYh59dkhSiNschAbXzbIUgNlaimG9girQWYqFgbyUiaLFcbyV+AauDAxu1ECxEC0EQJSQQDRGLIFjszhW3ip67JvFmd8adfeBtMuz757c7OzNkX4vOmAGKwATwA/gG2B1eGxce0AQugWPgF/D7f50uABeA+KJ24dfQNQXgUIMCZNmhX1NHzAGuBknLNtevrW3xqhON2kJFKCT0zgc9CYHTIUlzvp0d/lv8ggZJxW1vVoevvNR91i6ei5/RIBlVNmP7OzxTKdr+9tZUJizgDviuOhNFNCx/XdTtYBMXnuW/DIzF1Dv/Qka2w+npaRYXF7u+TghBs9mkVqtxenrK3t4enufJTi84tkxbX18XMnBdV5ycnIh8Ph/pXkDbKWDbNoVCgUqlwtLSUnRxIvMsiUwmg+M4HBwcROJfewGemZycZH5+XrrfLyMAgOM4ZLNZqT6lrwIf8fDwQLH49uiRy+UYGhpiZGSEUqnE6OgolmUFXt/T04PjOJ9aZT4itlXg9va27fVTU1PCdd1QH+fn58leBfb391ldXQ0dHx4elhpPOwEAdnZ2Qsf6+vqkxtJSgEqlghDBRxTLsujt7ZUWS0sBxsbGQl+EnufRarWkxdJSgJWVldCx+/t7qbG0E2BtbY1yuRw6fn19LTVerPuA/v5+tra23vyWzWYZGBhgcHCQ8fFxcrnchz52d3el56XlaTCIarVqzmkwiLm5tv9tdk2sU+CzCCHY2Njg6OhIum/tBajX68zOznJ2dhaJf22nQK1WY3Nzk3w+H1nxxP0EtFotlpeXA8eEENTrdW5ubri6uuLp6SmWnGIV4PHxke3t7ThDtkXbKRAXqQCqE1BNKoDqBFSTCqA6AdWkAsh22Gg0ZLuMlPQDCdUJqCYVwO+0MBXP9ttMTKVp+z02pnJp+w1GpnJs+91VpvJSu7Gfyz8vgz+V3QN1vKvZ6JYZ0qapvxjdNvdahCQ+CR01Tr6eDkl6J3TVOvuaxDdPB3+I857Ets//AQt9iAyYT6h7AAAAAElFTkSuQmCC">
+{icon}
 <style>{style}</style>
 </head>
 <body>
@@ -77,8 +79,36 @@ def landing_page(reason, path, database_ok):
     <a class="card" href="http://127.0.0.1:4311/"><span class="icon i2" aria-hidden="true">📈</span><span><b>나루</b><span>시세 보기 · 주문 · 내 지갑</span></span><span class="arrow" aria-hidden="true">›</span></a>
     <a class="card" href="http://127.0.0.1:4310/"><span class="icon i1" aria-hidden="true">🛠</span><span><b>관리자 대시보드</b><span>운영 · 상품 · 사용자 관리</span></span><span class="arrow" aria-hidden="true">›</span></a>
   </nav>
-  <footer><span class="status"><span class="dot"></span>{status}</span><a id="health-link" href="/internal/health">상태 확인 (JSON)</a></footer>
+  <footer><span class="status"><span class="dot"></span>{status}</span><a href="/?login">상태 확인</a></footer>
 </main>
-{modal}
 </body>
 </html>"""
+
+
+GATE_COPY = {
+    "login": ("관리자 로그인", "데이터 서비스의 상태를 보려면 관리자 계정으로 로그인하세요."),
+    "login_required": ("로그인이 필요합니다", "이 주소는 관리자 로그인이 필요해요. 로그인하면 결과를 바로 보여드려요."),
+}
+
+
+def _gate_page(reason, path, database_ok):
+    heading, lead = GATE_COPY[reason]
+    target = path if reason == "login_required" and path.startswith("/internal/") else "/internal/health"
+    values = {
+        "TITLE": html.escape(heading), "ICON": ICON, "SERVICE": "데이터 서비스", "PORT": "4313",
+        "HEADING": html.escape(heading), "LEAD": html.escape(lead),
+        "PATH_CHIP": "" if reason == "login" else f'<span class="chip">{html.escape(path)}</span>',
+        "LINKS": '<a href="http://127.0.0.1:4310/">대시보드</a><a href="http://127.0.0.1:4311/">나루</a><a href="http://127.0.0.1:4312/">API 서버 4312</a>',
+        "STATUS_CLASS": "ok" if database_ok else "", "STATUS_TEXT": "서비스 정상" if database_ok else "서비스 점검 필요",
+        "TARGET_JS": json.dumps(target)[1:-1].replace("<", "\\u003c"),
+    }
+    out = TEMPLATE
+    for key, value in values.items():
+        out = out.replace("{{" + key + "}}", value)
+    return out
+
+
+def landing_page(reason, path, database_ok):
+    if reason in ("login", "login_required"):
+        return _gate_page(reason, path, database_ok)
+    return _home_page(reason, path, database_ok)

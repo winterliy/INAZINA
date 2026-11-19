@@ -188,14 +188,13 @@ export async function showEntry(onEnter: () => void): Promise<void> {
   const armed = () => code.length >= 4 && performance.now() - codeAt < 5000;
   const closeLog = () => { logView.hidden = true; $<HTMLButtonElement>(".entry-start").focus({ preventScroll: true }); };
   const openLog = async (opened: string) => {
-    logView.hidden = false;
     const body = $<HTMLDivElement>(".entry-log-body");
-    body.textContent = "불러오는 중…";
     try {
       // The server checks the digits typed last against the log code; a wrong one gets nothing.
       const reply = await fetch("/wl-api/entry-log", { method: "POST", cache: "no-store", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: opened }) });
-      if (!reply.ok) { body.textContent = "확인 코드가 맞지 않습니다."; return; }
+      if (!reply.ok) return;  // a wrong code does nothing at all, so the log view stays unannounced
       const { entries } = await reply.json() as { entries: LogEntry[] };
+      logView.hidden = false;
       body.innerHTML = entries.length ? html`<table>
         <thead><tr><th>일시</th><th>IP</th><th>위치</th><th>입력</th><th>결과</th></tr></thead>
         <tbody>${entries.map((entry) => `<tr class="${entry.pass ? "pass" : "fail"}"><td>${escapeHtml(new Date(entry.at).toLocaleString("ko-KR", { hour12: false }))}</td>`

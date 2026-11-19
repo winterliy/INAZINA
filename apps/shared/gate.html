@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#ffffff">
+<title>{{TITLE}} · inazina</title>
+{{ICON}}
+<style>
+:root{color-scheme:light;--ink:#141414;--ink2:#6c6c68;--line:#dcdcd7;--field:#f1f1ef;--accent:#1f3fff;--bg:#f3f3f1;--panel:#ffffff;--ok:#2fa95a;--bad:#d93025;--font:"DM Sans","Noto Sans KR",-apple-system,"Apple SD Gothic Neo",system-ui,sans-serif;--mono:"DM Mono",ui-monospace,"SF Mono",Menlo,monospace}
+@media (prefers-color-scheme:dark){:root{color-scheme:dark;--ink:#ecece8;--ink2:#9a9c95;--line:#34382f;--field:#262922;--accent:#7b8dff;--bg:#121411;--panel:#1b1d19}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;grid-template-columns:minmax(0,3.5fr) minmax(400px,1fr);padding:16px;color:var(--ink);background:var(--bg);font:400 15px/1.55 var(--font)}
+.visual{position:relative;border-radius:20px;overflow:hidden;min-height:calc(100vh - 32px)}
+.visual svg{position:absolute;inset:0;width:100%;height:100%;display:block}
+.panel{display:flex;flex-direction:column;min-width:0;margin-left:16px;padding:32px clamp(24px,2.4vw,44px) 24px;background:var(--panel);border-radius:20px}
+.brand{display:inline-flex;align-items:center;gap:14px;color:var(--ink);text-decoration:none}
+.logo{height:30px;width:auto;display:block}
+.tag{padding:2px 9px;border-radius:99px;color:var(--ink2);background:var(--field);font:500 11px/1.6 var(--mono)}
+.body{width:min(100%,440px);margin:auto;padding:48px 0 24px}
+h1{margin:0 0 10px;font-size:26px;line-height:1.2;font-weight:500;letter-spacing:-.02em}
+.lead{margin:0 0 26px;color:var(--ink2);font-size:14px;line-height:1.55}
+.chip{display:inline-block;margin:0 0 18px;padding:5px 12px;border-radius:99px;background:var(--field);font:400 12px var(--mono);color:var(--ink2);word-break:break-all}
+form{display:grid;gap:18px}
+label{display:grid;gap:8px;font-size:12.5px;font-weight:500}
+label span{padding-left:2px}
+input{width:100%;min-height:46px;padding:0 14px;border:1px solid transparent;border-radius:6px;color:var(--ink);background:var(--field);font:inherit;font-size:15px}
+input::placeholder{color:var(--ink2);opacity:.8}
+input:focus{outline:0;border-color:var(--accent);background:var(--panel);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}
+.secret{position:relative;display:block}.secret input{padding-right:46px}
+.eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);display:grid;place-items:center;width:38px;height:38px;border:0;border-radius:6px;color:var(--ink2);background:transparent;cursor:pointer}
+.eye:hover{color:var(--ink)}
+button.go{min-height:46px;margin-top:4px;border:0;border-radius:6px;color:#fff;background:var(--accent);font:inherit;font-size:15px;font-weight:600;cursor:pointer}
+button.go:disabled{opacity:.6;cursor:progress}
+.err{margin:16px 0 0;padding:11px 14px;border-radius:6px;color:#8a2a20;background:#f6d4d0;font-size:13.5px}
+.err:empty{display:none}
+pre{max-height:40vh;overflow:auto;margin:16px 0 0;padding:14px;border-radius:6px;background:var(--field);font:12.5px/1.6 var(--mono);white-space:pre-wrap;word-break:break-word}
+.divider{height:1px;margin:28px 0 20px;background:var(--line)}
+.links{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px 16px;font-size:13px}
+.links a{color:var(--accent);text-decoration:none}.links a:hover{text-decoration:underline;text-underline-offset:3px}
+.foot{display:flex;justify-content:space-between;align-items:center;gap:12px;color:var(--ink2);font-size:12px}
+.status{display:inline-flex;align-items:center;gap:8px}.status i{width:8px;height:8px;border-radius:50%;background:var(--bad)}.status.ok i{background:var(--ok)}
+[hidden]{display:none!important}
+@media (max-width:900px){body{grid-template-columns:1fr;padding:0}.visual{display:none}.panel{margin:0;border-radius:0;padding:24px 22px 20px;min-height:100vh}.body{padding-top:36px}}
+</style>
+</head>
+<body>
+<aside class="visual" aria-hidden="true">
+<svg viewBox="0 0 800 900" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+<defs><linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b9c9d8"/><stop offset=".55" stop-color="#dcdccf"/><stop offset="1" stop-color="#efdcc0"/></linearGradient>
+<linearGradient id="g2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8ea5b6"/><stop offset="1" stop-color="#4f6677"/></linearGradient>
+<radialGradient id="g3" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#fff6dc" stop-opacity=".95"/><stop offset="1" stop-color="#fff6dc" stop-opacity="0"/></radialGradient></defs>
+<rect width="800" height="900" fill="url(#g1)"/><circle cx="560" cy="430" r="190" fill="url(#g3)"/>
+<path d="M0 520 L90 450 L170 500 L270 410 L380 505 L480 440 L590 510 L700 430 L800 500 V560 H0Z" fill="#7d92a6" opacity=".55"/>
+<path d="M0 560 L120 500 L210 545 L330 480 L450 550 L560 505 L690 555 L800 520 V600 H0Z" fill="#62798d" opacity=".7"/>
+<rect y="560" width="800" height="340" fill="url(#g2)"/>
+<g stroke="#e9ecee" stroke-linecap="round" opacity=".38"><path d="M520 600h130M470 626h210M500 654h150M440 686h250M490 722h170M420 760h280" stroke-width="3"/><path d="M40 640h90M70 700h140M30 770h120M120 820h160" stroke-width="2.5" opacity=".6"/></g>
+<path d="M0 585 Q120 565 260 585 T520 590 T800 580 V632 Q640 622 520 640 T240 628 T0 640Z" fill="#2f3f4a" opacity=".9"/><path d="M0 612 Q140 598 280 616 T560 622 T800 612 V650 H0Z" fill="#24323b"/>
+<g transform="translate(600 330)"><rect x="-3" y="-32" width="6" height="12" fill="#2d3a44"/><rect x="-20" y="-20" width="40" height="22" rx="3" fill="#fff" opacity=".95"/><rect x="-14" y="-16" width="28" height="14" rx="2" fill="#2d3a44" opacity=".85"/><rect x="-24" y="0" width="48" height="8" fill="#2d3a44"/><path d="M-22 8 L-30 150 H30 L22 8Z" fill="#f4f3ee"/><path d="M-26 58 L-28 90 H28 L26 58Z" fill="#1f3fff"/><path d="M-30 150h60v10h-60z" fill="#2d3a44"/></g>
+<g transform="translate(250 470)"><path d="M0 80 L-70 20 L0 -140Z" fill="#f4f3ee" opacity=".95"/><path d="M8 80 L8 -150 L75 70Z" fill="#e2e0d6"/><path d="M-90 92 Q0 118 90 92 L72 112 Q0 128 -72 112Z" fill="#33414c"/></g>
+</svg>
+</aside>
+<main class="panel">
+<a class="brand" href="/" aria-label="inazina"><svg class="logo" xmlns="http://www.w3.org/2000/svg" viewBox="-6 -714 3273 728" role="img" aria-label="inazina."><g fill="currentColor"><path d="M62 0V-480H172V0Z"/><path d="M594 0V-277Q594 -325 563.5 -356.0Q533 -387 485 -387Q453 -387 428.0 -373.0Q403 -359 389.0 -334.0Q375 -309 375 -277L332 -301Q332 -356 356.0 -398.5Q380 -441 422.5 -465.5Q465 -490 518 -490Q572 -490 614.0 -462.5Q656 -435 680.0 -391.5Q704 -348 704 -301V0ZM265 0V-480H375V0Z"/><path d="M987 10Q922 10 869.5 -23.0Q817 -56 786.5 -112.5Q756 -169 756 -239Q756 -310 786.5 -366.5Q817 -423 869.5 -456.5Q922 -490 987 -490Q1042 -490 1084.5 -466.5Q1127 -443 1152.0 -402.0Q1177 -361 1177 -309V-171Q1177 -119 1152.5 -78.0Q1128 -37 1085.0 -13.5Q1042 10 987 10ZM1005 -94Q1066 -94 1103.5 -135.0Q1141 -176 1141 -240Q1141 -283 1124.0 -316.0Q1107 -349 1076.5 -367.5Q1046 -386 1005 -386Q965 -386 934.5 -367.5Q904 -349 886.5 -316.0Q869 -283 869 -240Q869 -197 886.5 -164.0Q904 -131 934.5 -112.5Q965 -94 1005 -94ZM1134 0V-129L1153 -246L1134 -362V-480H1244V0Z"/><path d="M1300 -60 1568 -420H1697L1429 -60ZM1300 0V-60L1400 -100H1691V0ZM1318 -380V-480H1697V-420L1597 -380Z"/><path d="M1758 0V-480H1868V0Z"/><path d="M2290 0V-277Q2290 -325 2259.5 -356.0Q2229 -387 2181 -387Q2149 -387 2124.0 -373.0Q2099 -359 2085.0 -334.0Q2071 -309 2071 -277L2028 -301Q2028 -356 2052.0 -398.5Q2076 -441 2118.5 -465.5Q2161 -490 2214 -490Q2268 -490 2310.0 -462.5Q2352 -435 2376.0 -391.5Q2400 -348 2400 -301V0ZM1961 0V-480H2071V0Z"/><path d="M2683 10Q2618 10 2565.5 -23.0Q2513 -56 2482.5 -112.5Q2452 -169 2452 -239Q2452 -310 2482.5 -366.5Q2513 -423 2565.5 -456.5Q2618 -490 2683 -490Q2738 -490 2780.5 -466.5Q2823 -443 2848.0 -402.0Q2873 -361 2873 -309V-171Q2873 -119 2848.5 -78.0Q2824 -37 2781.0 -13.5Q2738 10 2683 10ZM2701 -94Q2762 -94 2799.5 -135.0Q2837 -176 2837 -240Q2837 -283 2820.0 -316.0Q2803 -349 2772.5 -367.5Q2742 -386 2701 -386Q2661 -386 2630.5 -367.5Q2600 -349 2582.5 -316.0Q2565 -283 2565 -240Q2565 -197 2582.5 -164.0Q2600 -131 2630.5 -112.5Q2661 -94 2701 -94ZM2830 0V-129L2849 -246L2830 -362V-480H2940V0Z"/></g><path d="M3116 10Q3084 10 3063.5 -11.5Q3043 -33 3043 -64Q3043 -96 3063.5 -117.0Q3084 -138 3116 -138Q3148 -138 3168.5 -117.0Q3189 -96 3189 -64Q3189 -33 3168.5 -11.5Q3148 10 3116 10Z" fill="#1f3fff"/><circle cx="117.0" cy="-634.0" r="66.0" fill="#1f3fff"/><circle cx="1813.0" cy="-634.0" r="66.0" fill="#1f3fff"/></svg><span class="tag">{{SERVICE}} · {{PORT}}</span></a>
+<div class="body">
+<h1>{{HEADING}}</h1>
+<p class="lead">{{LEAD}}</p>
+{{PATH_CHIP}}
+<form id="gate" autocomplete="off">
+<label><span>아이디</span><input name="loginId" autocomplete="username" placeholder="아이디"></label>
+<label><span>비밀번호</span><span class="secret"><input id="pw" name="password" type="password" autocomplete="current-password" placeholder="비밀번호" required>
+<button type="button" class="eye" id="eye" aria-label="비밀번호 보기" aria-pressed="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 12S6 5 12 5s9.5 7 9.5 7-3.5 7-9.5 7S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg></button></span></label>
+<button class="go" type="submit" id="go">로그인</button>
+</form>
+<p class="err" id="err" role="alert"></p>
+<pre id="out" hidden></pre>
+<div class="divider"></div>
+<nav class="links" aria-label="이동">{{LINKS}}</nav>
+</div>
+<footer class="foot"><span class="status {{STATUS_CLASS}}"><i></i>{{STATUS_TEXT}}</span><span>© INAZINA</span></footer>
+</main>
+<script>
+(function(){
+  var form=document.getElementById("gate"),err=document.getElementById("err"),out=document.getElementById("out"),go=document.getElementById("go"),pw=document.getElementById("pw"),eye=document.getElementById("eye");
+  var target="{{TARGET_JS}}";
+  eye.addEventListener("click",function(){var s=pw.type==="password";pw.type=s?"text":"password";eye.setAttribute("aria-pressed",String(s));eye.setAttribute("aria-label",s?"비밀번호 숨기기":"비밀번호 보기")});
+  form.addEventListener("submit",function(e){
+    e.preventDefault();err.textContent="";out.hidden=true;go.disabled=true;
+    var body=new URLSearchParams({target:target,password:pw.value,loginId:form.elements.loginId.value.trim()});
+    fetch("/__browser-access",{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body:body,redirect:"manual",cache:"no-store"}).then(function(r){
+      if(r.type==="opaqueredirect"||r.status===0||(r.status>=300&&r.status<400)||r.status===401||r.status===403||r.status===429){err.textContent=r.status===429?"시도가 너무 많습니다. 잠시 뒤에 다시 시도해주세요.":"아이디 또는 비밀번호가 맞지 않거나 관리자 계정이 아닙니다.";return}
+      return r.text().then(function(t){var s;try{s=JSON.stringify(JSON.parse(t),null,2)}catch(x){err.textContent="결과를 읽지 못했습니다.";return}
+        out.textContent=s;out.hidden=false;pw.value=""})
+    }).catch(function(){err.textContent="서버에 연결하지 못했습니다."}).then(function(){go.disabled=false});
+  });
+})();
+</script>
+</body>
+</html>

@@ -12,6 +12,9 @@ Inazina는 프로세스 하나, SQLite DB 하나를 쓰는 모놀리스다. 통�
 | L2 도메인 | 은행·이자·마이너스통장·통장 종류 정산·회생·파산·환전·채권·옵션·선물·ELS·펀드·펀드 배당·투자·주문·기업행위·복권·사용자·귀화·시세·CB/BW·스왑·랩·IMA·법인 자본·준법(KYC)·신용위험·DR·상장요건·시세 공백·은행 법인·자산 원가·기업집단 | `bank_manager`, `interest_manager`, `currency_exchange_manager`, `treasury_bond_manager`, `option_manager`, `futures_manager`, `els_manager`, `fund_manager`, `fund_dividend_receiver`, `investment_manager`, `fractional_trading_manager`, `foreign_securities_manager`, `corporate_actions_manager`, `share_restructuring_manager`, `order_book_manager`, `lottery_manager`, `user_manager`, `nationality_manager`, `naturalization_manager`, `market_manager`, `capital_markets_manager`, `company_account_manager`, `compliance_manager`, `credit_risk_manager`, `depositary_receipt_manager`, `dr_deviation_monitor_manager`, `dr_dividend_tax_manager`, `listing_requirements`, `price_gap_filler`, `bank_companies`, `asset_cost_manager`, `game_funding`, `organization_manager`, `overdraft`, `account_kind_settlement`, `insolvency_manager` |
 | L3 관리·조립 | 관리자 명령, 상품 카탈로그 초기화 | `admin_manager`, `admin_control_manager`, `admin_commands_manager`, `catalog_manager` |
 
+기관 조달의 `funding_manager`와 만기 처리 `funding_maturity`는 L2 도메인에 속한다.
+만기 처리는 같은 계층의 조달 매니저와 L1 은행 분개장에 의존한다.
+
 규칙:
 
 - 모듈은 같은 계층이나 아래 계층만 import한다. 함수 안의 지연 import도 포함한다.
