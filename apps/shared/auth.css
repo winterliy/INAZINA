@@ -63,3 +63,6 @@ main.auth-shell .auth-extra a:hover { color: var(--a-accent); }
 /* Still logo (phones, weak machines, reduced motion): the same SVG with every animation off. */
 main.auth-shell .auth-scene.is-still .sc-ltr, main.auth-shell .auth-scene.is-still .sc-dot, main.auth-shell .auth-scene.is-still .sc-word { animation: none !important; opacity: 1 !important; transform: none !important; }
 main.auth-shell .auth-scene.is-still .sc-ring, main.auth-shell .auth-scene.is-still .sc-float, main.auth-shell .auth-scene.is-still .sc-sheen { display: none; }
+
+/* While the motion picture runs, the magnifier lens is the pointer: hide the system cursor over it only. */
+main.auth-shell .auth-scene.is-3d, main.auth-shell .auth-scene.is-3d * { cursor: none; }
