@@ -4,8 +4,8 @@
  *    wordmark, hold (crisp), tear into a colour-split glitch, and dissolve back; for a few seconds the paper turns to night.
  *  - after the logo dissolves, more scenes, each from one of the references (all of them points): a stem that blooms, a walk through
  *    a scanned tunnel, a branch whose past frames stack up (time-stack), stacked sound-waveform rows, splintered fragments, a fast
- *    colour-cut montage (eclipse / iris / prism), and an event ring with a live panel and a red fault; then back to paper and the logo
- *  - a scrolling point-cloud ground, a ring of event ticks, radial hairlines, film grain + vignette, and a typed caption in a
+ *    colour-cut montage (eclipse / iris / prism), and a live event panel with a red fault; then back to paper and the logo
+ *  - a scrolling point-cloud ground, radial hairlines, film grain + vignette, and a typed caption in a
  *    black highlight box with a mono readout, like the references. The i dots and the period stay accent blue; a few points
  *    flash copper in the glitch.
  *  - there is no audio on a sign-in page, so the "audio-reactive" part is an internal pulse (a steady beat) driving size and ticks.
@@ -168,25 +168,6 @@ void main() {
   gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
   vA = (1.0 - aRay.y) * 0.16 * uBurst * (1.0 - smoothstep(0.2, 0.7, uForm)) * uPresence;
   vAcc = 0.0;
-}
-`;
-
-/** A ring of event ticks around the word; some tick longer and brighter on the beat, like events passing through. */
-const RING_VERT = /* glsl */`
-${HASH}
-attribute vec2 aTick;              // x: which tick, y: 0 inner / 1 outer end
-uniform float uTime, uForm, uBeat, uAlarm, uRing;
-varying float vA, vAcc;
-void main() {
-  float id = aTick.x;
-  float ang = id / 120.0 * 6.2831853 + uTime * 0.03;
-  float slot = floor(uTime * 1.6 + h11(id) * 7.0);
-  float lit = step(0.84, h11(id * 3.1 + slot)) * (0.5 + 0.5 * uBeat);
-  float rad = 1.0 + aTick.y * (0.05 + 0.3 * lit);
-  vec3 pos = vec3(cos(ang) * 2.1 * rad, sin(ang) * 1.05 * rad, -0.3);
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
-  vA = (0.16 + 0.55 * lit) * (0.45 + 0.55 * uForm) * (1.0 - aTick.y * 0.5) * (1.0 + 1.8 * uRing);
-  vAcc = max(step(0.93, h11(id * 5.7 + slot)) * lit, uAlarm * step(0.55, h11(id * 1.3 + slot)));
 }
 `;
 
@@ -385,11 +366,9 @@ const INK_FRAG = /* glsl */`
 precision mediump float;
 varying float vA, vAcc;
 uniform float uDark, uAccent;
-uniform highp float uAlarm;                // also in the ring's vertex shader (highp there): the precisions have to match
 void main() {
   vec3 ink = mix(vec3(0.04, 0.05, 0.1), vec3(0.9, 0.93, 1.0), uDark);
-  vec3 hot = mix(vec3(1.0, 0.45, 0.16), vec3(1.0, 0.18, 0.14), uAlarm);
-  gl_FragColor = vec4(mix(ink, hot, vAcc * max(uAccent, uAlarm)), vA);
+  gl_FragColor = vec4(mix(ink, vec3(1.0, 0.45, 0.16), vAcc * uAccent), vA);
 }
 `;
 const GROUND_FRAG = /* glsl */`
@@ -494,7 +473,7 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void): ()
   geometry.setAttribute("aBlue", new BufferAttribute(kind, 1));
   const uniforms = {
     uTime: { value: 0 }, uForm: { value: 0 }, uBurst: { value: 0.15 }, uGlitch: { value: 0 }, uPx: { value: 1 }, uTrail: { value: 0 },
-    uFormRate: { value: 0 }, uBurstRate: { value: 0 }, uBeat: { value: 0 }, uPresence: { value: 1 }, uBloom: { value: 0 }, uBloomVis: { value: 0 }, uWalk: { value: 0 }, uWalkVis: { value: 0 }, uStack: { value: 0 }, uWave: { value: 0 }, uShard: { value: 0 }, uCut: { value: 0 }, uCutIdx: { value: 0 }, uCutT: { value: 0 }, uAlarm: { value: 0 }, uRing: { value: 0 }, uDark: { value: 0 }, uAccent: { value: 0 }, uAlphaScale: { value: 1 },
+    uFormRate: { value: 0 }, uBurstRate: { value: 0 }, uBeat: { value: 0 }, uPresence: { value: 1 }, uBloom: { value: 0 }, uBloomVis: { value: 0 }, uWalk: { value: 0 }, uWalkVis: { value: 0 }, uStack: { value: 0 }, uWave: { value: 0 }, uShard: { value: 0 }, uCut: { value: 0 }, uCutIdx: { value: 0 }, uCutT: { value: 0 },  uDark: { value: 0 }, uAccent: { value: 0 }, uAlphaScale: { value: 1 },
     uPointer: { value: new Vector2(9, 9) }, uOffset: { value: new Vector2(0, 0) }, uTint: { value: new Vector3(0, 0, 0) }, uTintMix: { value: 0 },
   };
   const pointMaterial = (extra: Partial<typeof uniforms> = {}) => new ShaderMaterial({
@@ -532,8 +511,7 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void): ()
     return { mesh, geometry: g, material: m };
   };
   const rays = lineMesh(RAY_VERT, "aRay", 140);
-  const ring = lineMesh(RING_VERT, "aTick", 120);
-
+  
   const GROUND = small ? 7000 : 15000;
   const ground = new BufferGeometry();
   const grid = new Float32Array(GROUND * 3);
@@ -564,7 +542,7 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void): ()
   const cut = glowPoints(small ? 8000 : 16000, CUT_VERT, "aC");
 
   const scene = new Scene();
-  scene.add(groundPoints, bloom.mesh, walk.mesh, stack.mesh, wave.mesh, shard.mesh, cut.mesh, ring.mesh, rays.mesh, trails, points, ...ghosts);
+  scene.add(groundPoints, bloom.mesh, walk.mesh, stack.mesh, wave.mesh, shard.mesh, cut.mesh, rays.mesh, trails, points, ...ghosts);
   const camera = new PerspectiveCamera(FOV, 1, 0.1, 60);
 
   const fadeUniforms = { uFade: { value: 1 }, uAspect: { value: 1 }, uDark: uniforms.uDark };
@@ -591,7 +569,7 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void): ()
   caption.style.cssText = "display:inline-block;padding:1px 9px 2px;margin-bottom:6px;font:600 15px/1.45 var(--font-system,'DM Sans','Noto Sans KR',system-ui,sans-serif);letter-spacing:-.01em;white-space:pre;min-width:22px;min-height:24px";
   const readout = document.createElement("div");
   hud.append(caption, readout);
-  // the live panel (bars, sparkline, counter) that fades in with the event ring, like the data-art reel's bottom strip
+  // the live panel (bars, sparkline, counter) that fades in near the end, like the data-art reel's bottom strip
   const panel = document.createElement("canvas");
   const PANEL = { w: 360, h: 92 };
   const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -698,7 +676,7 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void): ()
     uniforms.uDark.value = phase.dark; uniforms.uAccent.value = phase.accent; uniforms.uPresence.value = phase.presence;
     uniforms.uBloom.value = phase.bloomGrowth; uniforms.uBloomVis.value = phase.bloomVis; uniforms.uWalk.value = phase.walkTwist; uniforms.uWalkVis.value = phase.walkVis;
     uniforms.uStack.value = phase.stackVis; uniforms.uWave.value = phase.waveVis; uniforms.uShard.value = phase.shardVis;
-    uniforms.uCut.value = phase.cutVis; uniforms.uCutIdx.value = phase.cutIdx; uniforms.uCutT.value = phase.cutT; uniforms.uAlarm.value = phase.alarm; uniforms.uRing.value = phase.panelVis;
+    uniforms.uCut.value = phase.cutVis; uniforms.uCutIdx.value = phase.cutIdx; uniforms.uCutT.value = phase.cutT;
     uniforms.uBeat.value = Math.pow(0.5 + 0.5 * Math.cos((time * Math.PI * 2) / BEAT), 6);
     uniforms.uAlphaScale.value = held ? 1 : 0.55;              // the long smear stacks many frames, so each one is fainter
     for (const ghost of ghosts) ghost.visible = phase.glitch > 0;
@@ -754,7 +732,7 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void): ()
     window.removeEventListener("pointermove", onPointer);
     document.removeEventListener("visibilitychange", onVisibility);
     grainAnimation.cancel();
-    for (const item of [geometry, material, trailGeometry, trailMaterial, rays.geometry, rays.material, ring.geometry, ring.material, bloom.geometry, bloom.material, walk.geometry, walk.material, stack.geometry, stack.material, wave.geometry, wave.material, shard.geometry, shard.material, cut.geometry, cut.material, ground, groundMaterial, fadeGeometry, fadeMaterial, lensMaterial, picture, ...ghostMaterials]) item.dispose();
+    for (const item of [geometry, material, trailGeometry, trailMaterial, rays.geometry, rays.material, bloom.geometry, bloom.material, walk.geometry, walk.material, stack.geometry, stack.material, wave.geometry, wave.material, shard.geometry, shard.material, cut.geometry, cut.material, ground, groundMaterial, fadeGeometry, fadeMaterial, lensMaterial, picture, ...ghostMaterials]) item.dispose();
     renderer.dispose();
     renderer.domElement.remove(); grain.remove(); vignette.remove(); hud.remove(); panel.remove();
   };
