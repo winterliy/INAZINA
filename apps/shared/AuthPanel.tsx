@@ -191,20 +191,47 @@ export function AuthPanel({ app, onAuthenticated, extra }: { app: "dashboard" | 
   </main>;
 }
 
-/** The sign-in picture: the inazina. wordmark as a 3D solid (loginScene3d.ts, three.js with a bloom) that rises letter by letter,
- *  drops the blue dots in and sends rings from the period. The plain SVG (scene.svg, also used by the 4312/4313 gate pages) shows
- *  first and stays when WebGL is not available or the person asked for less motion. */
+const STILL_KEY = "inazina.scene";
+/** The motion picture is for capable desktops only; phones, weak machines and software rendering get the still logo.
+ *  `?scene=3d` forces the motion (for testing). A machine that turned out too slow is remembered (see loginScene3d's onSlow). */
+function stillLogoOnly(): boolean {
+  try {
+    if (new URLSearchParams(location.search).get("scene") === "3d") return false;
+    if (localStorage.getItem(STILL_KEY) === "still") return true;
+  } catch { /* storage blocked: decide from the hardware alone */ }
+  const nav = navigator as Navigator & { deviceMemory?: number };
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return true;
+  if (window.matchMedia?.("(pointer: coarse)").matches || window.innerWidth < 900 || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)) return true;
+  if ((nav.hardwareConcurrency ?? 8) <= 2 || (nav.deviceMemory ?? 8) <= 2) return true;
+  try {
+    const gl = document.createElement("canvas").getContext("webgl");
+    const info = gl?.getExtension("WEBGL_debug_renderer_info");
+    const renderer = gl && info ? String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL)) : "";
+    if (!gl || /swiftshader|llvmpipe|software|basic render/i.test(renderer)) return true;
+  } catch { return true; }
+  return false;
+}
+
+/** The sign-in picture: the ink point cloud (loginScene3d.ts, three.js) that gathers into the inazina. wordmark. Everywhere it is
+ *  not suitable (see stillLogoOnly) and whenever it runs too slowly, just the logo is shown, without motion (is-still). The plain
+ *  SVG (scene.svg, also used by the 4312/4313 gate pages) is that logo. */
 function AuthScene() {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const element = ref.current;
-    if (!element || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    if (!element) return;
+    if (stillLogoOnly()) { element.classList.add("is-still"); return; }
     let cancelled = false;
     let dispose: (() => void) | undefined;
+    const settle = () => {
+      dispose?.(); dispose = undefined;
+      element.classList.remove("is-3d"); element.classList.add("is-still");
+      try { localStorage.setItem(STILL_KEY, "still"); } catch { /* not remembered */ }
+    };
     void import("./loginScene3d").then((scene) => {
       if (cancelled) return;
-      try { dispose = scene.mountLoginScene(element); element.classList.add("is-3d"); } catch { element.classList.remove("is-3d"); }
-    }).catch(() => undefined);
+      try { dispose = scene.mountLoginScene(element, settle); element.classList.add("is-3d"); } catch { element.classList.add("is-still"); }
+    }).catch(() => element.classList.add("is-still"));
     return () => { cancelled = true; dispose?.(); element.classList.remove("is-3d"); };
   }, []);
   return <div className="auth-scene" ref={ref}><div className="auth-scene-svg" dangerouslySetInnerHTML={{ __html: sceneSvg }} /></div>;

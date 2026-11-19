@@ -178,7 +178,8 @@ void main() {
 }
 `;
 
-export function mountLoginScene(container: HTMLElement): () => void {
+/** `onSlow` is called once if the first seconds ran under ~26 fps; the caller then drops the scene and shows the still logo. */
+export function mountLoginScene(container: HTMLElement, onSlow?: () => void): () => void {
   const renderer = new WebGLRenderer({ antialias: false, alpha: false, preserveDrawingBuffer: true, powerPreference: "high-performance" });
   renderer.autoClear = false;
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
@@ -285,12 +286,16 @@ export function mountLoginScene(container: HTMLElement): () => void {
     return { burst, form, glitch, label };
   };
 
-  let prevForm = 0, prevBurst = 0.15, running = true, visible = true, frame = 0, last = performance.now(), time = 0, hudAt = 0;
+  let measured = 0, measuredFrames = 0, prevForm = 0, prevBurst = 0.15, running = true, visible = true, frame = 0, last = performance.now(), time = 0, hudAt = 0;
   const render = (now: number) => {
     frame = requestAnimationFrame(render);
     const delta = Math.min(1, (now - last) / 1000); last = now;
     if (!running || !visible) return;
     time += delta;
+    if (onSlow && time > 0.6 && measured < 2.4) {                // first 0.6 s is shader compile and layout; judge the next 2.4 s
+      measured += delta; measuredFrames += 1;
+      if (measured >= 2.4 && measuredFrames / measured < 26) { cancelAnimationFrame(frame); onSlow(); return; }
+    }
     const t = time % CYCLE;
     const phase = phaseOf(t);
     if (delta > 0) {                                           // how fast the cloud is changing, to size the trails
