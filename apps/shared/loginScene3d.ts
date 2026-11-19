@@ -2,6 +2,8 @@
  * The sign-in picture, as an ink point cloud (the look comes from a set of generative / scan / data-art reels):
  *  - ~60k points burst from one hub as forking, swirling ink strands, leave long smeared trails, pull together into the inazina.
  *    wordmark, hold (crisp), tear into a colour-split glitch, and dissolve back; for a few seconds the paper turns to night.
+ *  - after the logo dissolves, two more scenes in the night: a stem that grows, branches and blooms (all points), then a walk
+ *    through a scanned point-cloud tunnel, before the loop returns to the paper and the logo
  *  - a scrolling point-cloud ground, a ring of event ticks, radial hairlines, film grain + vignette, and a typed caption in a
  *    black highlight box with a mono readout, like the references. The i dots and the period stay accent blue; a few points
  *    flash copper in the glitch.
@@ -10,7 +12,7 @@
  * Loaded only on the sign-in screen (dynamic import); a still logo is shown where this is not suitable (see AuthPanel).
  */
 import {
-  BufferAttribute, BufferGeometry, LineSegments, Mesh, PerspectiveCamera, Points, Scene, ShaderMaterial, Vector2, Vector3, WebGLRenderer,
+  AdditiveBlending, BufferAttribute, BufferGeometry, LineSegments, Mesh, PerspectiveCamera, Points, Scene, ShaderMaterial, Vector2, Vector3, WebGLRenderer,
 } from "three";
 import { LETTERS, PERIOD } from "./Logo";
 
@@ -19,7 +21,7 @@ const S = 0.001;                              // one SVG unit in scene units
 const CENTER = { x: 1636, up: 350 };          // wordmark centre in SVG units (up = -y)
 const WORD_HALF_WIDTH = 1.64;
 const FOV = 28;
-const CYCLE = 16;                             // seconds per loop
+const CYCLE = 28;                             // seconds per loop: logo 0–14, night 11–27 with a bloom and a walk after it
 const BEAT = 0.6;                             // seconds per pulse
 
 const clamp01 = (t: number) => Math.min(1, Math.max(0, t));
@@ -66,7 +68,7 @@ ${HASH}
 attribute vec3 aTarget;
 attribute vec4 aSeed;
 attribute float aBlue;                      // 0 ink, 1 accent blue, 2 ink that flashes copper
-uniform float uTime, uForm, uBurst, uGlitch, uPx, uTrail, uFormRate, uBurstRate, uBeat;
+uniform float uTime, uForm, uBurst, uGlitch, uPx, uTrail, uFormRate, uBurstRate, uBeat, uPresence;
 uniform vec2 uPointer, uOffset;
 float gF;                                   // this point's own 0..1 "settled into the word" at the moment asked about
 
@@ -116,7 +118,7 @@ void main() {
   gl_Position = projectionMatrix * mv;
   gl_PointSize = uPx * mix(1.15 + 1.9 * aSeed.y, 1.0 + 0.9 * aSeed.y, f) * (1.0 + 0.4 * uBeat * (1.0 - f)) * clamp(5.2 / -mv.z, 0.55, 1.7);
   vBlue = aBlue;
-  vAlpha = mix(0.3, 0.95, f) * mix(0.55 + 0.45 * aSeed.x, 1.0, f);
+  vAlpha = mix(0.3, 0.95, f) * mix(0.55 + 0.45 * aSeed.x, 1.0, f) * uPresence;
 }
 `;
 
@@ -132,7 +134,7 @@ void main() {
   vec3 pos = place(uTime - back, clamp(uForm - uFormRate * back, 0.0, 1.0), max(0.15, uBurst - uBurstRate * back));
   gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
   vBlue = aBlue;
-  vAlpha = (1.0 - aEnd) * 0.4 * (0.5 + 0.5 * aSeed.x) * (1.0 - smoothstep(0.85, 1.0, uForm));
+  vAlpha = (1.0 - aEnd) * 0.4 * (0.5 + 0.5 * aSeed.x) * (1.0 - smoothstep(0.85, 1.0, uForm)) * uPresence;
 }
 `;
 
@@ -155,7 +157,7 @@ void main() {
 const RAY_VERT = /* glsl */`
 ${HASH}
 attribute vec2 aRay;               // x: which ray, y: 0 at the hub / 1 at the tip
-uniform float uTime, uForm, uBurst;
+uniform float uTime, uForm, uBurst, uPresence;
 varying float vA, vAcc;
 void main() {
   float id = aRay.x;
@@ -163,7 +165,7 @@ void main() {
   float ang = id / 140.0 * 6.2831853 + h11(id + 3.0) * 0.5 + aRay.y * len * 0.55 * (0.8 + 0.4 * sin(id)) + 0.2 * sin(uTime * 0.25 + id);
   vec3 pos = vec3(cos(ang), sin(ang), (h11(id + 9.0) - 0.5) * 1.2 * aRay.y) * aRay.y * len;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
-  vA = (1.0 - aRay.y) * 0.16 * uBurst * (1.0 - smoothstep(0.2, 0.7, uForm));
+  vA = (1.0 - aRay.y) * 0.16 * uBurst * (1.0 - smoothstep(0.2, 0.7, uForm)) * uPresence;
   vAcc = 0.0;
 }
 `;
@@ -201,6 +203,72 @@ void main() {
   gl_PointSize = uPx * (0.9 + 1.4 * aGrid.z) * clamp(5.2 / -mv.z, 0.5, 1.6);
   vA = smoothstep(-9.0, -4.0, z) * (1.0 - smoothstep(0.8, 3.0, z)) * (1.0 - smoothstep(3.0, 5.5, abs(x))) * 0.5 * (1.0 - 0.75 * uForm);
   vAcc = 0.0;
+}
+`;
+
+/** Scene 2: a stem grows from the ground, forks, and every fork ends in a cloud of pink / violet blossom points. */
+const BLOOM_VERT = /* glsl */`
+${HASH}
+attribute vec4 aB;
+uniform float uTime, uBloom, uBloomVis, uPx;
+varying vec3 vCol;
+varying float vA;
+vec3 stemAt(float t) { return vec3(0.07 * sin(t * 5.0 + uTime * 0.4), -0.98 + t * 1.55, 0.0); }
+void main() {
+  vec3 pos; float a;
+  if (aB.w < 0.1) {                                   // the main stem
+    pos = stemAt(aB.x * clamp(uBloom * 1.6, 0.0, 1.0)); vCol = vec3(0.35, 0.85, 0.5); a = 0.8;
+  } else {
+    float k = floor(aB.y * 16.0);
+    float tb = 0.22 + 0.6 * h11(k);
+    float gb = clamp((uBloom * 1.5 - tb * 0.9 - 0.1) / 0.55, 0.0, 1.0);   // this fork's growth, later forks start later
+    float side = (h11(k + 3.0) - 0.5) * 2.8;
+    float len = 0.3 + 0.55 * h11(k + 7.0);
+    vec3 base = stemAt(tb);
+    vec3 tip = base + vec3(sin(side) * len, 0.18 * len, (h11(k + 11.0) - 0.5) * 0.8 * len);
+    float u = aB.x * gb;
+    vec3 branch = mix(base, tip, u) + vec3(0.0, 0.18 * sin(u * 3.14159) * len, 0.0);
+    if (aB.z > 0.45) {                                // blossom cloud around the tip
+      vec3 o = (vec3(h11(aB.x * 91.0), h11(aB.x * 57.0 + 1.0), h11(aB.x * 33.0 + 2.0)) - 0.5) * 2.0;
+      pos = tip + o * 0.17 * gb * (0.4 + aB.z);
+      vCol = mix(vec3(1.0, 0.62, 0.82), vec3(0.62, 0.55, 1.0), aB.z);
+      a = 0.85 * smoothstep(0.35, 1.0, gb);
+    } else { pos = branch; vCol = vec3(0.42, 0.9, 0.55); a = 0.55 * smoothstep(0.0, 0.2, gb); }
+  }
+  pos.x += sin(uTime * 0.6 + pos.y * 3.0) * 0.012;
+  vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+  gl_Position = projectionMatrix * mv;
+  gl_PointSize = uPx * (1.2 + 1.6 * aB.z) * clamp(5.2 / -mv.z, 0.55, 1.7);
+  vA = a * uBloomVis;
+}
+`;
+
+/** Scene 3: flying through a scanned tunnel: points on a wobbling tube stream toward the camera, the tube twists tighter over time. */
+const WALK_VERT = /* glsl */`
+attribute vec4 aW;
+uniform float uTime, uWalk, uWalkVis, uPx;
+varying vec3 vCol;
+varying float vA;
+void main() {
+  float z = mod(aW.y * 30.0 + uTime * (2.2 + 1.5 * uWalk), 30.0) - 26.0;
+  float ang = aW.x * 6.2831853 + z * 0.12 * uWalk + uTime * 0.05;
+  float n = sin(ang * 3.0 + z * 0.7) * 0.18 + sin(ang * 7.0 - z * 1.3) * 0.08;
+  float r = 1.65 + n + (aW.z - 0.5) * 0.12;
+  vec3 pos = vec3(cos(ang) * r * 1.35, sin(ang) * r * 0.95, z);
+  vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+  gl_Position = projectionMatrix * mv;
+  gl_PointSize = uPx * (0.9 + 1.5 * aW.z) * clamp(5.2 / -mv.z, 0.5, 1.8);
+  vCol = mix(vec3(0.86, 0.9, 1.0), vec3(0.55, 0.95, 0.62), step(0.82, aW.w));   // a few leafy green patches
+  vA = uWalkVis * smoothstep(-26.0, -8.0, z) * (1.0 - smoothstep(1.0, 3.5, z)) * (0.3 + 0.7 * aW.w) * 0.8;
+}
+`;
+const GLOW_FRAG = /* glsl */`
+precision mediump float;
+varying vec3 vCol;
+varying float vA;
+void main() {
+  float d = length(gl_PointCoord - 0.5);
+  gl_FragColor = vec4(vCol, smoothstep(0.5, 0.1, d) * vA);
 }
 `;
 const INK_FRAG = /* glsl */`
@@ -244,7 +312,8 @@ void main() {
 
 const VIGNETTE = { day: "radial-gradient(ellipse at 50% 46%, transparent 52%, rgba(8,12,36,.12) 100%)", night: "radial-gradient(ellipse at 50% 46%, transparent 52%, rgba(0,0,0,.35) 100%)" };
 const CAPTIONS: Record<string, string> = {
-  burst: "every point, in noise.", converge: "pulled into a word.", hold: "inazina.", disperse: "back to noise.", drift: "again.",
+  burst: "every point, in noise.", converge: "pulled into a word.", hold: "inazina.", disperse: "back to noise.", drift: "noise settles.",
+  bloom: "something grows.", walk: "a walk, scanned.", again: "again.",
 };
 const GRAIN = "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 .55 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>\")";
 
@@ -276,7 +345,7 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void): ()
   geometry.setAttribute("aBlue", new BufferAttribute(kind, 1));
   const uniforms = {
     uTime: { value: 0 }, uForm: { value: 0 }, uBurst: { value: 0.15 }, uGlitch: { value: 0 }, uPx: { value: 1 }, uTrail: { value: 0 },
-    uFormRate: { value: 0 }, uBurstRate: { value: 0 }, uBeat: { value: 0 }, uDark: { value: 0 }, uAccent: { value: 0 }, uAlphaScale: { value: 1 },
+    uFormRate: { value: 0 }, uBurstRate: { value: 0 }, uBeat: { value: 0 }, uPresence: { value: 1 }, uBloom: { value: 0 }, uBloomVis: { value: 0 }, uWalk: { value: 0 }, uWalkVis: { value: 0 }, uDark: { value: 0 }, uAccent: { value: 0 }, uAlphaScale: { value: 1 },
     uPointer: { value: new Vector2(9, 9) }, uOffset: { value: new Vector2(0, 0) }, uTint: { value: new Vector3(0, 0, 0) }, uTintMix: { value: 0 },
   };
   const pointMaterial = (extra: Partial<typeof uniforms> = {}) => new ShaderMaterial({
@@ -326,8 +395,23 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void): ()
   const groundPoints = new Points(ground, groundMaterial);
   groundPoints.frustumCulled = false;
 
+
+  // the two night scenes after the logo: both are just more points, drawn additively so they glow on the dark
+  const glowPoints = (count: number, vert: string, attribute: string) => {
+    const g = new BufferGeometry();
+    const data = new Float32Array(count * 4);
+    for (let i = 0; i < data.length; i += 1) data[i] = Math.random();
+    g.setAttribute("position", new BufferAttribute(new Float32Array(count * 3), 3));
+    g.setAttribute(attribute, new BufferAttribute(data, 4));
+    const m = new ShaderMaterial({ uniforms, vertexShader: vert, fragmentShader: GLOW_FRAG, transparent: true, depthTest: false, depthWrite: false, blending: AdditiveBlending });
+    const mesh = new Points(g, m); mesh.frustumCulled = false;
+    return { mesh, geometry: g, material: m };
+  };
+  const bloom = glowPoints(small ? 9000 : 20000, BLOOM_VERT, "aB");
+  const walk = glowPoints(small ? 12000 : 26000, WALK_VERT, "aW");
+
   const scene = new Scene();
-  scene.add(groundPoints, ring.mesh, rays.mesh, trails, points, ...ghosts);
+  scene.add(groundPoints, bloom.mesh, walk.mesh, ring.mesh, rays.mesh, trails, points, ...ghosts);
   const camera = new PerspectiveCamera(FOV, 1, 0.1, 60);
 
   const fadeUniforms = { uFade: { value: 1 }, uAspect: { value: 1 }, uDark: uniforms.uDark };
@@ -376,14 +460,20 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void): ()
   window.addEventListener("pointermove", onPointer);
 
   const phaseOf = (t: number) => {
-    // [burst] 0–1.4 · [converge] 1.4–4.2 · [hold] 4.2–11 (glitch ticks at 4.25, 7.0, 9.6) · [disperse] 11–14 · [drift] 14–16
-    const burst = t < 1.4 ? 0.15 + 0.85 * (1 - Math.pow(1 - t / 1.4, 3)) : 1;
+    // logo: [burst] 0–1.4 · [converge] 1.4–4.2 · [hold] 4.2–11 (glitch at 4.25, 7.0, 9.6) · [disperse] 11–14 · [drift] 14–16
+    // then in the night: [bloom] 16–22.2 · [walk] 22.2–27 · [again] 27–28, the cloud collapsing back to the hub for the next burst
+    const burst = t < 1.4 ? 0.15 + 0.85 * (1 - Math.pow(1 - t / 1.4, 3)) : t > 26.8 ? 1 - 0.85 * smooth((t - 26.8) / 1.2) : 1;
     const form = t < 1.4 ? 0 : t < 4.2 ? smooth((t - 1.4) / 2.8) : t < 11 ? 1 : t < 14 ? 1 - smooth((t - 11) / 3) : 0;
     const glitch = (t > 7.0 && t < 7.22) || (t > 9.6 && t < 9.72) || (t > 4.25 && t < 4.4) ? 1 : 0;
-    const name = t < 1.4 ? "burst" : t < 4.2 ? "converge" : t < 11 ? "hold" : t < 14 ? "disperse" : "drift";
-    const dark = smooth((t - 11.2) / 0.9) * (1 - smooth((t - 15.0) / 0.8));         // a few seconds of night while it dissolves
+    const name = t < 1.4 ? "burst" : t < 4.2 ? "converge" : t < 11 ? "hold" : t < 14 ? "disperse" : t < 16 ? "drift" : t < 22.2 ? "bloom" : t < 27 ? "walk" : "again";
+    const dark = smooth((t - 11.2) / 0.9) * (1 - smooth((t - 26.4) / 1.4));         // night while it dissolves, blooms and walks
     const accent = Math.max(glitch, smooth((t - 11) / 1.2) * (1 - smooth((t - 13.5) / 1.5)));
-    return { burst, form, glitch, name, dark, accent };
+    const presence = t < 14.5 ? 1 : t < 15.7 ? 1 - smooth((t - 14.5) / 1.2) : t < 26.8 ? 0 : smooth((t - 26.8) / 1.2);   // the logo cloud steps aside
+    const bloomGrowth = smooth((t - 15.8) / 4.2);
+    const bloomVis = smooth((t - 15.6) / 0.8) * (1 - smooth((t - 22) / 0.9));
+    const walkVis = smooth((t - 22.2) / 0.9) * (1 - smooth((t - 26.3) / 0.9));
+    const walkTwist = smooth((t - 22.2) / 3.5);
+    return { burst, form, glitch, name, dark, accent, presence, bloomGrowth, bloomVis, walkVis, walkTwist };
   };
 
   let measured = 0, measuredFrames = 0, prevForm = 0, prevBurst = 0.15, running = true, visible = true, frame = 0, last = performance.now(), time = 0, hudAt = 0;
@@ -406,9 +496,10 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void): ()
     }
     prevForm = phase.form; prevBurst = phase.burst;
     const held = phase.form > 0.98;
-    uniforms.uTrail.value = t < 14 ? 0.32 : 0.5;
+    uniforms.uTrail.value = t < 14 || t > 26 ? 0.32 : 0.5;
     uniforms.uTime.value = time; uniforms.uForm.value = phase.form; uniforms.uBurst.value = phase.burst; uniforms.uGlitch.value = phase.glitch;
-    uniforms.uDark.value = phase.dark; uniforms.uAccent.value = phase.accent;
+    uniforms.uDark.value = phase.dark; uniforms.uAccent.value = phase.accent; uniforms.uPresence.value = phase.presence;
+    uniforms.uBloom.value = phase.bloomGrowth; uniforms.uBloomVis.value = phase.bloomVis; uniforms.uWalk.value = phase.walkTwist; uniforms.uWalkVis.value = phase.walkVis;
     uniforms.uBeat.value = Math.pow(0.5 + 0.5 * Math.cos((time * Math.PI * 2) / BEAT), 6);
     uniforms.uAlphaScale.value = held ? 1 : 0.55;              // the long smear stacks many frames, so each one is fainter
     for (const ghost of ghosts) ghost.visible = phase.glitch > 0;
@@ -457,7 +548,7 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void): ()
     window.removeEventListener("pointermove", onPointer);
     document.removeEventListener("visibilitychange", onVisibility);
     grainAnimation.cancel();
-    for (const item of [geometry, material, trailGeometry, trailMaterial, rays.geometry, rays.material, ring.geometry, ring.material, ground, groundMaterial, fadeGeometry, fadeMaterial, ...ghostMaterials]) item.dispose();
+    for (const item of [geometry, material, trailGeometry, trailMaterial, rays.geometry, rays.material, ring.geometry, ring.material, bloom.geometry, bloom.material, walk.geometry, walk.material, ground, groundMaterial, fadeGeometry, fadeMaterial, ...ghostMaterials]) item.dispose();
     renderer.dispose();
     renderer.domElement.remove(); grain.remove(); vignette.remove(); hud.remove();
   };
