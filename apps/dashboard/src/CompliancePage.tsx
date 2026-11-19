@@ -21,6 +21,17 @@ type Overview = { amlRules: { nationality: string }[]; creditRiskScenarios: EclS
 type Result = { success: boolean; result: Record<string, unknown> };
 
 /** Administrator-only credit-risk controls (ECL, charge-offs, collateral, grade policy). KYC/AML moved to admin commands. */
+const SCENARIO_NAMES: Record<string, string> = { optimistic: "낙관", base: "기본", downside: "하방" };
+/** The stored scenario blob is long JSON; the table shows "낙관 20% · 기본 60% · 하방 20%" and the full text on hover. */
+function scenarioSummary(value: unknown) {
+  try {
+    const list = typeof value === "string" ? JSON.parse(value) : value;
+    if (Array.isArray(list) && list.length) return list.map((entry) => `${SCENARIO_NAMES[entry.key] ?? entry.key} ${Math.round(Number(entry.weight) * 1000) / 10}%`).join(" · ");
+  } catch { /* fall through to the plain text */ }
+  const text = plain(String(value ?? ""));
+  return text.length > 80 ? `${text.slice(0, 80)}…` : text;
+}
+
 export function CompliancePage({ ctx }: { ctx: Ctx }) {
   const { busy, run, say } = ctx;
   const [data, setData] = useState<Overview>({ amlRules: [], creditRiskScenarios: [], creditSupport: [], creditPolicyOverrides: [], futureCommitments: [], collateralRecovery: [], chargeoffEvents: [], eclAssessments: [], eclBacktest: { maturedThroughEpoch: 0, groups: [], discrimination: [], stability: [], borrowerHoldout: [], outOfTimeBorrowerHoldout: [], gradeTransitions: [], gradeTransitionMethod: "", method: "" } });
@@ -262,7 +273,7 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
 
     <Card title="최근 대출 ECL 평가" caption="최근 100건 · 사용 EIR·예상손실 시점·할인계수를 평가 시점 그대로 보존합니다. Stage 1·2 EAD는 midpoint까지 납부 예정인 미도래 원금을 차감한 proxy이며, 상환일정이 없거나 Stage 3이면 현재 잔액입니다. 시점·EAD 모두 현금흐름 기반 정밀모형이 아닌 근사입니다.">
       <div className="scroll-x"><table><thead><tr><th>일자</th><th>대출</th><th>국적</th><th>단계</th><th>PD 등급</th><th>비이자수익 개시</th><th className="r">12개월 PD</th><th className="r">기간 PD</th><th className="r">거시 PD 배수</th><th className="r">LGD</th><th className="r">적용 EIR</th><th className="r">손실시점(년)</th><th className="r">할인계수</th><th className="r">EAD</th><th className="r">기대손실</th><th>통화</th><th>시나리오</th></tr></thead><tbody>
-        {data.eclAssessments.map((item) => <tr key={item.assessment_id}><td>{item.as_of_day}</td><td className="mono">#{item.loan_id}</td><td>{item.nationality}</td><td>{item.stage}</td><td>{item.risk_grade ?? "과거평가"}</td><td>{item.nonaccrual_since_epoch ? date(item.nonaccrual_since_epoch) : "—"}</td><td className="r">{(item.pd_12m * 100).toFixed(2)}%</td><td className="r">{(item.lifetime_pd * 100).toFixed(2)}%</td><td className="r mono">{Number(item.macro_pd_multiplier).toFixed(3)}×</td><td className="r">{(item.lgd * 100).toFixed(2)}%</td><td className="r mono">{Number(item.effective_interest_rate).toFixed(4)}%</td><td className="r mono">{Number(item.expected_loss_time_years).toFixed(3)}</td><td className="r mono">{Number(item.discount_factor).toFixed(6)}</td><td className="r mono">{groupAmount(item.ead_text)}</td><td className="r mono">{groupAmount(item.expected_loss_text)}</td><td>{item.quote_currency}</td><td>{plain(item.scenario)}</td></tr>)}
+        {data.eclAssessments.map((item) => <tr key={item.assessment_id}><td>{item.as_of_day}</td><td className="mono">#{item.loan_id}</td><td>{item.nationality}</td><td>{item.stage}</td><td>{item.risk_grade ?? "과거평가"}</td><td>{item.nonaccrual_since_epoch ? date(item.nonaccrual_since_epoch) : "—"}</td><td className="r">{(item.pd_12m * 100).toFixed(2)}%</td><td className="r">{(item.lifetime_pd * 100).toFixed(2)}%</td><td className="r mono">{Number(item.macro_pd_multiplier).toFixed(3)}×</td><td className="r">{(item.lgd * 100).toFixed(2)}%</td><td className="r mono">{Number(item.effective_interest_rate).toFixed(4)}%</td><td className="r mono">{Number(item.expected_loss_time_years).toFixed(3)}</td><td className="r mono">{Number(item.discount_factor).toFixed(6)}</td><td className="r mono">{groupAmount(item.ead_text)}</td><td className="r mono">{groupAmount(item.expected_loss_text)}</td><td>{item.quote_currency}</td><td title={plain(String(item.scenario ?? ""))}>{scenarioSummary(item.scenario)}</td></tr>)}
       </tbody></table>{!data.eclAssessments.length && <p className="empty">아직 ECL 평가가 없습니다.</p>}</div>
     </Card>
   </>;
