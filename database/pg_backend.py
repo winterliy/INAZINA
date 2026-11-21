@@ -553,9 +553,47 @@ class PgCursor:
         self.description = None if names is None else tuple((n, None, None, None, None, None, None) for n in names)
         return self
 
+    def _batch_text(self, sql):
+        """The PostgreSQL text of a plain INSERT/UPDATE/DELETE that a batch can send as one pipeline; None for anything else
+        (transaction control, SELECTs, catalog reads). The RETURNING that `execute` adds for lastrowid is left off: nothing reads
+        lastrowid after executemany (callers use rowcount)."""
+        if "sqlite_master" in sql.lower() or re.match(r"\s*PRAGMA\b", sql, re.I):
+            return None
+        text, _returning = translate(sql)
+        if text == "BEGIN" or text == "COMMIT" or text.startswith(("BEGIN;", "SAVEPOINT:", "RELEASE:", "ROLLBACK:")):
+            return None
+        return None if text.lstrip().upper().startswith(("SELECT", "WITH", "VALUES")) else text
+
     def executemany(self, sql, seq):
+        batch = list(seq)
+        connection = self.connection
+        # Inside a transaction a batch is one savepoint and one pipelined executemany instead of three round trips per row.
+        # Outside one (autocommit) every row stays its own statement, as before.
+        text = self._batch_text(sql) if len(batch) > 1 and connection.in_transaction else None
+        if text is not None:
+            if connection._trace is not None:
+                for _ in batch:
+                    connection._trace(sql)
+            cursor = self._cursor
+            try:
+                cursor.execute("SAVEPOINT inazina_batch")
+                cursor.executemany(text, [self._params(parameters) for parameters in batch])
+                total = max(cursor.rowcount, 0)
+                cursor.execute("RELEASE SAVEPOINT inazina_batch")
+            except psycopg.Error:
+                # Undo the whole batch, then replay it row by row: the rows before the failing one stay applied and the error is
+                # the one the failing statement raises, exactly as when every row was its own statement.
+                try:
+                    cursor.execute("ROLLBACK TO SAVEPOINT inazina_batch")
+                    cursor.execute("RELEASE SAVEPOINT inazina_batch")
+                except psycopg.Error:
+                    pass
+            else:
+                self._names, self._rows, self._next, self.description, self.lastrowid = None, [], 0, None, None
+                self.rowcount = total
+                return self
         total = 0
-        for parameters in seq:
+        for parameters in batch:
             self.execute(sql, parameters)
             total += max(self.rowcount, 0)
         self.rowcount = total

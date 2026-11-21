@@ -99,6 +99,13 @@ class MarketManager:
     def is_stock_type(asset_type):
         return str(asset_type or "").strip().casefold() in {"stock", "주식"}
 
+    def _session_blocked(self, conn, now, exchange_id, memo):
+        """The trading-stop message of an exchange (None when it is open), asked once per exchange for a whole loop instead of once
+        per row. A loop that prices its rows does not change the exchange state, so the answer is the same for every row."""
+        if exchange_id not in memo:
+            memo[exchange_id] = MarketSessionManager(self.db).trading_error(conn=conn, now=now, exchange_id=exchange_id)
+        return memo[exchange_id]
+
     @staticmethod
     def normalize_market_price(price):
         if isinstance(price, int):
@@ -902,13 +909,12 @@ class MarketManager:
                         f"SELECT {code_column} AS code, {price_column} AS price, exchange_id, is_fixed{extra} "
                         f"FROM {schema}.{table} WHERE status = 'active'{trade_filter}"
                     ).fetchall()
+                    session_memo = {}
                     for row in rows:
                         if has_derivative and row['product_type']=='els':
                             continue
                         code = str(row["code"])
-                        if MarketSessionManager(self.db).trading_error(
-                            conn=conn, now=now, exchange_id=row["exchange_id"]
-                        ):
+                        if self._session_blocked(conn, now, row["exchange_id"], session_memo):
                             continue
                         try:
                             raw_price = ExactDecimal(row["price"])
@@ -1019,14 +1025,12 @@ class MarketManager:
                 "SELECT DISTINCT asset_code FROM market_event_targets WHERE state='active'"
             ).fetchall()
             quotes = self._batch_quotes(conn, now) if rows else {}
+        session_memo = {}
         for row in rows:
             asset = quotes.get(row['asset_code'])
             if not asset or asset['status'] != 'active':
                 continue
-            if MarketSessionManager(self.db).trading_error(
-                conn=getattr(self._tick, 'conn', None), now=now,
-                exchange_id=asset.get('exchange_id')
-            ):
+            if self._session_blocked(getattr(self._tick, 'conn', None), now, asset.get('exchange_id'), session_memo):
                 continue
             if asset['type'] not in {'option','국채','stock_future','corporate_bond','mutual_fund','index_fund'} and not asset.get('underlying_exchange_id'):
                 continue
@@ -1113,10 +1117,9 @@ class MarketManager:
                     "AND product_type IN ('stock_future', 'corporate_bond', 'mutual_fund', 'index_fund')").fetchall()
                 # Price futures and corporate debt before funds so bond and
                 # mixed funds consume this tick's quote instead of lagging one tick.
+                session_memo = {}
                 for product in (row for row in products if row['product_type'] not in {'mutual_fund', 'index_fund'}):
-                    if MarketSessionManager(self.db).trading_error(
-                        conn=conn, now=now, exchange_id=product['exchange_id']
-                    ):
+                    if self._session_blocked(conn, now, product['exchange_id'], session_memo):
                         continue
                     if int(product["is_fixed"] or 0):
                         continue
@@ -1135,12 +1138,11 @@ class MarketManager:
                 conn.executemany("INSERT INTO market_price_history(asset_code,price,recorded_epoch) VALUES (?,?,?) "
                     "ON CONFLICT(asset_code,recorded_epoch) DO UPDATE SET price=excluded.price", history)
                 bond_updates, bond_history = [], []
+                session_memo = {}
                 for bond in conn.execute(
                     "SELECT * FROM product.treasury_bond_products WHERE status='active'"
                 ):
-                    if MarketSessionManager(self.db).trading_error(
-                        conn=conn, now=now, exchange_id=bond["exchange_id"]
-                    ):
+                    if self._session_blocked(conn, now, bond["exchange_id"], session_memo):
                         continue
                     quote = TreasuryBondManager.theoretical_price(conn, bond, now=now)
                     price = max(1, self.normalize_market_price(quote["dirty_price"]))
@@ -1164,10 +1166,9 @@ class MarketManager:
                     "SELECT product_code code,market_price price FROM treasury_bond_products"
                 )})
                 fund_updates, fund_history = [], []
+                session_memo = {}
                 for product in (row for row in products if row['product_type'] in {'mutual_fund', 'index_fund'}):
-                    if MarketSessionManager(self.db).trading_error(
-                        conn=conn, now=now, exchange_id=product['exchange_id']
-                    ) or int(product["is_fixed"] or 0):
+                    if self._session_blocked(conn, now, product['exchange_id'], session_memo) or int(product["is_fixed"] or 0):
                         continue
                     rate = RateManager.for_exchange(conn, 'base_rate', product['exchange_id'])
                     price = InvestmentManager.linked_price(
@@ -1207,12 +1208,11 @@ class MarketManager:
                     "AND TRIM(underlying_exchange_id) <> '' "
                     "AND product_code NOT IN (SELECT product_code FROM fund_accounts)"
                 ).fetchall()
+                session_memo = {}
                 for product in products:
                     code = str(product["product_code"])
                     exchange_id = str(product["underlying_exchange_id"]).strip()
-                    if MarketSessionManager(self.db).trading_error(
-                        conn=conn, now=now, exchange_id=exchange_id
-                    ):
+                    if self._session_blocked(conn, now, exchange_id, session_memo):
                         continue
                     try:
                         leverage = float(product["leverage_multiplier"])
