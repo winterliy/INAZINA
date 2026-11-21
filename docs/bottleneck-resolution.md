@@ -366,3 +366,15 @@ for k, v in sorted(logical_t.items(), key=lambda kv: -kv[1])[:14]:
 - `SELECT 1 FROM sqlite_master WHERE name=...`(테이블 존재 확인)이 한 번에 약 14ms로 느리다(`reads` 시나리오 첫 문장). 후속 조사 후보.
 - 첫 포트폴리오 호출은 3.6초(콜드). 두 번째부터 수 ms 수준이라 캐시 워밍 문제로 보인다. 미조사.
 - 웹 서버를 띄운 HTTP 요청별 측정과 로그인·세션 경로는 아직 재지 않았다(서버 함수를 프로세스 안에서 호출한 `reads`만 측정).
+
+## 13. 시장 틱 남은 시간 분석과 개선 (D 담당, 2026-11-21)
+
+**분석** (`cProfile` + 구간별 시간, 틱당): 남은 시간의 약 45%는 DB 응답 대기(`psycopg wait`)였고, 파이썬 쪽은 행 변환(`pg_backend._convert/_decode`, E 소유라 건드리지 않음)이 가장 컸다. 내 영역에서는 `_update_exchange_indices`가 가장 큰 한 덩어리(부하 낮을 때 틱 85ms 중 약 30ms)였다. 거래소 6곳마다 읽기 2번·upsert·DELETE·executemany·이력 INSERT를 따로 보내서 문장마다 savepoint 왕복이 붙었다. 그다음이 `_record_special_quotes`의 `_batch_quotes`(약 8ms, 회사 181행 `SELECT *`를 변환). `ELSManager.observe` 0.7ms, `movement_history.cleanup` 0.8ms, `_stochastic_price` 6ms는 얻을 것이 거의 없다.
+
+**개선 (`managers/market_manager.py`만, 계산 순서·값 불변)**
+1. `_update_exchange_indices`: 세션 점검(`trading_error`)은 거래소별로 그대로 먼저 하고, 이전 지수·구성 종목은 전체를 쿼리 2번으로 읽은 뒤, 쓰기는 거래소 전체를 문장별 배치 하나씩(upsert, DELETE, 구성 INSERT, 이력 INSERT)으로 보낸다. 지수 계산식과 순서는 그대로다.
+2. `_record_special_quotes`: 옵션·국채 상품이 하나도 없으면 시세 전체 조립을 건너뛴다. 코드만 읽어 중복 코드 검사(같은 `ValueError`)는 유지한다.
+
+**결과** (기준 HEAD와 번갈아 6회, 부하 평균 13~19로 절대값은 흔들림): 중앙값 비율 약 0.80(쌍별 0.5~1.0, 부하 영향이 큼). 틱당 문장 98→70, savepoint 188→138(왕복 286→208, −27%). 표 9개 해시 일치(6회 모두).
+
+**더 얻을 것이 없다는 판단**: 남은 시간은 (a) DB 대기, (b) `pg_backend` 행 변환, (c) 읽기 문장의 savepoint다. (b)(c)는 E 영역이고 11절에서 (c)는 안전하지 않아 하지 않기로 했다. 시장 코드 안의 나머지 파이썬 계산(`_stochastic_price`, `from_settings` 반복 파싱)은 합쳐도 틱의 약 5% 이하라 위험(부동소수 순서) 대비 이득이 작아 하지 않았다. 후속 후보: `pg_backend` 행 변환 비용(`_decode` 45k 호출/6틱)을 E에게 넘긴다.

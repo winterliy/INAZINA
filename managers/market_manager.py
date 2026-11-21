@@ -1053,6 +1053,18 @@ class MarketManager:
         # Keep observable option premiums and bond prices even with no fills.
         try:
             with self._short_market_transaction('assets') as conn:
+                # Only options and treasury bonds are recorded here. With none of them, skip building every quote
+                # (a wide SELECT * of each table) but keep the duplicate-code check that building them performs.
+                if not conn.execute('SELECT 1 FROM option_contracts LIMIT 1').fetchone() and \
+                        not conn.execute('SELECT 1 FROM treasury_bond_products LIMIT 1').fetchone():
+                    seen = set()
+                    for table, column in (('market_assets', 'code'), ('company', 'company_code'),
+                                          ('investment', 'product_code')):
+                        for row in conn.execute(f'SELECT {column} AS code FROM {table}'):
+                            if row['code'] in seen:
+                                raise ValueError(f"중복 종목 코드: {row['code']}")
+                            seen.add(row['code'])
+                    return
                 quotes = self._batch_quotes(conn, now)
                 points = [(code, asset['price'], now) for code, asset in quotes.items()
                           if asset['type'] in {'option', '국채'} and asset['status'] == 'active']
@@ -1359,25 +1371,27 @@ class MarketManager:
                             "DELETE FROM assets.market_exchange_index_components "
                             "WHERE exchange_id = ?", (tracked["exchange_id"],),
                         )
-                for exchange_id, members in constituents.items():
-                    if MarketSessionManager(self.db).trading_error(
-                        conn=conn, now=now, exchange_id=exchange_id
-                    ):
-                        continue
-                    previous_index = conn.execute(
-                        "SELECT index_value FROM assets.market_exchanges "
-                        "WHERE exchange_id = ?", (exchange_id,),
-                    ).fetchone()
-                    previous_members = {
-                        str(row["company_code"]): (
-                            ExactDecimal(row["previous_price"]), int(row["total_shares"] or 0)
-                        )
-                        for row in conn.execute(
-                            "SELECT company_code, previous_price, total_shares "
-                            "FROM assets.market_exchange_index_components WHERE exchange_id = ?",
-                            (exchange_id,),
-                        ).fetchall()
+                # Session checks first (they may resume an exchange), then read every active exchange's previous index and
+                # members in two queries, then write all exchanges with one batch per statement instead of six statements each.
+                active = [exchange_id for exchange_id in constituents
+                          if not MarketSessionManager(self.db).trading_error(conn=conn, now=now, exchange_id=exchange_id)]
+                if active:
+                    previous_indexes = {
+                        str(row["exchange_id"]): row for row in conn.execute(
+                            "SELECT exchange_id, index_value FROM assets.market_exchanges").fetchall()
                     }
+                    previous_by_exchange = {}
+                    for row in conn.execute(
+                        "SELECT exchange_id, company_code, previous_price, total_shares "
+                        "FROM assets.market_exchange_index_components"
+                    ).fetchall():
+                        previous_by_exchange.setdefault(str(row["exchange_id"]), {})[str(row["company_code"])] = (
+                            ExactDecimal(row["previous_price"]), int(row["total_shares"] or 0))
+                index_rows, component_rows, history_rows = [], [], []
+                for exchange_id in active:
+                    members = constituents[exchange_id]
+                    previous_index = previous_indexes.get(exchange_id)
+                    previous_members = previous_by_exchange.get(exchange_id, {})
 
                     if previous_index is None:
                         index_value = 1000.0
@@ -1404,33 +1418,33 @@ class MarketManager:
                             index_return = 0.0
                         index_value = max(0.01, round(prior_index_value * (1 + index_return), 2))
 
-                    conn.execute(
-                        "INSERT INTO assets.market_exchanges "
-                        "(exchange_id, index_value, index_updated_epoch, status, updated_epoch, trading_halted) "
-                        "VALUES (?, ?, ?, 'open', 0, 0) "
-                        "ON CONFLICT(exchange_id) DO UPDATE SET "
-                        "index_value = excluded.index_value, index_updated_epoch = excluded.index_updated_epoch",
-                        (exchange_id, index_value, int(now)),
-                    )
-                    conn.execute(
-                        "DELETE FROM assets.market_exchange_index_components WHERE exchange_id = ?",
-                        (exchange_id,),
-                    )
-                    conn.executemany(
-                        "INSERT INTO assets.market_exchange_index_components "
-                        "(exchange_id, company_code, previous_price, total_shares) VALUES (?, ?, ?, ?)",
-                        [
-                            (exchange_id, code, price, shares)
-                            for code, (price, shares) in members.items()
-                        ],
-                    )
-                    conn.execute(
-                        "INSERT INTO assets.market_exchange_index_history "
-                        "(exchange_id, index_value, recorded_epoch) VALUES (?, ?, ?) "
-                        "ON CONFLICT(exchange_id, recorded_epoch) DO UPDATE SET "
-                        "index_value = excluded.index_value",
-                        (exchange_id, index_value, int(now)),
-                    )
+                    index_rows.append((exchange_id, index_value, int(now)))
+                    component_rows.extend((exchange_id, code, price, shares) for code, (price, shares) in members.items())
+                    history_rows.append((exchange_id, index_value, int(now)))
+                conn.executemany(
+                    "INSERT INTO assets.market_exchanges "
+                    "(exchange_id, index_value, index_updated_epoch, status, updated_epoch, trading_halted) "
+                    "VALUES (?, ?, ?, 'open', 0, 0) "
+                    "ON CONFLICT(exchange_id) DO UPDATE SET "
+                    "index_value = excluded.index_value, index_updated_epoch = excluded.index_updated_epoch",
+                    index_rows,
+                )
+                conn.executemany(
+                    "DELETE FROM assets.market_exchange_index_components WHERE exchange_id = ?",
+                    [(exchange_id,) for exchange_id in active],
+                )
+                conn.executemany(
+                    "INSERT INTO assets.market_exchange_index_components "
+                    "(exchange_id, company_code, previous_price, total_shares) VALUES (?, ?, ?, ?)",
+                    component_rows,
+                )
+                conn.executemany(
+                    "INSERT INTO assets.market_exchange_index_history "
+                    "(exchange_id, index_value, recorded_epoch) VALUES (?, ?, ?) "
+                    "ON CONFLICT(exchange_id, recorded_epoch) DO UPDATE SET "
+                    "index_value = excluded.index_value",
+                    history_rows,
+                )
         except sqlite3.OperationalError as exc:
             if getattr(self._tick, "conn", None) is not None:
                 raise
