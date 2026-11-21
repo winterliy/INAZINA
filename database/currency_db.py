@@ -2032,6 +2032,7 @@ class CurrencyDB(DBManager):
                 ("dividend_payments", "net_amount_units", "레거시 micro-unit 미러; 지급 정산은 고객/펀드 원장 최소단위로 대사"),
                 ("dr_dividend_withholding_events", "net_amount_units", "레거시 micro-unit 미러; net_minor_units가 권위값"),
                 ("financial_bond_basis", "discount_units", "회사채 발행차금 통화 최소단위 잔액"),
+                ("insolvency_policies", "exempt_amount", "국가별 파산 정책의 면제 현금 기준값(본국 통화 금액). 원장 금액이 아니라 정책 설정이며, InsolvencyManager가 인가 시 정확한 최소단위로 환산해 쓴다"),
             )
             for exemption in exemptions:
                 self.execute("""INSERT INTO financial_amount_field_exemptions
