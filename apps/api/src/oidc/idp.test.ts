@@ -12,7 +12,8 @@ const callback = "https://naru.inazina.localhost/api/auth/oidc/callback";
 const clients: OidcClient[] = [{ clientId: "naru", redirectUris: [callback], postLogoutRedirectUris: ["https://naru.inazina.localhost/"] },
   { clientId: "console", redirectUris: ["https://console.inazina.localhost/api/auth/oidc/callback"], postLogoutRedirectUris: [], maxAgeSeconds: 900 }];
 const alice: Account = { userId: "alice", nickname: "앨리스", role: "admin", authVersion: 3 };
-const appUrls = { home: "https://naru.inazina.localhost/", register: "https://naru.inazina.localhost/?register=1", reset: "https://naru.inazina.localhost/?reset=1" };
+const appUrls = { home: "https://naru.inazina.localhost/" };
+const startLogin = (mode?: string) => `${appUrls.home}api/auth/oidc/login${mode ? `?mode=${mode}` : ""}`;
 
 async function start() {
   const logins: Array<{ path: string; body: any }> = [];
@@ -71,7 +72,7 @@ test("the interaction page is the shared login layout with a form posting to the
     assert.equal(page.headers.get("cache-control"), "no-store");
     const html = await page.text();
     assert.ok(html.includes(`action="/oidc/interaction/${uid}/login"`) && html.includes('name="loginId"') && html.includes('name="password"'));
-    assert.ok(html.includes(appUrls.register) && html.includes(appUrls.reset) && !html.includes("{{"));
+    assert.ok(html.includes(startLogin("register")) && html.includes(startLogin("reset-password")) && !html.includes("{{"));
   } finally { await close(); }
 });
 
@@ -205,8 +206,8 @@ test("/register, /reset and /login on the identity provider host send people to 
   const { port, close } = await start();
   try {
     const host = `127.0.0.1:${port}`;
-    assert.deepEqual(await raw(port, "/register", host), { status: 302, location: appUrls.register });
-    assert.deepEqual(await raw(port, "/reset", host), { status: 302, location: appUrls.reset });
-    assert.deepEqual(await raw(port, "/login", host), { status: 302, location: appUrls.home });
+    assert.deepEqual(await raw(port, "/register", host), { status: 302, location: startLogin("register") });
+    assert.deepEqual(await raw(port, "/reset", host), { status: 302, location: startLogin("reset-password") });
+    assert.deepEqual(await raw(port, "/login", host), { status: 302, location: startLogin() });
   } finally { await close(); }
 });

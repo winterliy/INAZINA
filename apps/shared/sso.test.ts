@@ -4,8 +4,11 @@ import { authPanelRequested, currentReturnTo, logoutRedirect, loginErrorMessage,
 
 const at = (pathname: string, search = "") => ({ pathname, search });
 
-test("ssoLoginUrl carries the page to come back to", () => {
+test("ssoLoginUrl carries the page to come back to, and optionally which account screen to open", () => {
   assert.equal(ssoLoginUrl("/portfolio?tab=1"), "/api/auth/oidc/login?returnTo=%2Fportfolio%3Ftab%3D1");
+  assert.equal(ssoLoginUrl("/", "register"), "/api/auth/oidc/login?returnTo=%2F&mode=register");
+  assert.equal(ssoLoginUrl("/", "reset-password"), "/api/auth/oidc/login?returnTo=%2F&mode=reset-password");
+  assert.equal(ssoLoginUrl("/", "find-id"), "/api/auth/oidc/login?returnTo=%2F&mode=find-id");
 });
 
 test("currentReturnTo drops the transient sign-in parameters but keeps the rest", () => {
@@ -27,9 +30,11 @@ test("an app that does not auto-redirect (the HTS, open to guests) just shows it
   assert.deepEqual(ssoAction(true, at("/orders"), { autoRedirect: false }), { kind: "none" });
 });
 
-test("register and reset links from the identity provider open those existing views, never a redirect", () => {
-  assert.deepEqual(ssoAction(true, at("/", "?register=1"), { autoRedirect: true }), { kind: "register" });
-  assert.deepEqual(ssoAction(true, at("/", "?reset=1"), { autoRedirect: true }), { kind: "reset-password" });
+test("register and reset links go to the identity provider's account screens, even where login does not auto-redirect", () => {
+  for (const autoRedirect of [true, false]) {
+    assert.deepEqual(ssoAction(true, at("/", "?register=1"), { autoRedirect }), { kind: "redirect", url: "/api/auth/oidc/login?returnTo=%2F&mode=register" });
+    assert.deepEqual(ssoAction(true, at("/", "?reset=1"), { autoRedirect }), { kind: "redirect", url: "/api/auth/oidc/login?returnTo=%2F&mode=reset-password" });
+  }
 });
 
 test("a sign-in error is shown with a Korean message and is never answered by another redirect (no loop)", () => {

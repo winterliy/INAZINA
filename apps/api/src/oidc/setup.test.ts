@@ -9,7 +9,7 @@ import type { InternalRequest } from "./idp.js";
 
 const internalRequest: InternalRequest = async (_method, _path, userId) =>
   userId === "alice" ? { status: 200, body: { user: { userId: "alice", nickname: "앨리스", role: "user", authVersion: 1 } } } : { status: 404, body: {} };
-const base = (env: NodeJS.ProcessEnv, dir: string) => ({ env, jwksFile: join(dir, "jwks.json"), authSecret: "secret", internalRequest, clientIp: () => "203.0.113.9", issueSession: (userId: string, authVersion: number) => `s=${userId}.${authVersion}` });
+const base = (env: NodeJS.ProcessEnv, dir: string) => ({ env, jwksFile: join(dir, "jwks.json"), uiDir: join(dir, "ui"), authSecret: "secret", internalRequest, clientIp: () => "203.0.113.9", issueSession: (userId: string, authVersion: number) => `s=${userId}.${authVersion}` });
 
 async function through(handler: (request: any, response: any) => Promise<boolean>, host: string, path: string) {
   const server = createServer(async (request, response) => { if (!(await handler(request, response))) { response.writeHead(418); response.end(); } });
@@ -40,8 +40,8 @@ test("with an issuer the identity provider answers its own host and sends regist
   try {
     const { idp } = await setupOidc(base({ INAZINA_OIDC_ISSUER: "https://id.inazina.kr/oidc", INAZINA_DOMAIN: "inazina.kr" }, dir));
     assert.ok(idp);
-    assert.deepEqual(await through(idp, "id.inazina.kr", "/register"), { status: 302, location: "https://naru.inazina.kr/?register=1" });
-    assert.deepEqual(await through(idp, "id.inazina.kr", "/reset"), { status: 302, location: "https://naru.inazina.kr/?reset=1" });
+    assert.deepEqual(await through(idp, "id.inazina.kr", "/register"), { status: 302, location: "https://naru.inazina.kr/api/auth/oidc/login?mode=register" });
+    assert.deepEqual(await through(idp, "id.inazina.kr", "/reset"), { status: 302, location: "https://naru.inazina.kr/api/auth/oidc/login?mode=reset-password" });
     assert.equal((await through(idp, "id.inazina.kr", "/api/health")).status, 404);
     assert.equal((await through(idp, "127.0.0.1:4312", "/api/health")).status, 418);
   } finally { rmSync(dir, { recursive: true, force: true }); }

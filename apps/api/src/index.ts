@@ -115,9 +115,10 @@ function cookieValue(request: IncomingMessage, name: string): string | undefined
   return entry ? decodeURIComponent(entry.slice(name.length + 1)) : undefined;
 }
 
-function cookieHeader(name: string, value: string, maxAge: number): string {
+// `maxAge` undefined: a browser-session cookie, gone when the browser is closed.
+function cookieHeader(name: string, value: string, maxAge?: number): string {
   const secure = process.env.INAZINA_COOKIE_SECURE === "true" ? "; Secure" : "";
-  return `${name}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${secure}`;
+  return `${name}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/${maxAge === undefined ? "" : `; Max-Age=${maxAge}`}${secure}`;
 }
 
 async function requestBrowserAccess(request: IncomingMessage): Promise<{ loginId: string; password: string; target: string }> {
@@ -138,8 +139,9 @@ function redirectBrowserToMain(response: ServerResponse): void {
 }
 
 // `by`: the administrator who signed in as this country or company account ($login on the web).
-function sessionHeader(userId: string, authVersion: number, by?: string): string {
-  return cookieHeader(sessionCookie, signed({ kind: "session", userId, authVersion, ...(by ? { by } : {}), exp: Math.floor(Date.now() / 1000) + 43_200 }), 43_200);
+// `browserSession`: the cookie is dropped when the browser closes (single sign-on); the signed expiry stays 12 hours either way.
+function sessionHeader(userId: string, authVersion: number, by?: string, browserSession = false): string {
+  return cookieHeader(sessionCookie, signed({ kind: "session", userId, authVersion, ...(by ? { by } : {}), exp: Math.floor(Date.now() / 1000) + 43_200 }), browserSession ? undefined : 43_200);
 }
 // The administrator behind the current request's delegated session, forwarded to the Python service.
 const delegation = new AsyncLocalStorage<string>();
@@ -1399,7 +1401,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
 
 // Single sign-on (docs/sso.md): with INAZINA_OIDC_ISSUER set, the identity provider answers its own host first.
 const oidc = await setupOidc({ env: process.env, jwksFile: join(projectRoot, "database", "oidc_jwks.json"), authSecret, internalRequest, clientIp,
-  issueSession: (userId, authVersion) => sessionHeader(userId, authVersion) });
+  uiDir: join(projectRoot, "apps", "id", "dist"), issueSession: (userId, authVersion) => sessionHeader(userId, authVersion, undefined, true) });
 
 const server = createServer((request, response) => {
   const by = principalFor(request)?.by;

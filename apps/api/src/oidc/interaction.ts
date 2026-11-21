@@ -8,8 +8,14 @@ import type Provider from "oidc-provider";
 import { ICON } from "../landing.js";
 
 export type InternalRequest = (method: "GET" | "POST", path: string, userId: string | undefined, body?: unknown) => Promise<{ status: number; body: any }>;
-export type AppUrls = { home: string; register: string; reset: string };
-export type InteractionDeps = { provider: Provider; internalRequest: InternalRequest; clientIp: (request: IncomingMessage) => string; appUrls: AppUrls };
+export type AppUrls = { home: string }; // the app the login server sends people back to (its address ends with /)
+export type InteractionDeps = {
+  provider: Provider; internalRequest: InternalRequest; clientIp: (request: IncomingMessage) => string; appUrls: AppUrls;
+  shell?: () => string | undefined; // the built login screen's HTML, when there is one
+};
+
+// Where an app starts a login (optionally on the register or reset screen).
+export const appLoginUrl = (home: string, mode?: string): string => `${home}api/auth/oidc/login${mode ? `?mode=${mode}` : ""}`;
 
 const maxFailures = 8; // per address and id, per 15 minutes: the same limit as the apps' own login
 const failureWindowMs = 15 * 60_000;
@@ -47,7 +53,7 @@ function loginPage(uid: string, clientId: string, appUrls: AppUrls, loginId = ""
   const values: Record<string, string> = {
     TITLE: "로그인", ICON, HEADING: "INAZINA 로그인", LEAD: "하나의 계정으로 나루와 콘솔을 이용하세요.",
     PATH_CHIP: `<span class="chip">${escape(clientNames[clientId] ?? clientId)}</span>`, FORM: form,
-    LINKS: `<a class="back" href="${escape(appUrls.register)}">회원가입</a><a class="back" href="${escape(appUrls.reset)}">비밀번호 찾기</a>`,
+    LINKS: `<a class="back" href="${escape(appLoginUrl(appUrls.home, "register"))}">회원가입</a><a class="back" href="${escape(appLoginUrl(appUrls.home, "reset-password"))}">비밀번호 찾기</a>`,
     STATUS_CLASS: "ok", STATUS_TEXT: "통합 로그인",
   };
   return layout().replace(/\{\{(\w+)\}\}/g, (_match, key: string) => values[key] ?? "");
@@ -61,15 +67,39 @@ export function sendHtml(response: ServerResponse, status: number, body: string)
   response.end(body);
 }
 
-async function readForm(request: IncomingMessage): Promise<URLSearchParams> {
+export function sendJson(response: ServerResponse, status: number, body: unknown): void {
+  const text = JSON.stringify(body);
+  response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "content-length": Buffer.byteLength(text) });
+  response.end(text);
+}
+
+export async function readBody(request: IncomingMessage, limit = 4096): Promise<string> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > 2048) throw new Error("request_too_large");
+    if (size > limit) throw new Error("request_too_large");
     chunks.push(Buffer.from(chunk));
   }
-  return new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+export async function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {
+  const value = JSON.parse(await readBody(request));
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid_json");
+  return value as Record<string, unknown>;
+}
+
+export const wantsJson = (request: IncomingMessage): boolean => (request.headers["content-type"] ?? "").includes("application/json");
+
+export type InteractionDetails = Awaited<ReturnType<Provider["interactionDetails"]>>;
+
+// The caller's own login interaction, or nothing: the request must carry its cookie and match `uid`.
+export async function interactionFor(provider: Provider, request: IncomingMessage, response: ServerResponse, uid: string): Promise<InteractionDetails | undefined> {
+  try {
+    const details = await provider.interactionDetails(request, response);
+    return details.uid === uid ? details : undefined;
+  } catch { return undefined; }
 }
 
 export function createInteractionHandler(deps: InteractionDeps): (request: IncomingMessage, response: ServerResponse, url: URL) => Promise<boolean> {
@@ -77,16 +107,37 @@ export function createInteractionHandler(deps: InteractionDeps): (request: Incom
   const failures = new Map<string, { count: number; resetAt: number }>();
   const expired = (response: ServerResponse) => sendHtml(response, 400, "<!doctype html><meta charset=\"utf-8\"><p>로그인 요청이 만료되었습니다. 앱에서 다시 시작해 주세요.</p>");
 
+  // One credential attempt, shared by the form and the JSON login: `status` 200 means signed in (with `accountId`).
+  async function attempt(request: IncomingMessage, clientId: string, loginId: string, password: string): Promise<{ status: number; error?: string; accountId?: string }> {
+    const key = `${deps.clientIp(request)}:idp:${loginId}`;
+    const previous = failures.get(key);
+    if (previous && previous.resetAt > Date.now() && previous.count >= maxFailures) return { status: 429, error: "login_rate_limited" };
+    const meta = { clientIp: deps.clientIp(request), userAgent: String(request.headers["user-agent"] ?? "").slice(0, 300), app: appLabels[clientId] ?? clientId };
+    const result = await deps.internalRequest("POST", "/internal/auth/login", undefined, { loginId, password, meta });
+    if (result.status === 200 && result.body.user?.userId) { failures.delete(key); return { status: 200, accountId: String(result.body.user.userId) }; }
+    if (result.status === 401 || result.status === 404) {
+      const current = previous && previous.resetAt > Date.now() ? previous : { count: 0, resetAt: Date.now() + failureWindowMs };
+      current.count += 1;
+      failures.set(key, current);
+    }
+    const status = result.status >= 400 && result.status < 500 ? result.status : 503;
+    return { status, error: String(result.body?.error ?? (status === 503 ? "unavailable" : "login_failed")) };
+  }
+
   return async (request, response, url) => {
     const match = /^\/oidc\/interaction\/([\w-]+)(\/login)?$/.exec(url.pathname);
     if (!match) return false;
-    let details;
-    try { details = await provider.interactionDetails(request, response); } catch { expired(response); return true; }
-    if (details.uid !== match[1]) { expired(response); return true; }
+    const json = wantsJson(request);
+    const details = await interactionFor(provider, request, response, match[1]);
+    if (!details) { if (json) sendJson(response, 400, { error: "login_expired" }); else expired(response); return true; }
     const clientId = String(details.params.client_id ?? "");
 
     if (request.method === "GET" && !match[2]) {
-      if (details.prompt.name === "login") { sendHtml(response, 200, loginPage(details.uid, clientId, appUrls)); return true; }
+      if (details.prompt.name === "login") {
+        const shell = deps.shell?.();
+        sendHtml(response, 200, shell ?? loginPage(details.uid, clientId, appUrls));
+        return true;
+      }
       if (details.prompt.name === "consent") {
         // INAZINA's own apps need no consent screen: grant what they asked for.
         const grant = details.grantId ? await provider.Grant.find(details.grantId) : new provider.Grant({ accountId: details.session!.accountId, clientId });
@@ -102,27 +153,26 @@ export function createInteractionHandler(deps: InteractionDeps): (request: Incom
     }
 
     if (request.method === "POST" && match[2] && details.prompt.name === "login") {
-      let form: URLSearchParams;
-      try { form = await readForm(request); } catch { sendHtml(response, 413, loginPage(details.uid, clientId, appUrls, "", messages[401])); return true; }
-      const loginId = (form.get("loginId") ?? "").trim().slice(0, 80);
-      const password = form.get("password") ?? "";
-      const key = `${deps.clientIp(request)}:idp:${loginId}`;
-      const attempt = failures.get(key);
-      const show = (status: number) => sendHtml(response, status, loginPage(details.uid, clientId, appUrls, loginId, messages[status] ?? "로그인할 수 없습니다. 잠시 뒤에 다시 시도해 주세요."));
-      if (attempt && attempt.resetAt > Date.now() && attempt.count >= maxFailures) { show(429); return true; }
-      const meta = { clientIp: deps.clientIp(request), userAgent: String(request.headers["user-agent"] ?? "").slice(0, 300), app: appLabels[clientId] ?? clientId };
-      const result = await deps.internalRequest("POST", "/internal/auth/login", undefined, { loginId, password, meta });
-      if (result.status === 200 && result.body.user?.userId) {
-        failures.delete(key);
-        await provider.interactionFinished(request, response, { login: { accountId: String(result.body.user.userId) } }, { mergeWithLastSubmission: false });
+      let loginId = "";
+      let password = "";
+      try {
+        if (json) { const body = await readJson(request); loginId = String(body.loginId ?? ""); password = String(body.password ?? ""); }
+        else { const form = new URLSearchParams(await readBody(request, 2048)); loginId = form.get("loginId") ?? ""; password = form.get("password") ?? ""; }
+      } catch {
+        if (json) sendJson(response, 400, { error: "invalid_request" }); else sendHtml(response, 413, loginPage(details.uid, clientId, appUrls, "", messages[401]));
         return true;
       }
-      if (result.status === 401 || result.status === 404) {
-        const current = attempt && attempt.resetAt > Date.now() ? attempt : { count: 0, resetAt: Date.now() + failureWindowMs };
-        current.count += 1;
-        failures.set(key, current);
+      loginId = loginId.trim().slice(0, 80);
+      const result = await attempt(request, clientId, loginId, password);
+      if (result.status !== 200) {
+        if (json) sendJson(response, result.status, { error: result.error });
+        else sendHtml(response, result.status, loginPage(details.uid, clientId, appUrls, loginId, messages[result.status] ?? "로그인할 수 없습니다. 잠시 뒤에 다시 시도해 주세요."));
+        return true;
       }
-      show(result.status >= 400 && result.status < 500 ? result.status : 503);
+      // remember: false -> the single sign-on session lives only as long as the browser stays open.
+      const outcome = { login: { accountId: result.accountId!, remember: false } };
+      if (json) sendJson(response, 200, { redirectTo: await provider.interactionResult(request, response, outcome, { mergeWithLastSubmission: false }) });
+      else await provider.interactionFinished(request, response, outcome, { mergeWithLastSubmission: false });
       return true;
     }
     expired(response);

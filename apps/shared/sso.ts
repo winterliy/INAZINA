@@ -4,10 +4,10 @@
 export const SSO_LOGIN_PATH = "/api/auth/oidc/login";
 
 type Where = { pathname: string; search: string };
+export type AccountMode = "register" | "reset-password" | "find-id";
 export type SsoAction =
   | { kind: "none" }
   | { kind: "redirect"; url: string }
-  | { kind: "register" | "reset-password" }
   | { kind: "error"; message: string };
 
 // Parameters of the sign-in round trips; none of them belongs in the page people come back to.
@@ -26,7 +26,8 @@ export function loginErrorMessage(code: string | null): string | undefined {
   return code ? loginErrorMessages[code] ?? "로그인하지 못했습니다. 다시 시도해 주세요." : undefined;
 }
 
-export const ssoLoginUrl = (returnTo: string): string => `${SSO_LOGIN_PATH}?returnTo=${encodeURIComponent(returnTo)}`;
+// `mode`: which account screen the identity provider opens first (the login screen when omitted).
+export const ssoLoginUrl = (returnTo: string, mode?: AccountMode): string => `${SSO_LOGIN_PATH}?returnTo=${encodeURIComponent(returnTo)}${mode ? `&mode=${mode}` : ""}`;
 
 export function currentReturnTo(where: Where): string {
   const query = new URLSearchParams(where.search);
@@ -46,8 +47,8 @@ export function ssoAction(oidc: boolean, where: Where, options: { autoRedirect: 
   if (!oidc) return { kind: "none" };
   const query = new URLSearchParams(where.search);
   if (query.has("login_error")) return { kind: "error", message: loginErrorMessage(query.get("login_error"))! };
-  if (query.get("register") === "1") return { kind: "register" };
-  if (query.get("reset") === "1") return { kind: "reset-password" };
+  if (query.get("register") === "1") return { kind: "redirect", url: ssoLoginUrl(currentReturnTo(where), "register") };
+  if (query.get("reset") === "1") return { kind: "redirect", url: ssoLoginUrl(currentReturnTo(where), "reset-password") };
   if (query.has("discordAuth") || query.has("authError")) return { kind: "none" };
   return options.autoRedirect ? { kind: "redirect", url: ssoLoginUrl(currentReturnTo(where)) } : { kind: "none" };
 }

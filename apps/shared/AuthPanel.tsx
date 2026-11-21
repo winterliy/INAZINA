@@ -43,7 +43,6 @@ export function AuthPanel({ app, onAuthenticated, extra, autoSso = true }: { app
         setSso(Boolean(result.oidc));
         const action = ssoAction(Boolean(result.oidc), arrival, { autoRedirect: autoSso });
         if (action.kind === "redirect") window.location.replace(action.url);
-        else if (action.kind === "register" || action.kind === "reset-password") { setMode(action.kind); window.history.replaceState({}, "", window.location.pathname); }
         else if (action.kind === "error") { setError(action.message); window.history.replaceState({}, "", currentReturnTo(arrival)); }
       })
       .catch(() => setSso(false)); // stays "not configured" and password login; the Discord buttons then explain it on click
@@ -81,6 +80,8 @@ export function AuthPanel({ app, onAuthenticated, extra, autoSso = true }: { app
   }, []);
 
   function switchMode(next: Mode) {
+    // With single sign-on the account screens (register, reset, find id) live at the login server.
+    if (sso === true && next !== "login") { window.location.assign(ssoLoginUrl(currentReturnTo(window.location), next)); return; }
     setMode(next);
     setVerifiedId("");
     setError("");

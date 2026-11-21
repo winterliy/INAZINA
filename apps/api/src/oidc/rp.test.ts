@@ -70,7 +70,7 @@ async function startAll() {
     const credentials = body as { loginId: string; password: string };
     return credentials.loginId === "alice" && credentials.password === "pw" ? { status: 200, body: { user: alice } } : { status: 401, body: { error: "invalid_credentials" } };
   };
-  const idp = createIdp({ provider, issuerHost: `127.0.0.1:${idpPort}`, internalRequest, clientIp: () => "203.0.113.9", appUrls: { home: rpBase, register: rpBase, reset: rpBase } });
+  const idp = createIdp({ provider, issuerHost: `127.0.0.1:${idpPort}`, internalRequest, clientIp: () => "203.0.113.9", appUrls: { home: `${rpBase}/` } });
   idpServer.on("request", async (request, response) => { if (!(await idp(request, response))) { response.writeHead(418); response.end(); } });
   const sessions: Array<[string, number]> = [];
   const rp = createRp({ env, authSecret: "rp-secret", issueSession: (userId, authVersion) => { sessions.push([userId, authVersion]); return `inazina_session=${userId}.${authVersion}; Path=/; HttpOnly`; } });
@@ -205,5 +205,19 @@ test("servesHost is true only for the hosts of registered apps", async () => {
     assert.equal(all.rp.servesHost(`LOCALHOST:${all.rpPort}`), true);
     assert.equal(all.rp.servesHost("127.0.0.1:4312"), false);
     assert.equal(all.rp.servesHost(undefined), false);
+  } finally { await all.close(); }
+});
+
+test("login passes the requested account screen on as ui_mode, and drops anything that is not one", async () => {
+  const all = await startAll();
+  try {
+    for (const mode of ["register", "reset-password", "find-id"]) {
+      const target = new URL((await send(`${all.rpBase}/api/auth/oidc/login?mode=${mode}`, new Jar())).headers.get("location")!);
+      assert.equal(target.searchParams.get("ui_mode"), mode);
+    }
+    for (const bad of ["evil", "login", "register%0d%0a", ""]) {
+      const target = new URL((await send(`${all.rpBase}/api/auth/oidc/login?mode=${bad}`, new Jar())).headers.get("location")!);
+      assert.equal(target.searchParams.has("ui_mode"), false, bad);
+    }
   } finally { await all.close(); }
 });

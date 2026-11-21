@@ -13,6 +13,7 @@ export type RpDeps = {
 };
 export type VerifiedIdToken = { sub: string; authVersion: number; name?: string; role?: string };
 
+const accountModes = new Set(["register", "reset-password", "find-id"]); // which account screen the login server opens first
 const txCookie = "inazina_oidc_tx";
 const txSeconds = 600;
 export const rpPaths = { login: "/api/auth/oidc/login", callback: "/api/auth/oidc/callback" };
@@ -90,6 +91,7 @@ export function createRp(deps: RpDeps): { handle: (request: IncomingMessage, res
       client_id: client.clientId, response_type: "code", scope: "openid profile", redirect_uri: client.redirectUris[0], state, nonce,
       code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256",
       ...(client.maxAgeSeconds ? { max_age: String(client.maxAgeSeconds) } : {}),
+      ...(accountModes.has(url.searchParams.get("mode") ?? "") ? { ui_mode: url.searchParams.get("mode")! } : {}),
     }).toString();
     const transaction = sign({ client: client.clientId, state, nonce, verifier, returnTo: safeReturnTo(url.searchParams.get("returnTo")), exp: Math.floor(Date.now() / 1000) + txSeconds });
     redirect(response, target.href, [txHeader(transaction, txSeconds)]);

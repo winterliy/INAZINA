@@ -51,6 +51,7 @@ export function createProvider(deps: ProviderDeps): Provider {
     scopes: ["openid"],
     claims: { openid: ["sub"], profile: ["name", "role", "auth_version"] },
     responseTypes: ["code"],
+    extraParams: ["ui_mode"], // the apps ask for an account screen (register, reset-password, find-id); read from the interaction's params
     // The apps read name, role and auth_version from the verified ID token itself (no userinfo round trip).
     conformIdTokenClaims: false,
     pkce: { required: () => true }, // S256 is the library default; the discovery test pins it
