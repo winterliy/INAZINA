@@ -1627,6 +1627,7 @@ class CurrencyDB(DBManager):
         ensure_cash_fx_settlements(self.execute)
         ensure_business_cash_links(self.execute)
         ensure_institution_funding(self.execute)
+        ensure_prudential_parameters(self.execute)
         ensure_accounting_line_repairs(self.execute)
         ensure_wallet_baseline_adjustments(self.execute)
         ensure_primary_recipient_overrides(self.execute)
@@ -3744,6 +3745,15 @@ def ensure_institution_funding(execute):
         execute(f"""CREATE TRIGGER IF NOT EXISTS trg_institution_funding_events_{operation.lower()}
             BEFORE {operation} ON institution_funding_events
             BEGIN SELECT RAISE(ABORT,'institution funding events are append-only'); END""")
+
+
+def ensure_prudential_parameters(execute):
+    """Per-jurisdiction overrides of the capital / liquidity thresholds that ALMManager uses (ratios and factors in basis points)."""
+    execute("""CREATE TABLE IF NOT EXISTS prudential_parameters (
+        nationality TEXT NOT NULL, param_key TEXT NOT NULL,
+        value_bps INTEGER NOT NULL CHECK(typeof(value_bps)='integer' AND value_bps BETWEEN 0 AND 100000),
+        updated_by TEXT NOT NULL, updated_epoch INTEGER NOT NULL,
+        PRIMARY KEY(nationality,param_key))""")
 
 
 def ensure_accounting_line_repairs(execute):

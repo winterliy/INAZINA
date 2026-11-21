@@ -2038,6 +2038,17 @@ def admin_funding_cashflow(bank_id, currency=None):
     return report
 
 
+def admin_alm_report(bank_id):
+    """Capital, leverage, LCR and NSFR of one bank for an administrator (read-only)."""
+    from functions.banks import bank_issuer
+    from managers.alm_manager import ALMManager
+
+    with connect_readonly() as plain:
+        connection = LegacyNames(plain)
+        issuer = bank_issuer(connection, bank_id)
+        return ALMManager.report(connection, issuer, now=time.time())
+
+
 def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
     """Read-only bank-book controls for an administrator's audit workbench."""
     from managers.bank_journal import BankJournal
@@ -5014,6 +5025,18 @@ class Handler(BaseHTTPRequestHandler):
                     audit_admin_access(user["userId"], "funding_cashflow.read", {
                         "bank_id": bank_id, "currency": currency, "result_count": len(report["cashflows"]),
                     })
+            elif path == "/internal/admin/alm":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    bank_id = parse_qs(parsed.query).get("bank_id", [""])[0].strip().upper()
+                    if not bank_id or len(bank_id) > 100:
+                        raise ValueError("invalid_alm_filter")
+                    report = admin_alm_report(bank_id)
+                    audit_admin_access(user["userId"], "alm.read", {
+                        "bank_id": bank_id, "lcr_status": report["lcr"]["status"], "nsfr_status": report["nsfr"]["status"]})
+                    self.send_json(200, report)
                     self.send_json(200, report)
             elif path == "/internal/admin/bank-journal":
                 user = identity(internal_user_id(self))
@@ -5848,6 +5871,15 @@ class Handler(BaseHTTPRequestHandler):
                                   "unallocatedMinorUnits": preview.unallocated,
                                   "simulationOnly": True}
                         audit_admin_access(user["userId"], "recovery_waterfall.preview", {
+                    elif action == "prudential_parameter_set":
+                        if set(payload) != {"action", "nationality", "key", "valueBps"}:
+                            raise ValueError("invalid_prudential_parameter_payload")
+                        from managers.alm_manager import ALMManager
+                        ALMManager.set_parameter(connection, str(payload["nationality"]).strip(), payload["key"],
+                                                 payload["valueBps"], actor=user["userId"], now=int(time.time()))
+                        result = {"nationality": str(payload["nationality"]).strip(), "key": payload["key"],
+                                  "valueBps": payload["valueBps"]}
+                        audit_admin_access(user["userId"], "prudential_parameter.set", result)
                             "claim_count": len(payload["claims"])})
                     elif action == "loan_charge_off":
                         allowed = {"action", "loanId", "eventKey", "memo"}

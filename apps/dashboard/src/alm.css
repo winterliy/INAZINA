@@ -1,0 +1,20 @@
+/* 자금 · ALM: capital gauges, liquidity tiles and the balance sheet model */
+.alm-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 14px; }
+.alm-picker select { min-width: 260px; }
+.alm-gauges { display: grid; gap: 16px; }
+.alm-gauge .row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.alm-gauge b { font-size: 22px; font-variant-numeric: tabular-nums; }
+.alm-track { position: relative; height: 12px; border-radius: 6px; background: var(--chip, rgba(0,0,0,.1)); margin: 8px 0 4px; overflow: visible; }
+.alm-track i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 6px; background: var(--accent); }
+.alm-track i.warn { background: var(--warn-ink); } .alm-track i.danger { background: var(--danger); }
+.alm-track s { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--ink); text-decoration: none; }
+.alm-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.alm-tiles > div { background: var(--chip, rgba(0,0,0,.05)); border-radius: 12px; padding: 10px 12px; }
+.alm-tiles span { display: block; font-size: 12px; opacity: .7; }
+.alm-tiles b { font-size: 20px; font-variant-numeric: tabular-nums; }
+.alm-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 540px), 1fr)); gap: 14px; }
+.alm-note { margin: 10px 0 0; font-size: 12.5px; opacity: .75; }
+.alm-edit { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
+.alm-edit input { width: 120px; }
+td.alm-num, th.alm-num { text-align: right; font-variant-numeric: tabular-nums; }
+.alm-total td { font-weight: 650; border-top: 1px solid var(--chip, rgba(0,0,0,.15)); }
