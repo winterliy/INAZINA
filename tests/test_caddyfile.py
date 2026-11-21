@@ -53,7 +53,7 @@ def test_sites_present():
 
 
 def test_simple_hosts_proxy_to_their_port():
-    for label, port in {f"www.{D}": "4314", f"corp.{D}": "4314", "{$WL_DOMAIN:wl.kr.localhost}": "4315"}.items():
+    for label, port in {"{$WL_DOMAIN:wl.kr.localhost}": "4315"}.items():
         assert re.search(rf"^\treverse_proxy 127\.0\.0\.1:{port}$", SITES[label], re.M), label
 
 
@@ -86,3 +86,12 @@ def test_app_hosts_split_api_from_frontend_and_block_internal():
         assert found[""].strip() == f"reverse_proxy 127.0.0.1:{port}"
         # The internal block must come before the generic /api/* handler (first handle wins).
         assert body.index("handle @internal") < body.index("handle @api")
+
+
+def test_site_hosts_send_only_the_contact_form_to_the_api():
+    for host in ("www", "corp"):
+        body = SITES[f"{host}.{D}"]
+        assert "@feedback path /api/site/feedback" in body
+        found = handlers(body)
+        assert found["@feedback"].strip() == "reverse_proxy 127.0.0.1:4312"
+        assert found[""].strip() == "reverse_proxy 127.0.0.1:4314"

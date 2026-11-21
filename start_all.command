@@ -75,6 +75,12 @@ if [[ ! -f "$GEOIP" ]] || [[ -n "$(find "$GEOIP" -mtime +35 2>/dev/null)" ]]; th
   "$PYTHON" "$ROOT/tools/update_geoip.py" >/dev/null 2>&1 &
 fi
 
+# Single sign-on: the identity provider serves the login screen built from apps/id (built once; the API falls back to a plain page without it).
+if [[ -n "${INAZINA_OIDC_ISSUER:-}" && ! -f "$ROOT/apps/id/dist/index.html" ]]; then
+  print "통합 로그인 화면(apps/id)을 빌드합니다."
+  npm run build --workspace @inazina/id >/dev/null 2>&1 || print -u2 "주의: 로그인 화면 빌드에 실패해 간단한 로그인 페이지로 대신합니다. (npm run build --workspace @inazina/id 로 원인을 확인하세요.)"
+fi
+
 npm run dev:api &
 pids+=("$!")
 npm run dev:dashboard &

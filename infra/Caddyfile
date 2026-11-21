@@ -20,12 +20,26 @@
 
 www.{$INAZINA_DOMAIN:inazina.localhost} {
 	import common
-	reverse_proxy 127.0.0.1:4314
+	# The contact / report form is the only thing the site asks the API for.
+	@feedback path /api/site/feedback
+	handle @feedback {
+		reverse_proxy 127.0.0.1:4312
+	}
+	handle {
+		reverse_proxy 127.0.0.1:4314
+	}
 }
 
 corp.{$INAZINA_DOMAIN:inazina.localhost} {
 	import common
-	reverse_proxy 127.0.0.1:4314
+	# The contact / report form is the only thing the site asks the API for.
+	@feedback path /api/site/feedback
+	handle @feedback {
+		reverse_proxy 127.0.0.1:4312
+	}
+	handle {
+		reverse_proxy 127.0.0.1:4314
+	}
 }
 
 # Identity provider: only the OIDC and account pages are reachable.

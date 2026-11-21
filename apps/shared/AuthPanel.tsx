@@ -19,7 +19,14 @@ const titles: Record<Mode, string> = {
 
 // `autoSso`: with single sign-on on, a signed-out visitor is sent straight to the identity provider (the admin console);
 // the HTS passes false and only shows this panel when asked (register, reset, a sign-in error, local development).
-export function AuthPanel({ app, onAuthenticated, extra, autoSso = true }: { app: "dashboard" | "hts"; onAuthenticated: (user: ApiUser) => void; extra?: ReactNode; autoSso?: boolean }) {
+// `idp`: the screen is the login server's (apps/id): it talks to the identity provider's endpoints for this login interaction and
+// navigates to the address the server returns, instead of calling the app API and handing back a user.
+export function AuthPanel({ app, onAuthenticated, extra, autoSso = true, idp }: { app: "dashboard" | "hts" | "id"; onAuthenticated: (user: ApiUser) => void; extra?: ReactNode; autoSso?: boolean; idp?: { uid: string } }) {
+  const paths = idp
+    ? { config: `/oidc/account/config?uid=${encodeURIComponent(idp.uid)}`, countries: "/oidc/account/countries", verification: "/oidc/account/discord/verification", login: `/oidc/interaction/${encodeURIComponent(idp.uid)}/login`, register: "/oidc/account/register", reset: "/oidc/account/password-reset" }
+    : { config: "/api/auth/config", countries: "/api/auth/countries", verification: "/api/auth/discord/verification", login: "/api/auth/login", register: "/api/auth/register", reset: "/api/auth/password/reset" };
+  type Done = { user?: ApiUser; redirectTo?: string };
+  const done = (result: Done) => { if (result.redirectTo) window.location.assign(result.redirectTo); else if (result.user) onAuthenticated(result.user); };
   const [mode, setMode] = useState<Mode>("login");
   const [userId, setUserId] = useState("");
   const [verifiedId, setVerifiedId] = useState("");
@@ -37,16 +44,18 @@ export function AuthPanel({ app, onAuthenticated, extra, autoSso = true }: { app
   useEffect(() => {
     // The address as it was on arrival: the Discord handling below cleans it up before the config answer comes back.
     const arrival = { pathname: window.location.pathname, search: window.location.search };
-    void api<{ discordOAuthConfigured: boolean; oidc?: boolean }>("/api/auth/config")
+    void api<{ discordOAuthConfigured: boolean; oidc?: boolean; startMode?: Mode }>(paths.config)
       .then((result) => {
         setDiscordConfigured(result.discordOAuthConfigured);
         setSso(Boolean(result.oidc));
+        // On the login server the app that sent the person asked for a screen (register, reset, find id); a return from Discord decides its own.
+        if (idp) { if (result.startMode && !new URLSearchParams(arrival.search).has("discordAuth")) setMode(result.startMode); return; }
         const action = ssoAction(Boolean(result.oidc), arrival, { autoRedirect: autoSso });
         if (action.kind === "redirect") window.location.replace(action.url);
         else if (action.kind === "error") { setError(action.message); window.history.replaceState({}, "", currentReturnTo(arrival)); }
       })
       .catch(() => setSso(false)); // stays "not configured" and password login; the Discord buttons then explain it on click
-    void api<{ countries: Country[] }>("/api/auth/countries")
+    void api<{ countries: Country[] }>(paths.countries)
       .then((result) => {
         setCountries(result.countries);
         setCountryId((current) => current || result.countries[0]?.countryId || "");
@@ -65,7 +74,7 @@ export function AuthPanel({ app, onAuthenticated, extra, autoSso = true }: { app
       window.history.replaceState({}, "", window.location.pathname);
     }
     if (query.get("discordAuth") === "verified") {
-      void api<{ userId: string; nickname: string; purpose: Mode }>("/api/auth/discord/verification")
+      void api<{ userId: string; nickname: string; purpose: Mode }>(paths.verification)
         .then((result) => {
           setVerifiedId(result.userId);
           setUserId(result.userId);
@@ -95,8 +104,8 @@ export function AuthPanel({ app, onAuthenticated, extra, autoSso = true }: { app
       setError("Discord OAuth 설정이 필요합니다. 프로젝트 .env의 Discord client ID와 secret을 설정해주세요.");
       return;
     }
-    const query = new URLSearchParams({ purpose, returnTo: app });
-    window.location.assign(`/api/auth/discord/start?${query.toString()}`);
+    const query = new URLSearchParams({ purpose, ...(idp ? { uid: idp.uid } : { returnTo: app }) });
+    window.location.assign(`${idp ? "/oidc/account/discord/start" : "/api/auth/discord/start"}?${query.toString()}`);
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -110,28 +119,19 @@ export function AuthPanel({ app, onAuthenticated, extra, autoSso = true }: { app
     setBusy(true);
     try {
       if (mode === "login") {
-        const result = await api<{ user: ApiUser }>("/api/auth/login", {
-          method: "POST", body: JSON.stringify({ loginId: userId.trim(), password }),
-        });
-        onAuthenticated(result.user);
+        done(await api<Done>(paths.login, { method: "POST", body: JSON.stringify({ loginId: userId.trim(), password }) }));
       } else if (mode === "register") {
-        const result = await api<{ user: ApiUser }>("/api/auth/register", {
-          method: "POST", body: JSON.stringify({ countryId, password }),
-        });
-        onAuthenticated(result.user);
+        done(await api<Done>(paths.register, { method: "POST", body: JSON.stringify({ ...(idp ? { uid: idp.uid } : {}), countryId, password }) }));
       } else if (mode === "reset-password") {
-        const result = await api<{ user: ApiUser }>("/api/auth/password/reset", {
-          method: "POST", body: JSON.stringify({ password }),
-        });
-        onAuthenticated(result.user);
+        done(await api<Done>(paths.reset, { method: "POST", body: JSON.stringify({ ...(idp ? { uid: idp.uid } : {}), password }) }));
       }
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : "요청을 처리하지 못했습니다.";
       const code = cause instanceof ApiError ? cause.code : undefined;
-      if (mode === "login" && code === "account_not_found") {
-        setError("입력한 아이디로 계정을 찾지 못했습니다. 아이디를 확인해주세요.");
-      } else if (mode === "login" && code === "invalid_credentials") {
+      if (mode === "login" && code === "invalid_credentials") {
         setError("아이디 또는 비밀번호가 일치하지 않습니다. 입력한 정보를 확인해주세요.");
+      } else if (code === "login_expired") {
+        setError("로그인 시간이 지났습니다. 사용하던 앱에서 다시 시작해주세요.");
       } else if (code === "account_exists") {
         setMode("login");
         setError("이미 연결된 계정입니다. 로그인하거나 비밀번호를 재설정해주세요.");
@@ -143,7 +143,7 @@ export function AuthPanel({ app, onAuthenticated, extra, autoSso = true }: { app
     }
   }
 
-  const logoNote = app === "dashboard" ? "Dashboard" : "나루";
+  const logoNote = app === "dashboard" ? "Dashboard" : app === "id" ? "통합 로그인" : "나루";
   return <main className="auth-shell">
     <aside className="auth-visual" aria-hidden="true"><AuthScene /></aside>
     <section className="auth-panel" aria-labelledby="auth-title">
