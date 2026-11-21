@@ -175,6 +175,18 @@ test("signing out ends the single sign-on session: the next authorization asks f
   } finally { await close(); }
 });
 
+test("an unregistered post_logout_redirect_uri is never followed after a sign-out", async () => {
+  const { base, close } = await start();
+  try {
+    const jar = new Jar();
+    await signIn(base, jar, newVerifier());
+    const page = await send(`${base}/oidc/session/end?` + new URLSearchParams({ client_id: "naru", post_logout_redirect_uri: "https://evil.example/landing" }), jar);
+    assert.equal(page.status, 400, "the request itself is refused");
+    assert.ok(!(page.headers.get("location") ?? "").includes("evil.example"));
+    assert.ok(!(await page.text()).includes("evil.example/landing\""), "the address is not offered as a link either");
+  } finally { await close(); }
+});
+
 const raw = (port: number, path: string, host: string) => new Promise<{ status: number; location?: string }>((done, fail) => {
   httpRequest({ host: "127.0.0.1", port, path, headers: { host } }, (response) => { response.resume(); done({ status: response.statusCode!, location: response.headers.location }); }).on("error", fail).end();
 });
