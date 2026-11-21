@@ -18,6 +18,8 @@ type Report = {
   lcr: { hqla: { total: string }; outflows: Row[]; totalOutflows: string; inflows: { performingLoanPayments30d: string; rateBps: number; grossInflows: string; capBps: number; countedInflows: string };
     netOutflows: string; ratioPercent: number | null; minimumPercent: number; status: Status };
   nsfr: { availableStableFunding: string; requiredStableFunding: string; asf: Row[]; rsf: Row[]; ratioPercent: number | null; minimumPercent: number; status: Status };
+  rateShock: { shocks: { basisPoints: number; contractualNii: string; depositBetaNii: string; deltaNii: string; contractualEve: string; coreDepositEve: string; deltaEve: string; deltaEvePercentOfTier1: number | null }[];
+    behavioralDeposits: string; coreDeposits: string; assumptions: { depositBetaBps: number; coreDepositShareBps: number; coreDepositYears: number }; method: string };
   parameters: { values: Record<string, number>; overriddenForJurisdiction: string[] };
   method: string;
 };
@@ -37,11 +39,14 @@ const PARAMETER: Record<string, string> = {
   inflow_performing_loan_bps: "유입률 · 정상 대출 상환", inflow_cap_bps: "유입 한도(유출 대비)",
   asf_equity_bps: "ASF · 자본", asf_retail_stable_bps: "ASF · 개인 안정", asf_retail_less_stable_bps: "ASF · 개인 덜 안정", asf_corporate_bps: "ASF · 법인",
   asf_wholesale_1y_plus_bps: "ASF · 도매 1년 이상", asf_wholesale_6m_to_1y_bps: "ASF · 도매 6개월~1년", asf_wholesale_under_6m_bps: "ASF · 도매 6개월 미만",
+  deposit_beta_bps: "금리 충격 · 예금 금리베타", core_deposit_share_bps: "금리 충격 · 핵심예금 비중", core_deposit_years: "금리 충격 · 핵심예금 행동만기(년)",
   rsf_cash_bps: "RSF · 현금", rsf_loan_under_1y_bps: "RSF · 대출 1년 미만", rsf_loan_1y_plus_bps: "RSF · 대출 1년 이상", rsf_defaulted_loan_bps: "RSF · 부실 대출",
 };
 
 const pct = (value: number | null | undefined, digits = 2) => value === null || value === undefined ? "—" : `${value.toFixed(digits)}%`;
 const bps = (value: number) => `${(value / 100).toFixed(2)}%`;
+const parameterText = (key: string, value: number) => key.endsWith("_bps") ? bps(value) : `${value}년`;
+const signed = (text: string, money: (text: string) => string) => `${Number(text) > 0 ? "+" : ""}${money(text)}`;
 
 function StatusTag({ status, empty }: { status: Status; empty?: boolean }) {
   const [tone, label] = STATUS[status] ?? STATUS["n/a"];
@@ -75,7 +80,7 @@ export function AlmPage({ ctx }: { ctx: Ctx }) {
   function saveParameter() {
     const value = Number(edit.value);
     if (!report || !Number.isInteger(value) || value < 0) { say("값은 0 이상의 정수(베이시스포인트, 100 = 1%)로 입력해주세요.", true); return; }
-    if (!window.confirm(`${report.jurisdiction} 관할의 ‘${PARAMETER[edit.key]}’을(를) ${bps(value)}(으)로 바꿀까요? 이 관할 모든 은행의 지표에 반영됩니다.`)) return;
+    if (!window.confirm(`${report.jurisdiction} 관할의 ‘${PARAMETER[edit.key]}’을(를) ${parameterText(edit.key, value)}(으)로 바꿀까요? 이 관할 모든 은행의 지표에 반영됩니다.`)) return;
     void run(() => api<{ success: boolean }>("/api/admin/compliance", { method: "POST",
       body: JSON.stringify({ action: "prudential_parameter_set", nationality: report.jurisdiction, key: edit.key, valueBps: value }) }),
     "기준을 저장하지 못했습니다.", () => { say("기준을 저장했습니다."); setEdit({ ...edit, value: "" }); loadReport(bankId); });
@@ -123,6 +128,15 @@ export function AlmPage({ ctx }: { ctx: Ctx }) {
         </Card>
       </div>
 
+      <Card title="금리 충격 (ΔNII · ΔEVE)" caption={`평행 이동 충격. 가정: 예금 금리베타 ${bps(report.rateShock.assumptions.depositBetaBps)}, 핵심예금 ${bps(report.rateShock.assumptions.coreDepositShareBps)}를 ${report.rateShock.assumptions.coreDepositYears}년 행동만기로 봄 (설명용 가정, 관할 기준에서 조정)`}>
+        <div className="scroll-x"><table><thead><tr><th className="alm-num">충격</th><th className="alm-num">ΔNII 계약(대출−변동예금)</th><th className="alm-num">ΔNII 예금 금리베타</th><th className="alm-num">ΔNII 12개월</th><th className="alm-num">ΔEVE 고정금리</th><th className="alm-num">ΔEVE 핵심예금</th><th className="alm-num">ΔEVE</th><th className="alm-num">ΔEVE / Tier 1</th></tr></thead>
+          <tbody>{report.rateShock.shocks.map((row) => <tr key={row.basisPoints}><td className="alm-num">{row.basisPoints > 0 ? "+" : ""}{row.basisPoints}bp</td>
+            <td className="alm-num">{signed(row.contractualNii, money)}</td><td className="alm-num">{signed(row.depositBetaNii, money)}</td><td className="alm-num"><b>{signed(row.deltaNii, money)}</b></td>
+            <td className="alm-num">{signed(row.contractualEve, money)}</td><td className="alm-num">{signed(row.coreDepositEve, money)}</td><td className="alm-num"><b>{signed(row.deltaEve, money)}</b></td>
+            <td className="alm-num">{pct(row.deltaEvePercentOfTier1, 1)}</td></tr>)}</tbody></table></div>
+        <p className="alm-note">{report.rateShock.method}</p>
+      </Card>
+
       <Card title="LCR 상세" caption={`현금성 자산(HQLA) ${money(report.lcr.hqla.total)} ÷ 30일 순유출 ${money(report.lcr.netOutflows)}`}>
         <div className="scroll-x"><table><thead><tr><th>유출 항목</th><th className="alm-num">잔액</th><th className="alm-num">유출률</th><th className="alm-num">유출액</th></tr></thead>
           <tbody>{rows(report.lcr.outflows, "rateBps")}
@@ -157,14 +171,14 @@ export function AlmPage({ ctx }: { ctx: Ctx }) {
         </Card>
         <Card title="관할 기준" caption={`${report.jurisdiction} 관할에 적용된 기준입니다. 기본값은 Basel식이며, 바꾼 항목은 이 관할의 모든 은행에 적용됩니다.`}>
           <div className="scroll-x"><table><thead><tr><th>기준</th><th className="alm-num">값</th><th /></tr></thead><tbody>
-            {Object.entries(report.parameters.values).map(([key, value]) => <tr key={key}><td>{PARAMETER[key] ?? key}</td><td className="alm-num">{bps(value)}</td>
+            {Object.entries(report.parameters.values).map(([key, value]) => <tr key={key}><td>{PARAMETER[key] ?? key}</td><td className="alm-num">{parameterText(key, value)}</td>
               <td>{report.parameters.overriddenForJurisdiction.includes(key) ? <span className="tag warn">변경됨</span> : <span className="cap">기본</span>}</td></tr>)}
           </tbody></table></div>
           <div className="alm-edit">
             <select aria-label="기준 항목" value={edit.key} onChange={(event) => setEdit({ ...edit, key: event.target.value })}>
               {Object.keys(report.parameters.values).map((key) => <option key={key} value={key}>{PARAMETER[key] ?? key}</option>)}
             </select>
-            <input inputMode="numeric" aria-label="값(베이시스포인트)" placeholder="bp (100 = 1%)" value={edit.value} onChange={(event) => setEdit({ ...edit, value: event.target.value })} />
+            <input inputMode="numeric" aria-label="값(베이시스포인트)" placeholder={edit.key.endsWith("_bps") ? "bp (100 = 1%)" : "년(정수)"} value={edit.value} onChange={(event) => setEdit({ ...edit, value: event.target.value })} />
             <button type="button" className="btn primary" disabled={busy || !edit.value} onClick={saveParameter}>기준 저장</button>
           </div>
         </Card>

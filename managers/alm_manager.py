@@ -28,7 +28,13 @@ PRUDENTIAL_DEFAULTS = {
     "asf_equity_bps": 10000, "asf_retail_stable_bps": 9500, "asf_retail_less_stable_bps": 9000, "asf_corporate_bps": 5000,
     "asf_wholesale_1y_plus_bps": 10000, "asf_wholesale_6m_to_1y_bps": 5000, "asf_wholesale_under_6m_bps": 0,
     "rsf_cash_bps": 0, "rsf_loan_under_1y_bps": 5000, "rsf_loan_1y_plus_bps": 8500, "rsf_defaulted_loan_bps": 10000,
+    # Explanatory interest-rate-risk assumptions (not observed behaviour): the share of a benchmark move that reaches non-maturity
+    # deposit rates, the share of those deposits treated as stable "core", and the years the core part is assumed to stay.
+    "deposit_beta_bps": 5000, "core_deposit_share_bps": 6000, "core_deposit_years": 3,
 }
+# Largest value an administrator may store for a name (everything else: 100000). Shares and betas stop at 100%, years at 30.
+PARAMETER_MAX = {"deposit_beta_bps": 10000, "core_deposit_share_bps": 10000, "core_deposit_years": 30}
+SHOCKS_BPS = (-200, -100, 0, 100, 200)
 
 
 class ALMManager:
@@ -51,7 +57,7 @@ class ALMManager:
         key, nationality = str(key), str(nationality or "").strip()
         if key not in PRUDENTIAL_DEFAULTS or not nationality:
             raise ValueError("invalid_prudential_parameter")
-        if type(value_bps) is not int or not 0 <= value_bps <= 100000:
+        if type(value_bps) is not int or not 0 <= value_bps <= PARAMETER_MAX.get(key, 100000):
             raise ValueError("invalid_prudential_parameter_value")
         conn.execute("""INSERT INTO prudential_parameters(nationality,param_key,value_bps,updated_by,updated_epoch)
             VALUES (?,?,?,?,?) ON CONFLICT(nationality,param_key) DO UPDATE SET value_bps=excluded.value_bps,
@@ -82,6 +88,69 @@ class ALMManager:
     @classmethod
     def _percent(cls, numerator, denominator):
         return None if denominator is None or denominator <= 0 else float(Decimal(numerator) * 100 / Decimal(denominator))
+
+    @classmethod
+    def rate_shock(cls, conn, issuer, base, param, tier1, *, now):
+        """Delta NII (12 months) and delta EVE for parallel shocks, in the base currency, with deposit beta and core-deposit maturity.
+
+        Explanatory assumptions, not a regulatory IRRBB filing. Delta NII = floating-rate loans (contract floors and caps, from
+        ``RateManager.institution_rate_stress``) minus the cost change of deposits: floating-rate deposits follow their contract,
+        other non-term deposits reprice by ``deposit_beta`` with the deposit rate floored at zero, fixed-term deposits do not
+        change within the year. Delta EVE = the fixed-rate duration/convexity result from ``institution_fixed_rate_eve_stress``
+        plus the non-term deposits that are not floating, of which ``core_deposit_share`` is given a behavioural maturity of
+        ``core_deposit_years`` (the rest reprices at once and so has no value change).
+        """
+        beta = Decimal(param["deposit_beta_bps"]) / BPS
+        core_share = Decimal(param["core_deposit_share_bps"]) / BPS
+        core_years = Decimal(param["core_deposit_years"])
+        nii = {bp: Decimal(0) for bp in SHOCKS_BPS}
+        eve = {bp: Decimal(0) for bp in SHOCKS_BPS}
+        contractual_nii = {bp: Decimal(0) for bp in SHOCKS_BPS}
+        contractual_eve = {bp: Decimal(0) for bp in SHOCKS_BPS}
+        for scenario in RateManager.institution_rate_stress(conn, issuer, now=now)["scenarios"]:
+            for shock in scenario["shocks"]:
+                contractual_nii[shock["basisPoints"]] += cls._to_base(conn, cls._dec(shock["netInterestIncomeChange"]), scenario["currency"], base)
+        for scenario in RateManager.institution_fixed_rate_eve_stress(conn, issuer, now=now)["scenarios"]:
+            for shock in scenario["shocks"]:
+                contractual_eve[shock["basisPoints"]] += cls._to_base(conn, cls._dec(shock["estimatedEveChange"]), scenario["currency"], base)
+
+        behavioural = Decimal(0)     # non-term, non-floating deposits (base currency)
+        behavioural_cost = {bp: Decimal(0) for bp in SHOCKS_BPS}
+        for row in conn.execute(
+            "SELECT a.quote_currency,a.account_type,a.balance,a.balance_units,"
+            "CASE WHEN a.account_type='loan_payout' THEN COALESCE(a.contract_rate,0) "
+            "ELSE COALESCE(a.contract_rate,s.interest_rate,0) END rate,COALESCE(s.maturity_days,0) maturity_days "
+            "FROM accounts a LEFT JOIN saving s ON s.product_code=a.product_code LEFT JOIN liability l ON l.product_code=a.product_code "
+            "WHERE ((s.issuer=? AND a.account_type IN ('saving','currency_saving')) OR (l.issuer=? AND a.account_type='loan_payout')) "
+            "AND a.resolution_status='active' AND COALESCE(a.rate_type,'fixed')<>'floating'", (issuer, issuer)):
+            if int(row["maturity_days"] or 0) > 0:
+                continue                 # a fixed-term deposit keeps its rate until maturity
+            native = (cls._dec(row["balance_units"]) / 1_000_000 if row["account_type"] == "currency_saving" else cls._dec(row["balance"]))
+            if native <= 0:
+                continue
+            currency = str(row["quote_currency"] or base)
+            rate = cls._dec(row["rate"])                       # percent a year
+            behavioural += cls._to_base(conn, native, currency, base)
+            for bp in SHOCKS_BPS:
+                shocked = max(Decimal(0), rate + beta * Decimal(bp) / 100)
+                behavioural_cost[bp] += cls._to_base(conn, native * (shocked - rate) / 100, currency, base)
+        core = behavioural * core_share
+        rows = []
+        for bp in SHOCKS_BPS:
+            s = Decimal(bp) / BPS
+            nii[bp] = contractual_nii[bp] - behavioural_cost[bp]
+            eve[bp] = contractual_eve[bp] + core * core_years * s - core * core_years * core_years * s * s / 2
+            rows.append({"basisPoints": bp, "contractualNii": contractual_nii[bp], "depositBetaNii": -behavioural_cost[bp],
+                         "deltaNii": nii[bp], "contractualEve": contractual_eve[bp], "coreDepositEve": eve[bp] - contractual_eve[bp],
+                         "deltaEve": eve[bp], "deltaEvePercentOfTier1": cls._percent(eve[bp], tier1) if tier1 > 0 else None})
+        return {"horizonDays": 365, "shocks": rows, "behavioralDeposits": behavioural, "coreDeposits": core,
+                "assumptions": {"depositBetaBps": param["deposit_beta_bps"], "coreDepositShareBps": param["core_deposit_share_bps"],
+                                "coreDepositYears": param["core_deposit_years"]},
+                "method": ("explanatory assumptions, not a regulatory IRRBB filing: parallel shocks, constant balance sheet; floating loans and "
+                           "floating deposits follow their contracts (floors and caps); other non-term deposits reprice by the deposit beta "
+                           "with their rate floored at zero; fixed-term deposits do not reprice within the year; EVE uses durations and "
+                           "convexity of fixed-rate loans and deposits plus the core part of non-term deposits at the assumed behavioural "
+                           "maturity; no hedges, basis risk, prepayment or wholesale funding rollover. The assumptions can be set per jurisdiction")}
 
     @classmethod
     def report(cls, conn, issuer, *, now):
@@ -267,6 +336,7 @@ class ALMManager:
                                           "corporate": corporate, "total": deposits},
                              "wholesaleFunding": wholesale, "equity": equity, "fundingGap": funding_gap},
             "capital": capital, "leverage": leverage, "lcr": lcr, "nsfr": nsfr,
+            "rateShock": cls.rate_shock(conn, issuer, base, param, tier1, now=now),
             "parameters": {"values": param, "overriddenForJurisdiction": overridden},
             "method": ("simulator policy, not a regulatory filing; no asset ledger: cash and reserves (HQLA level 1) are what deposits, "
                        "wholesale funding and equity fund beyond net loans; Tier 2 = stage 1-2 allowances up to the cap; AT1 and "
