@@ -1,0 +1,8 @@
+/* Guest mode: login-only parts stay visible but blurred; the label is the click target (App.tsx lock()). */
+.login-locked { position: relative; cursor: pointer; }
+.login-locked > * { filter: blur(5px); opacity: .55; pointer-events: none; user-select: none; }
+.login-locked::after { content: attr(data-login-label); position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2; padding: 9px 18px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-size: 13px; font-weight: 600; white-space: nowrap; box-shadow: 0 6px 18px rgba(0, 0, 0, .12); }
+.login-locked:hover::after { filter: brightness(1.08); }
+.guest-gate { display: grid; justify-items: center; gap: 14px; padding: 96px 16px; text-align: center; }
+.guest-gate h1 { margin: 0; font-size: 22px; }
+.guest-gate p { margin: 0; color: var(--ink2); }

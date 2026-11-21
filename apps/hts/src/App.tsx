@@ -5,6 +5,9 @@ import { api, apiError, clearToken, onUnauthorized, signedOut, ApiError, type Ap
 import { Logo } from "../../shared/Logo";
 import { navigate } from "./nav";
 import { AuthPanel } from "../../shared/AuthPanel";
+import { logoutRedirect, currentReturnTo } from "../../shared/sso";
+import { guestCanView, loginAction, loginPanelRequested, oidcEnabled } from "./guest";
+import "./guest.css";
 import { DEFAULT_INDICATORS, INDICATOR_CATALOG, PriceChart, type Candle, type Drawing, type IndicatorCatalog, type IndicatorChoice, type IndicatorData, type Point, type Tool } from "./PriceChart";
 import { OPEN } from "./commandKit";
 import { ErrorBoundary } from "./ErrorBoundary";
@@ -97,6 +100,7 @@ const INDICATOR_KEY = "inazina.hts.chart-indicators.v2";
 
 const WATCH_KEY = "inazina.hts.watchlist";
 const USER_KEY = "inazina.hts.user";
+const GUEST_USER: ApiUser = { userId: "", nickname: "", nationality: "", role: "user", cash: 0, creditScore: 0 };
 const USER_ROLES = ["admin", "user", "nation", "company"];
 /** The cached user is only trusted when it has the shape the pages rely on; the session check still confirms it. */
 function cachedUser(): ApiUser | null {
@@ -121,6 +125,14 @@ export default function App() {
     try { if (next) sessionStorage.setItem(USER_KEY, JSON.stringify(next)); else sessionStorage.removeItem(USER_KEY); } catch { /* not cached */ }
   }, []);
   const [notice, setNoticeState] = useState<Notice | null>(null);
+  // Guest mode: the page opens without a session. `loginPanel` shows the account panel (no single sign-on, e.g. local development).
+  const [loginPanel, setLoginPanel] = useState(false);
+  const [ssoOn, setSsoOn] = useState(false);
+  useEffect(() => { void oidcEnabled().then(setSsoOn); }, []);
+  const requireLogin = useCallback(() => {
+    const action = loginAction(ssoOn, window.location);
+    if (action.kind === "redirect") window.location.assign(action.url); else setLoginPanel(true);
+  }, [ssoOn]);
   const [busy, setBusy] = useState(false);
   const submitLock = useRef(false);
   // Idempotency key of the order being confirmed. The same order content keeps the key, so a retry after a timeout
@@ -362,7 +374,7 @@ export default function App() {
       setSelectedCode((current) => current || market.instruments.find((item) => item.code === linked)?.code || market.instruments[0]?.code || "");
     } catch (cause) { reportPollError("instruments", cause, "종목 목록을 불러오지 못했습니다."); }
   }, [reportPollError]);
-  usePolling(loadInstruments, 5000, Boolean(user));
+  usePolling(loadInstruments, 5000, true);
   usePolling(refreshAccountQuiet, 15000, Boolean(user));
 
   useEffect(() => {
@@ -439,7 +451,7 @@ export default function App() {
   }, [reportPollError]);
 
   // Runs now and every 5s while the tab is visible; a new instrument, range or indicator choice restarts it.
-  usePolling(() => refreshMarket(selectedCode, range, interval), 5000, Boolean(user) && Boolean(selectedCode), [selectedCode, range, interval, indicatorQuery, refreshMarket]);
+  usePolling(() => refreshMarket(selectedCode, range, interval), 5000, Boolean(selectedCode), [selectedCode, range, interval, indicatorQuery, refreshMarket]);
   useEffect(() => { if (selected) setPrice(String(selected.price)); }, [selected?.code]);
 
   useEffect(() => {
@@ -656,7 +668,22 @@ export default function App() {
   // After the session expires the login screen carries the notice; "다시 로그인" dismisses it and focuses the form.
   const relogin = () => { setNoticeState(null); window.setTimeout(() => document.querySelector<HTMLElement>(".stage input")?.focus(), 0); };
   const toast = notice && <div className={`toast ${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}><span>{notice.text}</span>{notice.expired && <button type="button" onClick={relogin}>다시 로그인</button>}<button type="button" onClick={() => setNoticeState(null)}>닫기</button></div>;
-  if (!user) return <div className="stage"><Backdrop />{toast}<AuthPanel app="hts" onAuthenticated={(next) => { const back = new URLSearchParams(location.search).get("return"); if (back?.startsWith("/board")) location.assign(back); else { setNoticeState(null); setUser(next); } }} extra={<a className="board-guest-button" href={boardUrl()}>로그인 없이 게시판 보기</a>} /></div>;
+  // Visitors without a session see the page; the account panel opens only when asked for (register, reset, sign-in error, login click).
+  if (!user && (loginPanel || loginPanelRequested(location.search))) return <div className="stage"><Backdrop />{toast}<AuthPanel app="hts" onAuthenticated={(next) => {
+    const back = new URLSearchParams(location.search).get("return");
+    if (back?.startsWith("/board")) { location.assign(back); return; }
+    setNoticeState(null); setLoginPanel(false); setUser(next);
+    if (loginPanelRequested(location.search)) window.history.replaceState(null, "", currentReturnTo(window.location));
+  }} extra={<>{loginPanel ? <button type="button" className="board-guest-button" onClick={() => setLoginPanel(false)}>로그인 없이 둘러보기</button> : <a className="board-guest-button" href={boardUrl()}>로그인 없이 게시판 보기</a>}</>} /></div>;
+  const guest = !user;
+  const me: ApiUser = user ?? GUEST_USER;
+  // A login-only part of the page stays visible but blurred; any click or Enter on it asks the visitor to sign in.
+  const lock = (label: string) => guest ? {
+    "data-login-label": label,
+    onClickCapture: (event: React.SyntheticEvent) => { event.preventDefault(); event.stopPropagation(); requireLogin(); },
+    onKeyDownCapture: (event: React.KeyboardEvent) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); requireLogin(); } },
+  } : {};
+  const locked = guest ? " login-locked" : "";
 
   // The latest known price is whichever of the chart's last trade and the refreshed instrument list was read last.
   const quoteFresh = quote?.code === selectedCode && (!selected || quote.at >= pricedAt);
@@ -673,7 +700,7 @@ export default function App() {
   const orderReady = Boolean(selected) && validMoney(orderPrice, true) && wholeNumber(quantity) && Number(quantity) > 0 && (orderType !== "market" || marketEstimate.enough);
   const orderAmount = validMoney(orderPrice) && validMoney(quantity) ? moneyMultiply(orderPrice, quantity) : "0";
   // Amounts follow the account's nationality; instrument prices keep their trading currency.
-  const homeCurrency = portfolio?.national_currency || user.currency || "";
+  const homeCurrency = portfolio?.national_currency || me.currency || "";
   const fxTerm = search.trim().toLocaleLowerCase();
   const fxPrice = (code: string, base: string) => code === base ? 1 : instruments.find((item) => item.type === "forex" && item.currency_code === code)?.price;
   // "기준화폐:검색화폐" — how much of the searched currency one unit of the user's currency buys.
@@ -709,6 +736,8 @@ export default function App() {
       return;
     }
     setUser(null);
+    const leave = logoutRedirect(result); // ends the single sign-on session too
+    if (leave) { window.location.assign(leave); return; }
     if (location.pathname !== "/") navigate("/");
   };
   const topbar = (here: "home" | "account" | "services") => <><header className="hts-topbar">
@@ -729,15 +758,22 @@ export default function App() {
     <nav className="top-nav" aria-label="서비스">{SERVICES.slice(0, 4).map((item) => <a key={item.path} href={item.path} aria-current={here === "services" && location.pathname.startsWith(item.path) ? "page" : undefined}>{item.label}</a>)}<a href={boardUrl()}>게시판</a></nav>
     <div className="top-actions">
       {here === "home" && <span className={`connection ${health === "연결됨" ? "ok" : health === "확인 중" ? "pending" : "bad"}`} role="img" aria-label={`API ${health}`} title={`API ${health}`}><i /></span>}
-      <a className="header-action account-action" href="/account" aria-current={here === "account" ? "page" : undefined}>{user.nickname} <small>{htsId || "아이디 만들기"}</small></a>
+      {guest ? <button type="button" className="icon-button" onClick={requireLogin}>로그인</button> : <>
+      <a className="header-action account-action" href="/account" aria-current={here === "account" ? "page" : undefined}>{me.nickname} <small>{htsId || "아이디 만들기"}</small></a>
       <NotificationBell />
-      <button className="icon-button" title={user.delegatedBy ? "관리자 계정으로 돌아갑니다" : "로그아웃"} onClick={() => void logout()}>{user.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button>
+      <button className="icon-button" title={me.delegatedBy ? "관리자 계정으로 돌아갑니다" : "로그아웃"} onClick={() => void logout()}>{me.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button></>}
     </div>
-    {user.delegatedBy && <p className="delegation-bar" role="status">관리자 {user.delegatedByName ?? user.delegatedBy}님이 <b>{ROLE_LABEL[user.role]} {user.nickname}</b>(으)로 로그인 중 · 모든 거래는 이 계정 명의로 처리됩니다.</p>}
+    {me.delegatedBy && <p className="delegation-bar" role="status">관리자 {me.delegatedByName ?? me.delegatedBy}님이 <b>{ROLE_LABEL[me.role]} {me.nickname}</b>(으)로 로그인 중 · 모든 거래는 이 계정 명의로 처리됩니다.</p>}
   </header>{toast}</>;
 
   if (legacyTarget) return null;
   const service = servicePath(location.pathname);
+  if (guest && !guestCanView(location.pathname)) return <div className="hts-shell stage">
+    <Backdrop />
+    {topbar("home")}
+    <main className="guest-gate"><h1>로그인이 필요한 페이지입니다</h1><p>시세와 차트, 히트맵, 게시판은 로그인 없이 볼 수 있습니다.</p><button type="button" className="submit buy-submit" onClick={requireLogin}>로그인</button><a className="soft" href="/">시장 홈으로</a></main>
+    <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
+  </div>;
   const payoutRoute = location.pathname.match(/^\/payouts\/(\d+)\/?$/);
   if (payoutRoute) return <div className="hts-shell stage payout-shell">
     <Backdrop />
@@ -760,14 +796,14 @@ export default function App() {
   if (location.pathname === "/portfolio" || location.pathname === "/portfolio/") return <div className="hts-shell stage portfolio-page-shell">
     <Backdrop />
     {topbar("home")}
-    <main><PortfolioPage holdings={holdings} instruments={instruments} homeCurrency={homeCurrency} cash={portfolio?.cash ?? user.cash} totalAssets={portfolio?.grand_total ?? portfolio?.net_worth ?? 0} onRefreshRates={() => void refreshRates()} ratesBusy={ratesBusy} onSelect={(code) => { window.location.href = `/?code=${encodeURIComponent(code)}`; }} /></main>
+    <main><PortfolioPage holdings={holdings} instruments={instruments} homeCurrency={homeCurrency} cash={portfolio?.cash ?? me.cash} totalAssets={portfolio?.grand_total ?? portfolio?.net_worth ?? 0} onRefreshRates={() => void refreshRates()} ratesBusy={ratesBusy} onSelect={(code) => { window.location.href = `/?code=${encodeURIComponent(code)}`; }} /></main>
     <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
   </div>;
   if (service) return <div className="hts-shell stage service-shell">
     <Backdrop />
     {topbar("services")}
     <Suspense fallback={<p className="svc-empty">불러오는 중…</p>}>
-      <ServicesApp path={service} instruments={instruments} portfolio={portfolio} orders={orders} userId={user.userId} homeCurrency={homeCurrency} homeDigits={homeDigits} cash={portfolio?.cash ?? user.cash} creditScore={credit?.score ?? user.creditScore} accounts={portfolio?.accounts ?? []} onDone={() => void refreshAccountQuiet()} />
+      <ServicesApp path={service} instruments={instruments} portfolio={portfolio} orders={orders} userId={me.userId} homeCurrency={homeCurrency} homeDigits={homeDigits} cash={portfolio?.cash ?? me.cash} creditScore={credit?.score ?? me.creditScore} accounts={portfolio?.accounts ?? []} onDone={() => void refreshAccountQuiet()} />
     </Suspense>
     <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
   </div>;
@@ -786,16 +822,16 @@ export default function App() {
     {topbar("account")}
     <main className="account-page">
       <aside className="account-card" aria-label="프로필">
-        <span className="account-avatar" aria-hidden="true">{user.nickname.slice(0, 1)}</span>
-        <h1>{user.nickname}</h1>
-        <p>{ROLE_LABEL[user.role] ?? user.role} · {user.nationality}</p>
+        <span className="account-avatar" aria-hidden="true">{me.nickname.slice(0, 1)}</span>
+        <h1>{me.nickname}</h1>
+        <p>{ROLE_LABEL[me.role] ?? me.role} · {me.nationality}</p>
         <dl>
           <div><dt>로그인 아이디</dt><dd>{htsId || "미설정"}</dd></div>
-          <div><dt>지갑</dt><dd>{money(portfolio?.cash ?? user.cash, homeDigits)} {homeCurrency}</dd></div>
+          <div><dt>지갑</dt><dd>{money(portfolio?.cash ?? me.cash, homeDigits)} {homeCurrency}</dd></div>
           <div><dt>순자산 <RefreshRateButton busy={ratesBusy} onRefresh={() => void refreshRates()} /></dt><dd>{money(inHome(portfolio?.net_worth ?? 0), homeDigits)} {homeCurrency}</dd></div>
           {credit && <div><dt>신용점수</dt><dd>{credit.score}점</dd></div>}
         </dl>
-        <button type="button" onClick={() => void logout()}>{user.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button>
+        <button type="button" onClick={() => void logout()}>{me.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button>
       </aside>
       <div className="account-sections">
         <PendingPayouts />
@@ -808,7 +844,7 @@ export default function App() {
             <button className="account-save" disabled={settingsBusy || !htsIdInput}>{settingsBusy ? "저장 중…" : htsId ? "아이디 변경" : "아이디 설정"}</button>
           </form>
         </section>
-        {!user.delegatedBy && <PasswordSection />}
+        {!me.delegatedBy && <PasswordSection />}
         {portfolio?.kyc_profile && <section className="account-section">
           <header><h2>본인 확인 (KYC)</h2><p>국적별 확인 상태입니다.</p></header>
           <dl className="account-facts"><div><dt>상태</dt><dd>{KYC_STATUS[portfolio.kyc_profile.status]}</dd></div><div><dt>위험 등급</dt><dd>{KYC_RISK[portfolio.kyc_profile.risk_tier]}</dd></div><div><dt>만료</dt><dd>{portfolio.kyc_profile.expires_epoch ? date(portfolio.kyc_profile.expires_epoch) : "—"}</dd></div></dl>
@@ -852,7 +888,7 @@ export default function App() {
           <ExchangeHeatmap instruments={instruments} exchangeId={heatmapExchange} onExchangeChange={setHeatmapExchangeOverride} onSelect={chooseInstrument} />
         </div>
         <div className="ticket-col">
-          <section className="data-panel order-entry"><div className="panel-title"><h2>주문 입력</h2><span>{ORDER_TYPES.find(([id]) => id === orderType)![1]}</span></div>
+          <section className={`data-panel order-entry${locked}`} {...lock("로그인하고 주문하기")}><div className="panel-title"><h2>주문 입력</h2><span>{ORDER_TYPES.find(([id]) => id === orderType)![1]}</span></div>
             <div className="order-types" role="group" aria-label="주문 유형">{ORDER_TYPES.map(([id, label]) => <button key={id} type="button" aria-pressed={orderType === id} className={orderType === id ? "active" : ""} onClick={() => setOrderType(id)}>{label}</button>)}</div>
             <div className="order-sides"><button className={side === "buy" ? "buy active" : "buy"} onClick={() => setSide("buy")}>매수</button><button className={side === "sell" ? "sell active" : "sell"} onClick={() => setSide("sell")}>매도</button></div>
             {orderType === "limit" && <label>지정가 ({selected?.quote_currency || homeCurrency})<input inputMode="numeric" value={price} onChange={(event) => setPrice(event.target.value.replace(/[^\d.]/g, ""))} /></label>}
@@ -887,7 +923,7 @@ export default function App() {
           <div className="book-current"><span>현재가</span><strong>{money(current)}</strong></div>
           <div className="book-side bids">{book.bids.map((item, index) => <button type="button" className="book-row" key={`${item.limit_price}-${index}`} title="이 가격으로 주문" onClick={() => { setOrderType("limit"); setPrice(String(item.limit_price)); }}><span>{money(item.quantity, 3)}</span><b>{money(item.limit_price, 2)}</b></button>)}</div>
         </section>
-        <section className="data-panel orders-panel">
+        <section className={`data-panel orders-panel${locked}`} {...lock("로그인하고 주문 보기")}>
           <div className="panel-title"><h2>주문 · 체결</h2><div className="order-tabs" role="tablist" aria-label="주문 필터" onKeyDown={tabListKeys}><button type="button" role="tab" id="order-tab-open" aria-controls="orders-panel" tabIndex={orderFilter === "open" ? 0 : -1} aria-selected={orderFilter === "open"} className={orderFilter === "open" ? "selected" : ""} onClick={() => setOrderFilter("open")}>미체결 {openCount}</button><button type="button" role="tab" id="order-tab-all" aria-controls="orders-panel" tabIndex={orderFilter === "all" ? 0 : -1} aria-selected={orderFilter === "all"} className={orderFilter === "all" ? "selected" : ""} onClick={() => setOrderFilter("all")}>전체</button></div></div>
           <p className="orders-hint">미체결·부분 체결·예약 주문은 오른쪽 <b>취소</b> 버튼으로 바로 취소할 수 있어요. 남은 예치금과 수량은 즉시 돌려받습니다.</p>
           <div className="table-scroll" id="orders-panel" role="tabpanel" aria-labelledby={`order-tab-${orderFilter}`}><table><thead><tr><th>주문</th><th>종목</th><th>구분</th><th className="r">가격</th><th className="r">수량</th><th className="r">체결</th><th className="r">잔량</th><th>상태</th><th /></tr></thead><tbody>{visibleOrders.map((order) => <tr key={order.order_id}>
@@ -897,16 +933,16 @@ export default function App() {
             <td>{OPEN.has(order.status) && <button className="cancel-button" disabled={busy} onClick={() => void cancelOrder(order)}>취소</button>}</td>
           </tr>)}</tbody></table>{!visibleOrders.length && <p className="empty">{orderFilter === "open" ? "미체결 주문이 없습니다." : "최근 주문이 없습니다."}</p>}</div>
         </section>
-        <section className="wallet-tile" aria-label="내 지갑">
+        <section className={`wallet-tile${locked}`} aria-label="내 지갑" {...lock("로그인하고 내 지갑 보기")}>
           <section className="wallet-summary">
-            <span>내 순자산 · {portfolio?.nationality ?? user.nationality} · {homeCurrency}<RefreshRateButton busy={ratesBusy} onRefresh={() => void refreshRates()} /></span>
+            <span>내 순자산 · {portfolio?.nationality ?? me.nationality} · {homeCurrency}<RefreshRateButton busy={ratesBusy} onRefresh={() => void refreshRates()} /></span>
             <strong>{compactMoney(inHome(portfolio?.net_worth ?? 0))} <small>{homeCurrency}</small></strong>
-            <p>총자산 {compactMoney(inHome(portfolio?.grand_total ?? 0))} · 현금 {compactMoney(portfolio?.cash ?? user.cash)} {homeCurrency}</p>
+            <p>총자산 {compactMoney(inHome(portfolio?.grand_total ?? 0))} · 현금 {compactMoney(portfolio?.cash ?? me.cash)} {homeCurrency}</p>
             {portfolio?.kyc_profile && <p>KYC · {KYC_STATUS[portfolio.kyc_profile.status]} · {KYC_RISK[portfolio.kyc_profile.risk_tier]}{portfolio.kyc_profile.expires_epoch ? ` · 만료 ${date(portfolio.kyc_profile.expires_epoch)}` : ""}</p>}
-            {taxResidency && <button type="button" className="text-button" onClick={() => setTaxResidencyOpen((open) => !open)}>세무거주지 · {taxResidency?.taxResidency || `국적(${taxResidency?.nationality ?? user.nationality}) 사용 중`} 변경</button>}
+            {taxResidency && <button type="button" className="text-button" onClick={() => setTaxResidencyOpen((open) => !open)}>세무거주지 · {taxResidency?.taxResidency || `국적(${taxResidency?.nationality ?? me.nationality}) 사용 중`} 변경</button>}
             {taxResidency && taxResidencyOpen && <form className="account-form tax-residency-form" onSubmit={saveTaxResidency}>
               <label>세무거주 국가<select value={taxResidencyValue} onChange={(event) => setTaxResidencyValue(event.target.value)}>
-                <option value="">국적 기본값 사용 ({taxResidency?.nationality ?? user.nationality})</option>
+                <option value="">국적 기본값 사용 ({taxResidency?.nationality ?? me.nationality})</option>
                 {(taxResidency?.countries ?? []).map((country) => <option key={country} value={country}>{country}</option>)}
               </select></label>
               <p className="account-hint">시뮬레이터 세칙 선택에 사용합니다. 증빙 확인이나 법률상 거주자 판정은 수행하지 않습니다.</p>

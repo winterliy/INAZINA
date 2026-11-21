@@ -8,6 +8,7 @@ import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FAVICON_PNG, landingPage, type LandingReason } from "./landing.js";
 import { browserAccess } from "./browserAccess.js";
+import { createRateLimiter, createSharedCache, publicMarketPath } from "./publicMarket.js";
 import { setupOidc } from "./oidc/setup.js";
 
 const projectRoot = findProjectRoot();
@@ -358,6 +359,9 @@ function countBoardView(ip: string, postId: string): boolean {
 
 // Site form submissions per client address (at most 5 per 10 minutes).
 const feedbackSubmissions = new Map<string, number[]>();
+// Guest market reads (no session): 240 requests per minute per address, identical requests share one answer for 1 s.
+const guestMarketAllowed = createRateLimiter(240, 60_000);
+const guestMarketRead = createSharedCache((path) => internalGet(path), 1000);
 
 async function sendLanding(response: ServerResponse, reason: LandingReason, path: string, status?: number): Promise<void> {
   const health = await internalGet("/internal/health");
@@ -625,6 +629,14 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
   }
 
   const principal = principalFor(request);
+  const guestPath = !principal ? publicMarketPath(request.method ?? "GET", url) : null;
+  if (guestPath) {
+    // Read-only market data for visitors without a session (guest HTS); nothing here depends on who asks.
+    if (!guestMarketAllowed(clientIp(request))) { send(response, 429, { error: "rate_limited" }, { "retry-after": "60" }); return; }
+    const result = await guestMarketRead(guestPath);
+    send(response, result.status, result.body);
+    return;
+  }
   if (!principal) {
     if (browser) await sendLanding(response, "login_required", url.pathname, 401);
     else send(response, 401, { error: "authentication_required" });

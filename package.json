@@ -16,7 +16,7 @@
     "test:wl": "node --import tsx --test apps/wl/src/wlmd.test.ts apps/wl/src/settings.test.ts apps/wl/gate.test.ts apps/wl/security-store.test.ts apps/shared/money.test.ts",
     "test:api": "npm run test --workspace @inazina/api",
     "test:shared": "node --import tsx --test apps/shared/sso.test.ts",
-    "test:hts": "cd apps/hts && TSX_TSCONFIG_PATH=tsconfig.app.json node --import tsx --test src/PriceChart.test.tsx src/chartScale.test.ts src/ExchangeHeatmap.test.ts src/PortfolioPage.test.ts src/notificationFormat.test.ts",
+    "test:hts": "cd apps/hts && TSX_TSCONFIG_PATH=tsconfig.app.json node --import tsx --test src/PriceChart.test.tsx src/chartScale.test.ts src/ExchangeHeatmap.test.ts src/PortfolioPage.test.ts src/notificationFormat.test.ts src/guest.test.ts",
     "geoip:update": ".venv/bin/python tools/update_geoip.py"
   },
   "engines": {
