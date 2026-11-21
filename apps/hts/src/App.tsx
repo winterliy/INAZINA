@@ -127,12 +127,13 @@ export default function App() {
   const [notice, setNoticeState] = useState<Notice | null>(null);
   // Guest mode: the page opens without a session. `loginPanel` shows the account panel (no single sign-on, e.g. local development).
   const [loginPanel, setLoginPanel] = useState(false);
-  const [ssoOn, setSsoOn] = useState(false);
-  useEffect(() => { void oidcEnabled().then(setSsoOn); }, []);
+  // Asks the server (once) whether single sign-on is on, so the very first click is not answered with the wrong login.
   const requireLogin = useCallback(() => {
-    const action = loginAction(ssoOn, window.location);
-    if (action.kind === "redirect") window.location.assign(action.url); else setLoginPanel(true);
-  }, [ssoOn]);
+    void oidcEnabled().then((on) => {
+      const action = loginAction(on, window.location);
+      if (action.kind === "redirect") window.location.assign(action.url); else setLoginPanel(true);
+    });
+  }, []);
   const [busy, setBusy] = useState(false);
   const submitLock = useRef(false);
   // Idempotency key of the order being confirmed. The same order content keeps the key, so a retry after a timeout
@@ -674,7 +675,7 @@ export default function App() {
     if (back?.startsWith("/board")) { location.assign(back); return; }
     setNoticeState(null); setLoginPanel(false); setUser(next);
     if (loginPanelRequested(location.search)) window.history.replaceState(null, "", currentReturnTo(window.location));
-  }} extra={<>{loginPanel ? <button type="button" className="board-guest-button" onClick={() => setLoginPanel(false)}>로그인 없이 둘러보기</button> : <a className="board-guest-button" href={boardUrl()}>로그인 없이 게시판 보기</a>}</>} /></div>;
+  }} extra={<>{loginPanel ? <button type="button" className="board-guest-button" onClick={() => { setLoginPanel(false); if (!guestCanView(location.pathname)) window.location.assign("/"); }}>로그인 없이 둘러보기</button> : <a className="board-guest-button" href={boardUrl()}>로그인 없이 게시판 보기</a>}</>} /></div>;
   const guest = !user;
   const me: ApiUser = user ?? GUEST_USER;
   // A login-only part of the page stays visible but blurred; any click or Enter on it asks the visitor to sign in.
@@ -771,7 +772,7 @@ export default function App() {
   if (guest && !guestCanView(location.pathname)) return <div className="hts-shell stage">
     <Backdrop />
     {topbar("home")}
-    <main className="guest-gate"><h1>로그인이 필요한 페이지입니다</h1><p>시세와 차트, 히트맵, 게시판은 로그인 없이 볼 수 있습니다.</p><button type="button" className="submit buy-submit" onClick={requireLogin}>로그인</button><a className="soft" href="/">시장 홈으로</a></main>
+    <main className="guest-gate"><LoginRedirect go={requireLogin} /><a className="soft" href="/">시장 홈으로</a></main>
     <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
   </div>;
   const payoutRoute = location.pathname.match(/^\/payouts\/(\d+)\/?$/);
@@ -1040,3 +1041,8 @@ function groupAmount(value: string) {
   return fraction === undefined ? grouped : `${grouped}.${fraction}`;
 }
 
+/** Sends a visitor of a login-only page straight to the login (the identity provider, or the account panel without SSO). */
+function LoginRedirect({ go }: { go: () => void }) {
+  useEffect(() => { go(); }, [go]);
+  return <p className="loading">로그인 화면으로 이동하는 중…</p>;
+}

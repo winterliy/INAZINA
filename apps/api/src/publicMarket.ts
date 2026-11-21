@@ -25,6 +25,11 @@ const PUBLIC_ROUTES: { pattern: RegExp; internal: (match: RegExpMatchArray, url:
   },
 ];
 
+/** Guest requests allowed per minute and address: INAZINA_GUEST_RATE_PER_MINUTE (a positive whole number), else 240. */
+export function guestRatePerMinute(value: string | undefined): number {
+  return /^[1-9]\d*$/.test(value ?? "") ? Number(value) : 240;
+}
+
 /** The internal path for a guest-readable GET, or null when the route needs a session. */
 export function publicMarketPath(method: string, url: URL): string | null {
   if (method !== "GET") return null;

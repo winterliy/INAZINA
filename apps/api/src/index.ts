@@ -8,7 +8,7 @@ import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FAVICON_PNG, landingPage, type LandingReason } from "./landing.js";
 import { browserAccess } from "./browserAccess.js";
-import { createRateLimiter, createSharedCache, publicMarketPath } from "./publicMarket.js";
+import { createRateLimiter, createSharedCache, guestRatePerMinute, publicMarketPath } from "./publicMarket.js";
 import { setupOidc } from "./oidc/setup.js";
 
 const projectRoot = findProjectRoot();
@@ -359,8 +359,8 @@ function countBoardView(ip: string, postId: string): boolean {
 
 // Site form submissions per client address (at most 5 per 10 minutes).
 const feedbackSubmissions = new Map<string, number[]>();
-// Guest market reads (no session): 240 requests per minute per address, identical requests share one answer for 1 s.
-const guestMarketAllowed = createRateLimiter(240, 60_000);
+// Guest market reads (no session): INAZINA_GUEST_RATE_PER_MINUTE requests per minute per address (default 240), identical requests share one answer for 1 s.
+const guestMarketAllowed = createRateLimiter(guestRatePerMinute(process.env.INAZINA_GUEST_RATE_PER_MINUTE), 60_000);
 const guestMarketRead = createSharedCache((path) => internalGet(path), 1000);
 
 async function sendLanding(response: ServerResponse, reason: LandingReason, path: string, status?: number): Promise<void> {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createRateLimiter, createSharedCache, publicMarketPath } from "./publicMarket.js";
+import { createRateLimiter, createSharedCache, guestRatePerMinute, publicMarketPath } from "./publicMarket.js";
 
 const get = (path: string) => publicMarketPath("GET", new URL(`http://x${path}`));
 
@@ -35,4 +35,10 @@ test("shared cache reuses one fetch, drops failures and expires", async () => {
   assert.equal(calls, 1); assert.equal(a, b);
   time = 1500; await cached("/p"); assert.equal(calls, 2);
   status = 500; time = 3000; await cached("/p"); await cached("/p"); assert.equal(calls, 4);
+});
+
+test("the guest rate limit comes from the environment, falling back to 240 for anything that is not a positive whole number", () => {
+  assert.equal(guestRatePerMinute(undefined), 240);
+  assert.equal(guestRatePerMinute("60"), 60);
+  for (const bad of ["", "0", "-5", "abc", "1.5", "NaN"]) assert.equal(guestRatePerMinute(bad), 240, bad);
 });
