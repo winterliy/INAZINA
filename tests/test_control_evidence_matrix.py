@@ -1,4 +1,5 @@
 """M8: every control in docs/controls_laplace.md points at code and tests that really exist."""
+import ast
 import re
 import unittest
 from pathlib import Path
@@ -18,7 +19,22 @@ def _rows():
     return rows
 
 
+def defined_tests(path):
+    """Names of the functions a Python file really defines. Parsed, not searched as text: a test that was commented out
+    (or only mentioned in a string) must not count as evidence."""
+    tree = ast.parse(Path(path).read_text(encoding="utf-8"))
+    return {node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
 class ControlEvidenceMatrixTests(unittest.TestCase):
+    def test_commented_out_or_quoted_tests_are_not_evidence(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "test_sample.py"
+            path.write_text('def test_real():\n    pass\n# def test_commented(self):\n#     pass\nNOTE = "def test_quoted(self): pass"\n',
+                            encoding="utf-8")
+            self.assertEqual(defined_tests(path), {"test_real"})
+
     def test_every_control_names_existing_code_and_existing_tests(self):
         rows = _rows()
         self.assertGreaterEqual(len(rows), 10)
@@ -34,8 +50,7 @@ class ControlEvidenceMatrixTests(unittest.TestCase):
                     self.assertTrue(test_name.startswith("test_"), reference)
                     source = (ROOT / path)
                     self.assertTrue(source.is_file(), f"{path} does not exist")
-                    self.assertRegex(source.read_text(encoding="utf-8"),
-                                     rf"def {re.escape(test_name)}\(", f"{reference} is not defined")
+                    self.assertIn(test_name, defined_tests(source), f"{reference} is not defined")
 
     def test_default_database_directory_is_quarantined_during_tests(self):
         live = ROOT / "database"

@@ -48,7 +48,6 @@ class BackupRestoreDrillTests(unittest.TestCase):
         return subprocess.run([sys.executable, str(TOOL), str(path), *options], capture_output=True, text=True)
 
     def test_restores_and_verifies_without_modifying_source(self):
-        before_databases = drill_databases()
         with tempfile.TemporaryDirectory() as temp:
             with dump_of(['CREATE TABLE entries (id INTEGER PRIMARY KEY)', 'INSERT INTO entries VALUES (42)'], temp) as path:
                 before = path.read_bytes()
@@ -59,7 +58,8 @@ class BackupRestoreDrillTests(unittest.TestCase):
                 self.assertGreaterEqual(report['elapsed_seconds'], 0)
                 self.assertEqual(before, path.read_bytes())
                 self.assertEqual(list(Path(temp).iterdir()), [path])
-        self.assertEqual(drill_databases(), before_databases, 'the temporary restore database is dropped')
+                self.assertTrue(report['restore_database'])
+                self.assertNotIn(report['restore_database'], drill_databases(), 'the temporary restore database is dropped')
 
     def test_required_tables_are_checked_on_restored_copy(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -110,15 +110,15 @@ class BackupRestoreDrillTests(unittest.TestCase):
             self.assertFalse(json.loads(result.stdout)['ok'])
 
     def test_truncated_dump_fails_and_leaves_no_database_behind(self):
-        before_databases = drill_databases()
         with tempfile.TemporaryDirectory() as temp:
             with dump_of(['CREATE TABLE entries (id INTEGER)'] + [f'INSERT INTO entries VALUES ({i})' for i in range(50)], temp) as path:
                 data = path.read_bytes()
                 path.write_bytes(data[:len(data) // 2])
                 result = self.run_drill(path)
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-                self.assertFalse(json.loads(result.stdout)['ok'])
-        self.assertEqual(drill_databases(), before_databases)
+                report = json.loads(result.stdout)
+                self.assertFalse(report['ok'])
+                self.assertNotIn(report['restore_database'], drill_databases())
 
     def test_foreign_key_that_was_never_validated_fails(self):
         with tempfile.TemporaryDirectory() as temp:

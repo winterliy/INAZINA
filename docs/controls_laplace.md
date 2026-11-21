@@ -18,7 +18,7 @@
 | C-10 | 민감한 관리자 조회와 기간 마감은 행위자와 함께 감사 기록에 남는다 | web_api/server.py | tests/test_web_api.py::test_sensitive_admin_report_access_is_audited, tests/test_web_api.py::test_bank_journal_route_records_actor_and_filters, tests/test_web_api.py::test_admin_accounting_period_close_is_authorized_and_audited |
 | C-11 | KYC 미검증 고객은 송금·계좌 개설·대출 신청이 차단된다 | managers/compliance_manager.py | tests/test_currency_home.py::test_explicit_kyc_review_gates_outgoing_transfers_but_not_receiving, tests/test_currency_account_storage.py::test_pending_kyc_blocks_regular_and_foreign_account_opening, tests/test_realistic_rate_system.py::test_kyc_profile_gates_loan_origination |
 | C-12 | AML 경보는 송금인·수취인 각자의 통화 기준으로 평가한다 | managers/compliance_manager.py | tests/test_currency_home.py::test_aml_monitors_sender_and_recipient_in_their_home_currencies |
-| C-13 | 운영 DB 백업은 일관된 사본을 만들고 보존 개수를 지킨다 | database/backup.py | tests/test_backup.py::test_backup_copies_and_prunes |
+| C-13 | 운영 DB 백업(pg_dump)은 임시 DB로 복원해 필수 표·검증되지 않은 외래키·통합 대사를 점검할 수 있고 원본 파일을 바꾸지 않으며 임시 DB를 남기지 않는다 | database/backup.py | tests/test_m8_backup_restore_drill.py::test_restores_and_verifies_without_modifying_source, tests/test_m8_backup_restore_drill.py::test_required_tables_are_checked_on_restored_copy, tests/test_m8_backup_restore_drill.py::test_truncated_dump_fails_and_leaves_no_database_behind |
 | C-14 | 테스트는 운영 DB를 열지 않는다 | tests/conftest.py | tests/test_control_evidence_matrix.py::test_default_database_directory_is_quarantined_during_tests |
 
 ## 범위 밖

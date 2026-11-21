@@ -90,6 +90,7 @@ def main():
             except Exception as exc:
                 print(f"could not drop {name}: {exc}", file=sys.stderr)
     report["elapsed_seconds"] = round(time.monotonic() - start, 3)
+    report["restore_database"] = name if created else None   # dropped again before this report is printed
     print(json.dumps(report, ensure_ascii=False))
     return 0 if report["ok"] else 1
 
