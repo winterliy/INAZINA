@@ -5025,6 +5025,7 @@ class Handler(BaseHTTPRequestHandler):
                     audit_admin_access(user["userId"], "funding_cashflow.read", {
                         "bank_id": bank_id, "currency": currency, "result_count": len(report["cashflows"]),
                     })
+                    self.send_json(200, report)
             elif path == "/internal/admin/alm":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -5036,7 +5037,6 @@ class Handler(BaseHTTPRequestHandler):
                     report = admin_alm_report(bank_id)
                     audit_admin_access(user["userId"], "alm.read", {
                         "bank_id": bank_id, "lcr_status": report["lcr"]["status"], "nsfr_status": report["nsfr"]["status"]})
-                    self.send_json(200, report)
                     self.send_json(200, report)
             elif path == "/internal/admin/bank-journal":
                 user = identity(internal_user_id(self))
@@ -5871,6 +5871,7 @@ class Handler(BaseHTTPRequestHandler):
                                   "unallocatedMinorUnits": preview.unallocated,
                                   "simulationOnly": True}
                         audit_admin_access(user["userId"], "recovery_waterfall.preview", {
+                            "claim_count": len(payload["claims"])})
                     elif action == "prudential_parameter_set":
                         if set(payload) != {"action", "nationality", "key", "valueBps"}:
                             raise ValueError("invalid_prudential_parameter_payload")
@@ -5880,7 +5881,6 @@ class Handler(BaseHTTPRequestHandler):
                         result = {"nationality": str(payload["nationality"]).strip(), "key": payload["key"],
                                   "valueBps": payload["valueBps"]}
                         audit_admin_access(user["userId"], "prudential_parameter.set", result)
-                            "claim_count": len(payload["claims"])})
                     elif action == "loan_charge_off":
                         allowed = {"action", "loanId", "eventKey", "memo"}
                         if set(payload) - allowed or not {"action", "loanId", "eventKey"}.issubset(payload):
