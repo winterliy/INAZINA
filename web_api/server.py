@@ -4552,21 +4552,20 @@ def accounting_close_overview(check=False):
     from managers.accounting_journal import AccountingJournal
     from managers.fx_residual import FxResiduals
     from managers.baseline_report import BaselineReport
-    from managers.fx_revaluation import FxRevaluation, period_key
-    import time as _time
+    from managers.fx_revaluation import FxRevaluation
     with domain().db.readonly() as conn:
         residuals = FxResiduals.report(conn)
         history = FxResiduals.history(conn)
         baselines = BaselineReport.collect(conn)
-        revaluation = {"preview": FxRevaluation.preview(conn), "history": FxRevaluation.history(conn), "period": period_key(_time.time())}
-        done_now = {row[0] for row in conn.execute(
-            "SELECT currency_code FROM fx_revaluation_runs WHERE kind IN ('baseline','revalue') AND period_key=?", (revaluation["period"],))}
+        fx_check = FxRevaluation.close_check(conn)
+        revaluation = {"preview": FxRevaluation.preview(conn), "history": FxRevaluation.history(conn),
+                       "period": fx_check['period'], "closeCheck": fx_check}
         report = AccountingJournal.reconcile_all_financial_ledgers(conn) if check else None
     pending = sum(1 for row in residuals if row["pending"] > 0)
-    open_positions = [row for row in revaluation["preview"] if row["position"] and row["currency"] not in done_now]
+    fx_findings = revaluation["closeCheck"]["findings"]
     gates = [{"key": "fx_residual", "label": "환전 반올림 잔여 정리", "ok": pending == 0, "detail": f"정리할 통화 {pending}개"},
-             {"key": "fx_revaluation", "label": "외환 포지션 평가", "ok": not open_positions,
-              "detail": f"이번 기간 미평가 통화 {len(open_positions)}개"}]
+             {"key": "fx_revaluation", "label": "외환 포지션 평가", "ok": not fx_findings,
+              "detail": f"이번 기간 평가 이상 {len(fx_findings)}건"}]
     close_ready = None
     if report is not None:
         coverage = report.get("amount_field_coverage") or {}
@@ -4576,7 +4575,7 @@ def accounting_close_overview(check=False):
             {"key": "coverage", "label": "금액 필드 분류", "ok": coverage.get("status") == "matched",
              "detail": f"미분류 {len(coverage.get('unclassified') or [])}건"},
         ] + gates
-        close_ready = bool(report.get("close_ready")) and pending == 0 and not open_positions
+        close_ready = bool(report.get("close_ready")) and pending == 0 and not fx_findings
     return {"gates": gates, "checked": report is not None, "closeReady": close_ready, "residuals": residuals, "history": history,
             "revaluation": revaluation, "baselines": baselines}
 

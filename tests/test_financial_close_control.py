@@ -386,6 +386,10 @@ class FinancialCloseControlTests(unittest.TestCase):
         self.assertIs(report['close_ready'], not report['findings'])
         self.assertEqual(report['consumer_coverage'], coverage)
         self.assertIn('common_trial_balance', report['coverage'])
+        self.assertIn('treasury_bond_cash', report['coverage'])
+        self.assertIn('fx_revaluation', report['coverage'])
+        self.assertEqual(report['treasury_bond_cash']['status'], 'matched')
+        self.assertEqual(report['fx_revaluation']['status'], 'preview')
         self.assertIn('consumer_coverage', report['coverage'])
 
     def test_a_new_registered_amount_table_must_be_classified(self):

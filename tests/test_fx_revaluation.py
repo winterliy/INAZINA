@@ -95,3 +95,21 @@ class FxRevaluationTests(unittest.TestCase):
         with self.assertRaises(Exception):
             with self.db.atomic() as conn:
                 conn.execute("DELETE FROM fx_revaluation_runs")
+
+    def test_close_check_detects_rate_change_and_missing_reversal(self):
+        self.open_position()
+        self.run_at(T0)
+        with self.db.readonly() as conn:
+            self.assertEqual(FxRevaluation.close_check(conn, T0)['status'], 'matched')
+        self.set_rate(1500)
+        with self.db.readonly() as conn:
+            result = FxRevaluation.close_check(conn, T0 + 1)
+            self.assertTrue(any(row['status'] == 'stale_or_invalid_run' for row in result['findings']))
+        self.run_at(T0 + DAY)
+        with self.db.readonly() as conn:
+            self.assertEqual(FxRevaluation.close_check(conn, T0 + DAY)['status'], 'matched')
+            result = FxRevaluation.close_check(conn, T0 + 2 * DAY)
+            self.assertTrue(any(row['status'] == 'missing_reversal' for row in result['findings']))
+        self.run_at(T0 + 2 * DAY)
+        with self.db.readonly() as conn:
+            self.assertEqual(FxRevaluation.close_check(conn, T0 + 2 * DAY)['status'], 'matched')

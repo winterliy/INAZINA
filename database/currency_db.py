@@ -3815,6 +3815,17 @@ def ensure_fx_revaluation_runs(execute):
         execute(f"""CREATE TRIGGER IF NOT EXISTS trg_fx_revaluation_runs_{operation.lower()}
             BEFORE {operation} ON fx_revaluation_runs
             BEGIN SELECT RAISE(ABORT,'FX revaluation rows are append-only'); END""")
+    execute("""CREATE TABLE IF NOT EXISTS fx_revaluation_corrections (
+        correction_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL,
+        revision INTEGER NOT NULL CHECK(revision>0),
+        decimal_places INTEGER NOT NULL CHECK(decimal_places BETWEEN 0 AND 6),
+        position_minor_units INTEGER NOT NULL, rate_text TEXT NOT NULL,
+        pnl_base_minor_units INTEGER NOT NULL, delta_base_minor_units INTEGER NOT NULL,
+        actor TEXT NOT NULL, recorded_epoch INTEGER NOT NULL, UNIQUE(run_id,revision))""")
+    for operation in ("UPDATE", "DELETE"):
+        execute(f"""CREATE TRIGGER IF NOT EXISTS trg_fx_revaluation_corrections_{operation.lower()}
+            BEFORE {operation} ON fx_revaluation_corrections
+            BEGIN SELECT RAISE(ABORT,'FX revaluation corrections are append-only'); END""")
 
 
 def ensure_liquidity_providers(execute):

@@ -14,7 +14,7 @@ LAYERS = {
         "movement_history_manager", "order_validation", "market_session_manager",
         "trading_warning_manager"},
     1: {"currency_manager", "rate_manager", "financial_manager", "bank_journal",
-        "accounting_journal", "credit_score_manager", "deposit_accounts", "notification_manager", "pnl_ledger"},
+        "accounting_journal", "fx_position", "credit_score_manager", "deposit_accounts", "notification_manager", "pnl_ledger"},
     2: {"bank_manager", "interest_manager", "currency_exchange_manager", "treasury_bond_manager",
         "option_manager", "futures_manager", "els_manager", "fund_manager", "investment_manager",
         "fractional_trading_manager", "foreign_securities_manager", "corporate_actions_manager", "share_restructuring_manager",

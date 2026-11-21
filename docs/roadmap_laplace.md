@@ -168,6 +168,8 @@ M8 진행: 통제-증빙 추적표([controls_laplace.md](controls_laplace.md))�
 - M7: 상각 대출의 실제 잔액·통화를 사용하는 관리자 배분 미리보기를 제공한다. 회수 자금 출처와 다른 채권자 원장 연결은 없어 실제 지급·전기는 수행하지 않는다.
 - M8: 백업 및 복원 사본에서 운영자가 지정한 필수 테이블을 검사하고 복원 연습 경과시간을 기록한다. 서비스 기동과 업무 원장 대사는 포함하지 않는다.
 
+2026-11-21 M4 통합 보고 보강: `rebuild_from_subledgers`가 `treasury_bond_cash` 대사 결과와 FX 재평가 preview를 통합 보고서의 명시적 항목 및 coverage로 노출하도록 했다. `tests/test_financial_close_control.py`에 두 항목의 coverage/status 계약을 추가했다. 격리 PostgreSQL에서 M4 대사·FX 및 M8 정리 관련 50 tests와 2 subtests, `compileall`, `git diff --check`가 통과했다. SQLite 및 psycopg 미종료 연결 ResourceWarning은 남았다. 환율 평가를 조회할 수 없거나 국채 대사 검사가 누락되면 통합 보고서는 mismatch 및 close_ready=false로 반환한다. 현 기간 FX 평가의 통화별 잔액·환율·계산 결과·분개와 이전 기간 역분개를 검사하고 누락·불일치 시 마감을 막는다. 최초 기준점은 이전 거래별 FX 원가를 재구성하지 않는다. 같은 기간 평가 후 잔액이나 환율이 바뀌면 마감이 차단되고, 재실행(`FxRevaluation.run`)이 이전 실행을 고치지 않고 추가 전용 정정(`fx_revaluation_corrections`, 차액 분개)을 남기며 다음 기간에 정정분도 역분개한다. 읽기 전용 포지션·마감 점검은 L1 `managers/fx_position.py`로 분리해 통합 대사(L1)가 상위 계층을 가져오지 않는다. 전사 원장 대사와 과거 원가 재구성은 미완료다.
+
 ## #80 종료 범위
 
 #80은 내부 시뮬레이터 범위에서 완료다. HTS 의결권 위임/투표, DR 수탁 요청·예약·지연·수수료·재시도/만료, 세무거주지 스냅샷, 국가별 배당 원천징수, 불변 이벤트·내부 복식분개 및 관리자 대사를 포함한다. 실제 수탁/예탁/은행/세무기관 연결, 신분·거주지 증빙, 법적 조약 판정과 외부 송금은 제외한다.

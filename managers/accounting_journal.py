@@ -3257,6 +3257,18 @@ class AccountingJournal:
         common_checks = cls.reconcile_subledgers(conn)
         common_findings = [dict(row) for row in common_checks
                            if row.get("status") != "matched"]
+        treasury_bond_cash = next(
+            (dict(row) for row in common_checks
+             if row.get("ledger_scope") == "treasury_bond_cash"),
+            {"ledger_scope": "treasury_bond_cash", "status": "unavailable",
+             "common_journal_gaps": [{"status": "missing_check"}]},
+        )
+        try:
+            from managers.fx_position import FxPosition
+            fx_revaluation = {"status": "preview", "positions": FxPosition.preview(conn),
+                              "close_check": FxPosition.close_check(conn)}
+        except (ValueError, ArithmeticError) as exc:
+            fx_revaluation = {"status": "unavailable", "reason": str(exc), "positions": []}
         common_trial_balance = cls.consolidated_trial_balance(conn)
         consumer_coverage = cls.consumer_coverage(conn)
         issuers = [str(row[0]) for row in conn.execute(
@@ -3281,6 +3293,14 @@ class AccountingJournal:
                     + [{"scope": "loan_related_references", **finding} for finding in loan_related_reference_findings]
                     + [{"scope": "common_journals", **finding}
                        for finding in common_findings]
+                    + ([{"scope": "treasury_bond_cash", "status": "missing_check"}]
+                       if treasury_bond_cash["status"] == "unavailable" else [])
+                    + ([{"scope": "fx_revaluation", "status": "unavailable",
+                         "reason": fx_revaluation["reason"]}]
+                       if fx_revaluation["status"] == "unavailable" else [])
+                    + ([{"scope": "fx_revaluation", **finding}
+                        for finding in fx_revaluation["close_check"]["findings"]]
+                       if fx_revaluation["status"] == "preview" else [])
                     + [{"scope": "common_trial_balance", **finding}
                        for finding in common_trial_balance["findings"]]
                     + [{"scope": "consumer_coverage", "source_table": table, "status": "unclassified"}
@@ -3295,6 +3315,8 @@ class AccountingJournal:
             "loan_related_references",
             "common_journals",
             "common_trial_balance",
+            "treasury_bond_cash",
+            "fx_revaluation",
             "consumer_coverage",
             "institution_subledgers",
             "institution",
@@ -3322,6 +3344,8 @@ class AccountingJournal:
             "amount_field_coverage": amount_field_coverage,
             "foreign_key_findings": foreign_key_findings,
             "common_journal_checks": common_checks,
+            "treasury_bond_cash": treasury_bond_cash,
+            "fx_revaluation": fx_revaluation,
             "institution_reports": institution_reports,
             "findings": findings,
         }

@@ -24,6 +24,7 @@
 | C-16 | 도매조달의 한도 설정·실행·상환·만기 처리는 관리자만 할 수 있고, 형식이 틀린 입력과 한도 초과는 기록 없이 거부되며, 다른 은행의 조달은 상환할 수 없고, 같은 요청 키는 두 번 실행되지 않는다 | web_api/server.py | tests/test_funding_admin.py::test_non_admin_is_refused_and_nothing_is_written_or_audited, tests/test_funding_admin.py::test_bad_payloads_are_rejected_without_writing_or_auditing, tests/test_funding_admin.py::test_a_bank_cannot_repay_another_banks_funding, tests/test_funding_admin.py::test_limit_then_draw_then_repay_work_end_to_end_and_are_audited |
 | C-17 | 만기 처리는 지정한 은행의 도래 건만 상환한다 | managers/funding_maturity.py | tests/test_funding_admin.py::test_only_the_named_bank_is_processed |
 | C-18 | 일괄 쓰기(executemany)는 중간 행이 실패하면 앞 행이 반영된 채 남고 트랜잭션을 계속 쓸 수 있다(행마다 문장이던 때와 같은 동작) | database/pg_backend.py | tests/test_pg_executemany.py::test_a_failing_row_leaves_the_rows_before_it_applied_and_the_transaction_usable |
+| C-19 | 외환 포지션 평가는 기간마다 포지션·환율·계산·분개·이전 기간 역분개가 일치해야 마감되며, 기간 중 환율·포지션이 바뀌면 이전 실행을 고치지 않고 추가 전용 정정(차액 분개)으로 반영한다 | managers/fx_position.py, managers/fx_revaluation.py | tests/test_fx_revaluation_corrections.py::FxRevaluationCorrectionTests::test_rate_and_position_corrections_are_idempotent_and_reverse, tests/test_fx_revaluation_close_unit.py::test_close_requires_current_position_rate_and_matching_posting |
 
 ## 범위 밖
 

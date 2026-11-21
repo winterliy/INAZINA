@@ -7,71 +7,13 @@ booked in the base currency (Dr/Cr fx_position_revaluation against fx_revaluatio
 automatic reversing entry dated the first second of the next period, so the result of a period is its own.
 """
 import time
-from datetime import datetime, timedelta, timezone
 from fractions import Fraction
 
 from functions.money import base_currency_code, currency_precision
 from managers.accounting_journal import AccountingJournal
+from managers.fx_position import (CLEARING_ACCOUNTS, PERIOD_ZONE, SCOPE, FxPosition, _round, next_period_start, period_key)  # noqa: F401
 
-SCOPE = "fx_revaluation"
-CLEARING_ACCOUNTS = ("fx_conversion_clearing", "fx_settlement_clearing")
-PERIOD_ZONE = timezone(timedelta(hours=9))        # 하루 단위 기간은 한국 시간 기준
-
-
-def period_key(epoch):
-    return datetime.fromtimestamp(int(epoch), PERIOD_ZONE).strftime("%Y-%m-%d")
-
-
-def next_period_start(key):
-    day = datetime.strptime(key, "%Y-%m-%d").replace(tzinfo=PERIOD_ZONE) + timedelta(days=1)
-    return int(day.timestamp())
-
-
-def _round(value):
-    value = Fraction(value)
-    whole = abs(value.numerator) * 2 + value.denominator
-    rounded = whole // (value.denominator * 2)
-    return -rounded if value < 0 else rounded
-
-
-class FxRevaluation:
-    @staticmethod
-    def positions(conn):
-        """{currency: (places, minor units long)} for every foreign currency (zero when nothing is open)."""
-        base = base_currency_code(conn)
-        held = {str(row[0]).upper(): int(row[1]) for row in conn.execute(
-            "SELECT e.currency_code,SUM(l.credit_units-l.debit_units) FROM accounting_lines l JOIN accounting_entries e ON "
-            f"e.entry_id=l.entry_id WHERE l.account_code IN ({','.join('?' * len(CLEARING_ACCOUNTS))}) GROUP BY e.currency_code",
-            CLEARING_ACCOUNTS)}
-        result = {}
-        for row in conn.execute("SELECT code,decimal_places FROM currencies WHERE status='active' ORDER BY code"):
-            code = str(row[0]).upper()
-            if code != base:
-                result[code] = (int(row[1]), held.get(code, 0))
-        return result
-
-    @staticmethod
-    def _last_rate(conn, currency):
-        row = conn.execute("SELECT rate_text FROM fx_revaluation_runs WHERE currency_code=? AND kind IN ('baseline','revalue') "
-                           "ORDER BY run_id DESC LIMIT 1", (currency,)).fetchone()
-        return Fraction(row[0]) if row else None
-
-    @classmethod
-    def preview(cls, conn):
-        """What a run now would do per currency: position, previous and current rate, resulting gain or loss."""
-        from managers.currency_manager import CurrencyManager
-        base = base_currency_code(conn)
-        base_places = currency_precision(conn, base)
-        rows = []
-        for currency, (places, position) in cls.positions(conn).items():
-            rate = CurrencyManager.quote(conn, currency, base)
-            previous = cls._last_rate(conn, currency)
-            pnl = 0 if previous is None else _round(Fraction(position, 10 ** places) * (rate - previous) * 10 ** base_places)
-            rows.append({"currency": currency, "decimalPlaces": places, "position": position, "rate": f"{float(rate):.6f}",
-                         "previousRate": None if previous is None else f"{float(previous):.6f}", "pnl": pnl,
-                         "baseline": previous is None})
-        return rows
-
+class FxRevaluation(FxPosition):
     @classmethod
     def run(cls, conn, actor, now=None):
         """Revalue every foreign currency for the current period. Returns [(currency, kind, pnl)]; safe to repeat."""
@@ -83,8 +25,10 @@ class FxRevaluation:
         base_places = currency_precision(conn, base)
         done = []
         for currency, (places, position) in cls.positions(conn).items():
-            if conn.execute("SELECT 1 FROM fx_revaluation_runs WHERE kind IN ('baseline','revalue') AND period_key=? AND currency_code=?",
-                            (key, currency)).fetchone():
+            existing = conn.execute("SELECT * FROM fx_revaluation_runs WHERE kind IN ('baseline','revalue') AND period_key=? "
+                                    "AND currency_code=?", (key, currency)).fetchone()
+            if existing:
+                done.extend(cls._correct(conn, existing, currency, places, position, actor, now, base, base_places))
                 continue
             rate = CurrencyManager.quote(conn, currency, base)
             previous = cls._last_rate(conn, currency)
@@ -101,13 +45,34 @@ class FxRevaluation:
             done.append((currency, kind, pnl))
         return done
 
+    @classmethod
+    def _correct(cls, conn, run, currency, places, position, actor, now, base, base_places):
+        """A position or fixing that changed after the period's run is booked as an appended correction (the delta), never an edit."""
+        from managers.currency_manager import CurrencyManager
+        eff = cls._effective(conn, run)
+        rate = CurrencyManager.quote(conn, currency, base)
+        if (places, position, rate) == (eff["places"], eff["position"], Fraction(eff["rate_text"])):
+            return []
+        previous = None if run["previous_rate_text"] is None else Fraction(run["previous_rate_text"])
+        pnl = cls._pnl(run["kind"], position, places, rate, previous, base_places)
+        delta, revision = pnl - eff["pnl"], len(eff["fixes"]) + 1
+        tag = f"{int(run['run_id'])}:{revision}"
+        if delta:
+            cls._post(conn, tag, delta, base, base_places, now, "FX position revaluation correction",
+                      source_key=f"correction:{tag}", entity_type="revaluation_correction")
+        conn.execute(
+            "INSERT INTO fx_revaluation_corrections(run_id,revision,decimal_places,position_minor_units,rate_text,"
+            "pnl_base_minor_units,delta_base_minor_units,actor,recorded_epoch) VALUES (?,?,?,?,?,?,?,?,?)",
+            (int(run["run_id"]), revision, places, position, str(rate), pnl, delta, str(actor), now))
+        return [(currency, "correction", pnl)]
+
     @staticmethod
-    def _post(conn, run_id, pnl, base, base_places, epoch, description):
+    def _post(conn, run_id, pnl, base, base_places, epoch, description, source_key=None, entity_type="revaluation"):
         AccountingJournal.register_mappings(conn, SCOPE, [("fx_position_revaluation", "fx_position_revaluation"),
                                                           ("fx_revaluation_gain_loss", "fx_revaluation_gain_loss")])
         gain = pnl > 0
         AccountingJournal.post(
-            conn, ledger_scope=SCOPE, entity_type="revaluation", entity_id=str(run_id), source_key=f"run:{run_id}",
+            conn, ledger_scope=SCOPE, entity_type=entity_type, entity_id=str(run_id), source_key=source_key or f"run:{run_id}",
             currency_code=base, decimal_places=base_places, recorded_epoch=int(epoch),
             lines=(("fx_position_revaluation", "debit" if gain else "credit", abs(pnl)),
                    ("fx_revaluation_gain_loss", "credit" if gain else "debit", abs(pnl))), description=description)
@@ -131,6 +96,17 @@ class FxRevaluation:
                  row["previous_rate_text"], -int(row["pnl_base_minor_units"]), int(row["run_id"]), str(actor), epoch)).lastrowid
             cls._post(conn, run_id, -int(row["pnl_base_minor_units"]), base, base_places, epoch, "FX position revaluation reversed")
             reversed_now.append(int(row["run_id"]))
+        for row in conn.execute(
+                "SELECT c.run_id,c.revision,c.delta_base_minor_units,r.period_key FROM fx_revaluation_corrections c "
+                "JOIN fx_revaluation_runs r ON r.run_id=c.run_id WHERE c.delta_base_minor_units<>0 AND r.period_key<? "
+                "ORDER BY c.correction_id", (today,)).fetchall():
+            tag = f"{row['run_id']}:{row['revision']}"
+            if conn.execute("SELECT 1 FROM accounting_entries WHERE ledger_scope=? AND source_key=?",
+                            (SCOPE, f"correction:{tag}:reverse")).fetchone():
+                continue
+            cls._post(conn, tag, -int(row["delta_base_minor_units"]), base, base_places, next_period_start(row["period_key"]),
+                      "FX position revaluation correction reversed", source_key=f"correction:{tag}:reverse",
+                      entity_type="revaluation_correction")
         return reversed_now
 
     @staticmethod
