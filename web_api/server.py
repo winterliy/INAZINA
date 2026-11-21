@@ -5148,6 +5148,32 @@ class Handler(BaseHTTPRequestHandler):
                         "bank_id": bank_id, "currency": currency, "result_count": len(report["cashflows"]),
                     })
                     self.send_json(200, report)
+            elif path == "/internal/admin/deposit-insurance":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    import re as _re
+                    from functions.banks import bank_issuer
+                    from managers.deposit_insurance_fund import preview as deposit_insurance_preview
+                    query = parse_qs(parsed.query)
+                    bank_id = query.get("bank_id", [""])[0].strip().upper()
+
+                    def whole(name, default, high):
+                        text = query.get(name, [default])[0]
+                        if not _re.fullmatch(r"\d{1,16}", text) or int(text) > high:
+                            raise ValueError(f"invalid_deposit_insurance_{name}")
+                        return int(text)
+                    if not bank_id or len(bank_id) > 100:
+                        raise ValueError("invalid_deposit_insurance_bank")
+                    premium, proceeds, general = whole("premium_bps", "0", 10000), whole("proceeds", "0", 9007199254740991), whole("general_claims", "0", 9007199254740991)
+                    with connect_readonly() as plain:
+                        connection = LegacyNames(plain)
+                        report = deposit_insurance_preview(connection, bank_issuer(connection, bank_id), premium_bps=premium,
+                                                           proceeds_minor_units=proceeds, general_claims_minor_units=general)
+                    audit_admin_access(user["userId"], "deposit_insurance.preview", {
+                        "bank_id": bank_id, "premium_bps": premium, "proceeds": proceeds, "general_claims": general})
+                    self.send_json(200, report)
             elif path == "/internal/admin/funding":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":

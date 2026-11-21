@@ -22,7 +22,7 @@ LAYERS = {
         "capital_markets_manager", "company_account_manager", "compliance_manager", "credit_risk_manager",
         "depositary_receipt_manager", "dr_deviation_monitor_manager", "dr_dividend_tax_manager", "listing_requirements",
         "fund_dividend_receiver", "price_gap_filler", "bank_companies", "asset_cost_manager", "game_funding", "funding_manager", "funding_maturity",
-        "organization_manager", "funded_recovery_manager", "alm_manager", "overdraft", "account_kind_settlement", "insolvency_manager", "payout_manager", "stats_manager", "fx_residual", "fx_revaluation", "baseline_report"},
+        "organization_manager", "funded_recovery_manager", "alm_manager", "deposit_insurance_fund", "overdraft", "account_kind_settlement", "insolvency_manager", "payout_manager", "stats_manager", "fx_residual", "fx_revaluation", "baseline_report"},
     3: {"admin_manager", "admin_control_manager", "admin_commands_manager", "catalog_manager", "liquidity_manager", "compliance_commands"},
 }
 LAYER_OF = {module: layer for layer, modules in LAYERS.items() for module in modules}
