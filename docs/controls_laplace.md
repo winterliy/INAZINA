@@ -20,6 +20,10 @@
 | C-12 | AML 경보는 송금인·수취인 각자의 통화 기준으로 평가한다 | managers/compliance_manager.py | tests/test_currency_home.py::test_aml_monitors_sender_and_recipient_in_their_home_currencies |
 | C-13 | 운영 DB 백업(pg_dump)은 임시 DB로 복원해 필수 표·검증되지 않은 외래키·통합 대사를 점검할 수 있고 원본 파일을 바꾸지 않으며 임시 DB를 남기지 않는다 | database/backup.py | tests/test_m8_backup_restore_drill.py::test_restores_and_verifies_without_modifying_source, tests/test_m8_backup_restore_drill.py::test_required_tables_are_checked_on_restored_copy, tests/test_m8_backup_restore_drill.py::test_truncated_dump_fails_and_leaves_no_database_behind |
 | C-14 | 테스트는 운영 DB를 열지 않는다 | tests/conftest.py | tests/test_control_evidence_matrix.py::test_default_database_directory_is_quarantined_during_tests |
+| C-15 | 은행의 자본·유동성 지표 조회와 관할 기준 변경은 관리자만 할 수 있고, 잘못된 입력은 저장 없이 거부되며, 조회와 변경은 행위자와 함께 감사 기록에 남는다 | web_api/server.py | tests/test_alm_api.py::test_admin_reads_and_the_read_is_audited, tests/test_alm_api.py::test_non_admin_and_missing_or_oversized_bank_id_are_rejected_without_read_or_audit, tests/test_alm_api.py::test_admin_sets_an_override_which_is_stored_and_audited, tests/test_alm_api.py::test_bad_payloads_are_rejected_without_writing |
+| C-16 | 도매조달의 한도 설정·실행·상환·만기 처리는 관리자만 할 수 있고, 형식이 틀린 입력과 한도 초과는 기록 없이 거부되며, 다른 은행의 조달은 상환할 수 없고, 같은 요청 키는 두 번 실행되지 않는다 | web_api/server.py | tests/test_funding_admin.py::test_non_admin_is_refused_and_nothing_is_written_or_audited, tests/test_funding_admin.py::test_bad_payloads_are_rejected_without_writing_or_auditing, tests/test_funding_admin.py::test_a_bank_cannot_repay_another_banks_funding, tests/test_funding_admin.py::test_limit_then_draw_then_repay_work_end_to_end_and_are_audited |
+| C-17 | 만기 처리는 지정한 은행의 도래 건만 상환한다 | managers/funding_maturity.py | tests/test_funding_admin.py::test_only_the_named_bank_is_processed |
+| C-18 | 일괄 쓰기(executemany)는 중간 행이 실패하면 앞 행이 반영된 채 남고 트랜잭션을 계속 쓸 수 있다(행마다 문장이던 때와 같은 동작) | database/pg_backend.py | tests/test_pg_executemany.py::test_a_failing_row_leaves_the_rows_before_it_applied_and_the_transaction_usable |
 
 ## 범위 밖
 
