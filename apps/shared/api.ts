@@ -56,7 +56,7 @@ export function apiError(status: number, body: { error?: string; message?: strin
     country_account_exists: "이미 해당 국가 계정이 있습니다.",
     country_account_conflict: "국가 계정을 생성할 수 없습니다. 관리자에게 문의해주세요.",
     password_policy: "비밀번호는 영문과 숫자를 포함해 12~128자로 입력해주세요.",
-    hts_id_policy: "아이디는 영문 소문자, 숫자, 점, 밑줄, 하이픈으로 3~32자 입력해주세요.",
+    hts_id_policy: "아이디는 영문 소문자, 숫자, 점, 밑줄, 하이픈으로 3~32자 입력해주세요. 숫자만으로는 만들 수 없습니다.",
     hts_id_taken: "이미 사용 중인 아이디입니다.",
     active_user_required: "활성 사용자 계정이 아닙니다.",
     admin_required: "관리자 권한이 필요합니다.",

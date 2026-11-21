@@ -188,7 +188,8 @@ dialog[open] { animation: rise .45s var(--ease); }
 .doc-body td:first-child { width: 38%; font-family: var(--mono); font-size: 13px; color: var(--ink); }
 #feedback-form { display: grid; gap: 16px; padding-bottom: 28px; }
 #feedback-form > :not(.dialog-head) { margin-inline: 28px; }
-#feedback-form label { display: grid; gap: 6px; font-weight: 600; font-size: 14px; }
+#feedback-form label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 4px; font-weight: 600; font-size: 14px; }
+#feedback-form label:not(.check) > :is(input, textarea, small) { flex: 1 0 100%; }
 #feedback-form input, #feedback-form textarea { width: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper);
   font: 400 15px/1.4 var(--sans); letter-spacing: 0; resize: vertical; }
 #feedback-form input:focus, #feedback-form textarea:focus { outline: 2px solid var(--accent); outline-offset: 0; border-color: transparent; }

@@ -439,7 +439,6 @@ export default function App() {
       if (seq !== marketSeq.current) return;
       lastPollError.current.delete("market");
       const nextPoints = chart.points.map((point) => ({ ...point, price: Number(point.price) }));
-      setQuote(chart.points.length ? { code, price: chart.points.at(-1)!.price, at: Date.now() } : null);
       setPoints(nextPoints);
       setCandles((chart.candles ?? []).map((candle) => ({ ...candle, open: Number(candle.open), high: Number(candle.high), low: Number(candle.low), close: Number(candle.close) })));
       if (chart.interval) setCandleInterval(chart.interval);
@@ -453,6 +452,18 @@ export default function App() {
 
   // Runs now and every 5s while the tab is visible; a new instrument, range or indicator choice restarts it.
   usePolling(() => refreshMarket(selectedCode, range, interval), 5000, Boolean(selectedCode), [selectedCode, range, interval, indicatorQuery, refreshMarket]);
+  // The selected instrument's latest price, straight from the server every second (a one-row read, unlike the
+  // instrument list). This is the price a "현재가" order is made at, and the server checks it again on arrival.
+  const pollQuote = useCallback(async () => {
+    const code = selectedCode;
+    if (!code) return;
+    try {
+      const fresh = await api<{ price: Money }>(`/api/market/quote/${encodeURIComponent(code)}`);
+      lastPollError.current.delete("quote");
+      setQuote({ code, price: fresh.price, at: Date.now() });
+    } catch (cause) { reportPollError("quote", cause, "현재가를 불러오지 못했습니다."); }
+  }, [selectedCode, reportPollError]);
+  usePolling(pollQuote, 1000, Boolean(selectedCode), [selectedCode]);
   useEffect(() => { if (selected) setPrice(String(selected.price)); }, [selected?.code]);
 
   useEffect(() => {
@@ -490,7 +501,7 @@ export default function App() {
     submitLock.current = true;
     setBusy(true);
     try {
-      const order = { assetCode: selectedCode, side, quantity: Number(quantity), orderType: orderType === "market" ? "market" : "limit", limitPrice: exactMoney(orderPrice) };
+      const order = { assetCode: selectedCode, side, quantity: Number(quantity), orderType: orderType === "limit" ? "limit" : orderType, limitPrice: exactMoney(orderPrice) };
       const signature = JSON.stringify(order);
       if (orderRequest.current?.signature !== signature) orderRequest.current = { signature, key: requestKey() };
       const result = await api<{ message: string }>("/api/market/orders", {
@@ -502,7 +513,10 @@ export default function App() {
       setOrderFilter("open");
       await Promise.all([refreshAccountQuiet(), refreshMarket(selectedCode, range, interval), loadInstruments()]);
     } catch (cause) {
-      if ((cause as { status?: number })?.status !== 401) setNotice(errorText(cause, "주문을 제출하지 못했습니다."));
+      if (cause instanceof ApiError && cause.code === "price_changed") {
+        // The server holds the latest price and refused the old one. Take it now; the dialog announces the new price.
+        await pollQuote();
+      } else if ((cause as { status?: number })?.status !== 401) setNotice(errorText(cause, "주문을 제출하지 못했습니다."));
     } finally {
       submitLock.current = false;
       setBusy(false);

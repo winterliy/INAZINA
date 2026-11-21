@@ -221,7 +221,7 @@ td small { display: block; margin-top: 2px; color: var(--ink2); font-size: 11px;
 .risk-note { margin: 10px 14px 0; color: var(--ink2); font-size: 11px; line-height: 1.5; }
 
 /* Toast and modals */
-.toast { position: fixed; z-index: 20; top: 80px; left: 50%; display: flex; align-items: center; gap: 12px; max-width: min(640px, calc(100% - 24px)); padding: 8px 8px 8px 18px; border-radius: 999px; font-size: 13px; transform: translateX(-50%); animation: drop 400ms var(--ease) backwards; }
+.toast { position: fixed; z-index: 40; top: 80px; left: 50%; display: flex; align-items: center; gap: 12px; max-width: min(640px, calc(100% - 24px)); padding: 8px 8px 8px 18px; border-radius: 999px; font-size: 13px; transform: translateX(-50%); animation: drop 400ms var(--ease) backwards; }
 .toast button { min-height: 30px; font-size: 12px; }
 .modal-backdrop { position: fixed; z-index: 30; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(0, 0, 0, .48); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); animation: fade 250ms ease backwards; }
 .review-modal { width: min(440px, 100%); max-height: min(700px, calc(100vh - 32px)); overflow: hidden; padding: 24px; border-radius: 24px; animation: pop 450ms var(--spring) backwards; }

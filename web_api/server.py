@@ -321,6 +321,9 @@ def password_hash(password, salt):
                           n=2**14, r=8, p=1, dklen=64).hex()
 
 
+_LOGIN_DUMMY_SALT = "00" * 16  # spent on an unknown id so it costs as much as a real password check
+
+
 def validate_password(password):
     if (not isinstance(password, str) or not 12 <= len(password) <= 128 or
             not re.search(r"[A-Za-z]", password) or not re.search(r"\d", password)):
@@ -799,9 +802,12 @@ def ensure_auth_table(connection):
 
 
 def normalize_hts_id(value):
-    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{3,32}", value.strip()):
+    # Digits only is refused: that shape is a Discord id, and login tries web ids first, so a web id equal to a
+    # Discord id nobody has registered yet would later shadow that person's own login.
+    text = value.strip() if isinstance(value, str) else ""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{3,32}", text) or text.isdecimal():
         raise ValueError("hts_id_policy")
-    return value.strip().lower()
+    return text.lower()
 
 
 def get_hts_login_id(user_id):
@@ -1569,6 +1575,26 @@ def admin_dr_deviation_history(limit=100, dr_code=None):
         return DrDeviationMonitorManager.history_conn(connection, limit, dr_code)
 
 
+def instrument_quote(code):
+    """The latest price of one instrument, for checking right before an order. The full instruments() list is far
+    heavier, so a plain stock, asset or investment product is read straight from its own row; bonds are valued
+    inside instruments(), so they take that path. None when the code is not an active instrument."""
+    domain()
+    as_of = int(time.time())
+    with connect_readonly() as connection:
+        for query in (
+            "SELECT code,price,quote_currency FROM market_assets WHERE code=? AND status='active'",
+            "SELECT company_code AS code,share_price AS price,quote_currency FROM company WHERE company_code=? AND status='active'",
+            "SELECT product_code AS code,unit_price AS price,quote_currency FROM investment WHERE product_code=? AND status='active'",
+        ):
+            row = connection.execute(query, (code,)).fetchone()
+            if row:
+                return {"code": row["code"], "price": row["price"], "quoteCurrency": row["quote_currency"], "asOf": as_of}
+    row = next((item for item in instruments() if item["code"] == code), None)
+    return None if row is None else {"code": row["code"], "price": row["price"],
+                                     "quoteCurrency": row.get("quote_currency"), "asOf": as_of}
+
+
 def book(code):
     if not any(row["code"] == code for row in instruments()):
         return None
@@ -1783,8 +1809,18 @@ def execute_order(user_id, payload):
         raise ValueError("지정가는 0보다 크고 허용 한도 이하여야 합니다.")
     if price == int(price):
         price = int(price)
+    if payload.get("orderType") == "current":
+        # A "현재가" order carries the price the user confirmed. It is placed only if that is still the latest price at
+        # this moment, so the price on screen and the price ordered can never differ.
+        latest = instrument_quote(code)
+        if latest is None:
+            raise ValueError("종목을 찾을 수 없습니다.")
+        latest_price = native_value(latest["price"])
+        if latest_price != price:
+            raise PriceChanged(latest_price)
     success, message = domain().order_book.place_limit_order(user_id, code, side, quantity, price)
     return success, message
+
 
 
 ORDER_REQUEST_TTL = 24 * 3600     # a finished order's key is remembered this long, so a late retry replays it
@@ -1794,6 +1830,14 @@ _ORDER_REQUEST_KEY = re.compile(r"[A-Za-z0-9_-]{8,64}")
 
 class OrderInProgress(Exception):
     """The same clientOrderId is still being processed."""
+
+
+class PriceChanged(Exception):
+    """A current-price order was confirmed at a price that is no longer the latest."""
+
+    def __init__(self, price):
+        super().__init__(str(price))
+        self.price = price
 
 
 def ensure_order_requests_table(connection):
@@ -5501,6 +5545,12 @@ class Handler(BaseHTTPRequestHandler):
                         lambda: [dict(row) for row in manager.get_user_orders(trader, limit=50)],
                     )
                     self.send_json(200, {"orders": orders})
+            elif path.startswith("/internal/market/quote/"):
+                result = instrument_quote(unquote(path.removeprefix("/internal/market/quote/")))
+                if result is None:
+                    self.send_json(404, {"error": "instrument_not_found"})
+                else:
+                    self.send_json(200, result)
             elif path.startswith("/internal/market/book/"):
                 code = unquote(path.removeprefix("/internal/market/book/"))
                 result = book(code)
@@ -5557,9 +5607,10 @@ class Handler(BaseHTTPRequestHandler):
                 user, account_exists = authenticate_login_identifier(user_id, payload.get("password"))
                 record_admin_login(user_id, bool(user), payload.get("meta"),
                                    None if user else "account_not_found" if not account_exists else "invalid_credentials")
-                if not account_exists:
-                    self.send_json(404, {"error": "account_not_found"})
-                    return
+                if not user and not account_exists and isinstance(payload.get("password"), str):
+                    # A missing id answers exactly like a wrong password, in the same time, so the login does not
+                    # reveal whether an id exists. The admin login log above still records the real reason.
+                    password_hash(payload["password"], _LOGIN_DUMMY_SALT)
                 if not user:
                     self.send_json(401, {"error": "invalid_credentials"})
                 else:
@@ -6260,6 +6311,9 @@ class Handler(BaseHTTPRequestHandler):
                     success, message, replayed = execute_order_once(trader, payload)
                 except OrderInProgress:
                     self.send_json(409, {"success": False, "message": "같은 주문을 처리하고 있습니다. 잠시 후 주문 내역을 확인해주세요."})
+                except PriceChanged as changed:
+                    self.send_json(409, {"success": False, "error": "price_changed", "price": str(changed.price),
+                                         "message": f"체결가가 {changed.price}(으)로 바뀌었습니다. 새 가격을 확인하고 다시 주문해주세요."})
                 else:
                     if success:
                         _read_cache.invalidate(("portfolio", trader), ("orders", trader))

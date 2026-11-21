@@ -69,7 +69,8 @@ export function buildArguments(fields: Spec[], values: Record<string, string>) {
 }
 
 const withObject = (label: string) => {
-  const last = label.trim().slice(-1).charCodeAt(0);
+  // The particle follows the word before a trailing "(...)", as in "위험등급 (설정만)".
+  const last = label.replace(/\s*\([^)]*\)\s*$/, "").trim().slice(-1).charCodeAt(0);
   if (last >= 0xac00 && last <= 0xd7a3) return `${label}${(last - 0xac00) % 28 ? "을" : "를"}`;
   return `${label}을(를)`;
 };

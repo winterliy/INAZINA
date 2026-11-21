@@ -1108,6 +1108,13 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     return;
   }
 
+  const quoteMatch = url.pathname.match(/^\/api\/market\/quote\/([^/]+)$/);
+  if (request.method === "GET" && quoteMatch) {
+    const result = await internalGet(`/internal/market/quote/${encodeURIComponent(decodeURIComponent(quoteMatch[1]))}`, principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+
   const bookMatch = url.pathname.match(/^\/api\/market\/book\/([^/]+)$/);
   if (request.method === "GET" && bookMatch) {
     const result = await internalGet(`/internal/market/book/${encodeURIComponent(decodeURIComponent(bookMatch[1]))}`, principal.userId);
