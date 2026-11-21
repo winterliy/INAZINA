@@ -1102,12 +1102,16 @@ def instruments(include_inactive=False):
         # grouping every row of the last day (~750k).
         opening = {}
         if _table_exists(connection, "market_price_history"):
-            for code in {row["code"] for row in rows}:
-                first = connection.execute(
-                    "SELECT price FROM market_price_history WHERE asset_code=? AND recorded_epoch>=? "
-                    "ORDER BY recorded_epoch LIMIT 1", (code, since)).fetchone()
-                if first:
-                    opening[code] = first[0]
+            # Same seek per instrument, but all codes in one statement (was one round trip per instrument).
+            codes = sorted({row["code"] for row in rows})
+            for start in range(0, len(codes), 200):
+                chunk = codes[start:start + 200]
+                for code, price in connection.execute(
+                        "SELECT c.code, (SELECT price FROM market_price_history WHERE asset_code=c.code AND recorded_epoch>=? "
+                        "ORDER BY recorded_epoch LIMIT 1) FROM (" + " UNION ALL ".join("SELECT ? AS code" for _ in chunk) + ") c",
+                        (since, *chunk)):
+                    if price is not None:
+                        opening[code] = price
         traded = {code: (value, count, volume) for code, value, count, volume in connection.execute(
             "SELECT asset_code,SUM(quantity*price),COUNT(*),SUM(quantity) FROM market_trade_history "
             "WHERE recorded_epoch>=? GROUP BY asset_code", (since,))} if _table_exists(connection, "market_trade_history") else {}

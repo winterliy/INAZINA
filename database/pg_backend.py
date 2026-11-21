@@ -76,22 +76,32 @@ def _decode(value):
     return value
 
 
+def _name_index(names):
+    index = {}
+    for position, name in enumerate(names):
+        index.setdefault(name.lower(), position)
+    return index
+
+
 class Row(tuple):
     """sqlite3.Row look-alike: index, name and keys() access."""
 
-    def __new__(cls, names, values):
+    def __new__(cls, names, values, index=None):
         row = super().__new__(cls, values)
         row._names = names
+        row._index = index  # lower-cased name -> position, shared by every row of one result
         return row
 
     def __getitem__(self, key):
         if isinstance(key, str):
-            # Case-insensitive like sqlite3.Row, and IndexError for an unknown name (callers catch it).
-            lowered = key.lower()
-            for index, name in enumerate(self._names):
-                if name.lower() == lowered:
-                    return tuple.__getitem__(self, index)
-            raise IndexError("No item with that key")
+            # Case-insensitive like sqlite3.Row (the first of equal names wins), and IndexError for an unknown name (callers catch it).
+            index = self._index
+            if index is None:
+                index = self._index = _name_index(self._names)
+            position = index.get(key.lower())
+            if position is None:
+                raise IndexError("No item with that key")
+            return tuple.__getitem__(self, position)
         return tuple.__getitem__(self, key)
 
     def keys(self):
@@ -167,12 +177,11 @@ def _catalog(query):
 
 def _integer_keys():
     """table -> its single bigint primary key column (what SQLite's rowid aliases)."""
-    primary = ("SELECT c.table_name, c.column_name FROM information_schema.columns c "
-               "JOIN information_schema.key_column_usage k ON k.table_name = c.table_name "
-               "AND k.column_name = c.column_name JOIN information_schema.table_constraints t "
-               "ON t.constraint_name = k.constraint_name AND t.constraint_type = 'PRIMARY KEY' "
-               "WHERE c.table_schema = 'public'")
-    keys, bigint_keys = _catalog(primary), _catalog(primary + " AND c.data_type = 'bigint'")
+    # pg_catalog, not information_schema: the constraint views made this 3-7 seconds on the first call of every process.
+    primary = ("SELECT c.relname, a.attname FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid "
+               "JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_attribute a ON a.attrelid = c.oid "
+               "AND a.attnum = ANY(i.indkey) WHERE i.indisprimary AND n.nspname = 'public' AND NOT a.attisdropped")
+    keys, bigint_keys = _catalog(primary), _catalog(primary + " AND a.atttypid = 'int8'::regtype")
     return {table: columns[0] for table, columns in keys.items()
             if len(columns) == 1 and columns == bigint_keys.get(table)}
 
@@ -208,10 +217,10 @@ def _replace_to_upsert(tree):
     primary key and UPDATE triggers fire."""
     source = tree.find(exp.Table).name
     table = target_table(source)
-    keys = _catalog("SELECT k.table_name, k.column_name FROM information_schema.key_column_usage k "
-                    "JOIN information_schema.table_constraints t ON t.constraint_name = k.constraint_name "
-                    "AND t.constraint_type = 'PRIMARY KEY' WHERE k.table_schema = 'public' "
-                    "ORDER BY k.ordinal_position").get(table, [])
+    keys = _catalog("SELECT c.relname, a.attname FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid "
+                    "JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_attribute a ON a.attrelid = c.oid "
+                    "AND a.attnum = ANY(i.indkey) WHERE i.indisprimary AND n.nspname = 'public' AND NOT a.attisdropped "
+                    "ORDER BY array_position(i.indkey::int2[], a.attnum)").get(table, [])
     every = _catalog("SELECT table_name, column_name FROM information_schema.columns "
                      "WHERE table_schema = 'public' ORDER BY ordinal_position").get(table, [])
     if not keys:
@@ -400,6 +409,11 @@ def _legacy_names_in_catalog_query(sql, parameters):
     if isinstance(parameters, (tuple, list)):
         parameters = tuple(mapped(value) for value in parameters)
     sql = re.sub(r"(\bname\s*=\s*')(\w+)(')", lambda m: m[1] + target_table(m[2]) + m[3], sql, flags=re.I)
+    # The sqlite_master view computes pg_get_viewdef for every view before the name filter (~14ms); the plain "does this table
+    # exist" question is answered from pg_class directly.
+    sql = re.sub(r"\A\s*SELECT\s+1\s+FROM\s+sqlite_master\s+WHERE\s+type\s*=\s*'table'\s+AND\s+name\s*=\s*(\?|'\w+')\s*;?\s*\Z",
+                 lambda m: ("SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' "
+                            f"AND c.relkind IN ('r', 'p') AND c.relname = {m[1]}"), sql, flags=re.I)
     return sql, parameters
 
 
@@ -484,6 +498,7 @@ class PgCursor:
         self.rowcount = -1
         self.description = None
         self._names, self._rows, self._next = None, [], 0
+        self._index_names, self._index = None, None
 
     def _params(self, parameters):
         if isinstance(parameters, dict):
@@ -608,12 +623,14 @@ class PgCursor:
         return self
 
     def _convert(self, row):
-        values = tuple(_decode(v) for v in row)
+        values = tuple([_decode(v) if v.__class__ is Decimal else v for v in row])
         factory = self.connection.row_factory
         if factory is None:
             return values
         if factory is sqlite3.Row or factory is Row:
-            return Row(self._names, values)
+            if self._index_names is not self._names:
+                self._index_names, self._index = self._names, _name_index(self._names)
+            return Row(self._names, values, self._index)
         return factory(self, values)
 
     def _take(self, count=None):

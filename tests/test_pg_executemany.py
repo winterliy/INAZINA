@@ -136,3 +136,26 @@ class PgJoinedSavepointTests(PgExecuteManyTests):
             self.assertEqual(cursor.rowcount, 1)
             self.assertEqual(self.rows(conn, "Z;--%Z"), [("Z;--%Z", 5, 5)])
             self.assertEqual(conn.execute("SELECT price FROM market_price_history WHERE asset_code=?", ("Z;--%Z",)).fetchone()[0], 5)
+
+
+class PgCatalogShortcutTests(PgExecuteManyTests):
+    """Catalog answers that were made faster must stay the same."""
+
+    def test_row_names_are_case_insensitive_first_match_and_index_error(self):
+        from database.pg_backend import Row
+        row = Row(["A", "b", "a"], (1, 2, 3))
+        self.assertEqual((row["a"], row["B"], row[2]), (1, 2, 3))
+        with self.assertRaises(IndexError):
+            row["zz"]
+
+    def test_table_existence_question(self):
+        with self.db.atomic() as conn:
+            self.assertTrue(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", ("market_orders",)).fetchone())
+            self.assertTrue(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='saving'").fetchone())
+            self.assertFalse(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='no_such_table_zz'").fetchone())
+
+    def test_integer_keys_come_from_the_catalog(self):
+        from database import pg_backend
+        keys = pg_backend._integer_keys()
+        self.assertEqual(keys.get("market_orders"), "order_id")
+        self.assertNotIn("users", keys)
