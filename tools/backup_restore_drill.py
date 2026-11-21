@@ -47,6 +47,7 @@ def main():
     name = f"inazina_drill_{os.getpid()}_{int(time.time())}"
     admin_dsn = restored_dsn = None
     created = False
+    cleanup_ok = None
     try:
         import psycopg
         from database.backup import pg_tool
@@ -59,8 +60,15 @@ def main():
         with psycopg.connect(admin_dsn, autocommit=True) as admin:
             admin.execute(f'CREATE DATABASE "{name}"')
         created = True
-        result = subprocess.run([pg_tool("pg_restore"), "--no-owner", "--no-privileges", "--exit-on-error", "--dbname", restored_dsn, str(source)],
-                                capture_output=True, text=True, timeout=1800)
+        # libpq accepts the password via environment so it is not exposed in argv.
+        from psycopg.conninfo import conninfo_to_dict, make_conninfo
+        restore_options = conninfo_to_dict(restored_dsn)
+        password = restore_options.pop("password", None)
+        restore_env = os.environ.copy()
+        if password is not None:
+            restore_env["PGPASSWORD"] = password
+        result = subprocess.run([pg_tool("pg_restore"), "--no-owner", "--no-privileges", "--exit-on-error", "--dbname", make_conninfo(**restore_options), str(source)],
+                                capture_output=True, text=True, timeout=1800, env=restore_env)
         if result.returncode:
             raise RuntimeError(f"pg_restore failed: {result.stderr.strip()[:300]}")
         verification = verify(restored_dsn, args.require_table)
@@ -87,10 +95,15 @@ def main():
                 import psycopg
                 with psycopg.connect(admin_dsn, autocommit=True) as admin:
                     admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+                cleanup_ok = True
             except Exception as exc:
-                print(f"could not drop {name}: {exc}", file=sys.stderr)
+                cleanup_ok = False
+                report["ok"] = False
+                report["cleanup_error"] = type(exc).__name__
+                print(f"could not drop {name}: {type(exc).__name__}", file=sys.stderr)
+    report["cleanup_ok"] = cleanup_ok
     report["elapsed_seconds"] = round(time.monotonic() - start, 3)
-    report["restore_database"] = name if created else None   # dropped again before this report is printed
+    report["restore_database"] = name if created else None
     print(json.dumps(report, ensure_ascii=False))
     return 0 if report["ok"] else 1
 
