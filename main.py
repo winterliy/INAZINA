@@ -188,6 +188,23 @@ class InazinaBot(discord.Client):
                 print(f"[FX Reversal Error] {type(exc).__name__}: {exc}")
             await asyncio.sleep(3600)
 
+    async def funding_maturity_loop(self):
+        """Repay matured wholesale funding of the banks whose jurisdiction opted in (off by default; see docs/m6_alm.md)."""
+        from managers.funding_maturity import process_opted_in_funding
+
+        def process():
+            with self.db.atomic() as conn:
+                return process_opted_in_funding(conn, now=int(time.time()))
+        while not self.is_closed():
+            try:
+                result = await self._run_background_write(process)
+                for bank in result["banks"]:
+                    if bank["failed"]:
+                        print(f"[Funding Maturity] {bank['issuer']}: {len(bank['failed'])} failed, retried next run: {bank['failed'][:2]}")
+            except Exception as exc:
+                print(f"[Funding Maturity Error] {type(exc).__name__}: {exc}")
+            await asyncio.sleep(600)
+
     async def setup_hook(self):
         from functions.slash_commands import SlashCommandRegistry
 
@@ -272,6 +289,7 @@ class InazinaBot(discord.Client):
             self.loop.create_task(self.notification_delivery_loop(), name="notification-delivery-worker")
             self.loop.create_task(self.liquidity_loop(), name="liquidity-worker")
             self.loop.create_task(self.fx_reversal_loop(), name="fx-reversal-worker")
+            self.loop.create_task(self.funding_maturity_loop(), name="funding-maturity-worker")
             from functions.web_jobs import web_job_loop
             self.loop.create_task(web_job_loop(self), name="dashboard-job-worker")
 

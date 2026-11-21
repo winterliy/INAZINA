@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from functions.money import currency_precision
 from managers.currency_manager import CurrencyManager, SCALE
+from managers.funding_manager import FundingManager
 from managers.rate_manager import RateManager
 
 DAY = 86400
@@ -31,9 +32,15 @@ PRUDENTIAL_DEFAULTS = {
     # Explanatory interest-rate-risk assumptions (not observed behaviour): the share of a benchmark move that reaches non-maturity
     # deposit rates, the share of those deposits treated as stable "core", and the years the core part is assumed to stay.
     "deposit_beta_bps": 5000, "core_deposit_share_bps": 6000, "core_deposit_years": 3,
+    # Funds-transfer-pricing preview: liquidity premium added to the funding curve. And the opt-in (0 = off, 1 = on) for repaying
+    # matured wholesale funding automatically: repayment interest is a bank expense, so an administrator must switch it on.
+    "ftp_liquidity_premium_bps": 30, "funding_auto_maturity_flag": 0,
 }
 # Largest value an administrator may store for a name (everything else: 100000). Shares and betas stop at 100%, years at 30.
-PARAMETER_MAX = {"deposit_beta_bps": 10000, "core_deposit_share_bps": 10000, "core_deposit_years": 30}
+PARAMETER_MAX = {"deposit_beta_bps": 10000, "core_deposit_share_bps": 10000, "core_deposit_years": 30,
+                 "ftp_liquidity_premium_bps": 10000, "funding_auto_maturity_flag": 1}
+CURVE_TENORS_DAYS = (30, 90, 180, 365, 730, 1095, 1825, 3650)
+CURVE_KEYS = ("funding", "bank_bond", "treasury")
 SHOCKS_BPS = (-200, -100, 0, 100, 200)
 
 
@@ -151,6 +158,64 @@ class ALMManager:
                            "with their rate floored at zero; fixed-term deposits do not reprice within the year; EVE uses durations and "
                            "convexity of fixed-rate loans and deposits plus the core part of non-term deposits at the assumed behavioural "
                            "maturity; no hedges, basis risk, prepayment or wholesale funding rollover. The assumptions can be set per jurisdiction")}
+
+    @classmethod
+    def forward_curves(cls, conn, nationality, *, now):
+        """Implied forward rates between standard tenors from the jurisdiction's zero curves (read-only, explanatory).
+
+        Curve points are continuously compounded zero rates z(t) in percent, so the forward from t1 to t2 (years) is
+        (z2*t2 - z1*t1) / (t2 - t1). A negative result is shown as it is and flagged; no floor is applied.
+        """
+        curves = []
+        for key in CURVE_KEYS:
+            zero = [(days, Decimal(str(RateManager.market_rate(conn, nationality, key, days)))) for days in CURVE_TENORS_DAYS]
+            segments = []
+            for (d1, z1), (d2, z2) in zip(zero, zero[1:]):
+                t1, t2 = Decimal(d1) / 365, Decimal(d2) / 365
+                forward = (z2 * t2 - z1 * t1) / (t2 - t1)
+                segments.append({"fromDays": d1, "toDays": d2, "forwardPercent": forward, "negative": forward < 0})
+            curves.append({"benchmark": key, "zero": [{"tenorDays": d, "ratePercent": z} for d, z in zero], "forwards": segments})
+        return {"curves": curves,
+                "method": ("explanatory: forward = (z2*t2 - z1*t1)/(t2 - t1) from the continuously compounded zero curve at the "
+                           "jurisdiction's quoted points (log-discount interpolation between them); not a tradable rate")}
+
+    @classmethod
+    def ftp_preview(cls, conn, issuer, nationality, base, param, now):
+        """Funds-transfer-pricing preview per product. Read-only: no product rate is changed or applied.
+
+        FTP(t) = the jurisdiction's funding curve at tenor t + the liquidity premium. Loans are charged FTP(term) and earn
+        rate - FTP; deposits are credited FTP(tenor) and earn FTP - rate paid. A non-term deposit uses the behavioural
+        maturity assumption (core_deposit_years, at least 1 day); a loan without a term uses 365 days. Percent a year.
+        """
+        premium = Decimal(param["ftp_liquidity_premium_bps"]) / 100
+        behavioural_days = max(1, int(param["core_deposit_years"]) * 365)
+
+        def ftp(days):
+            return Decimal(str(RateManager.market_rate(conn, nationality, "funding", int(days)))) + premium
+
+        products = []
+        for kind, table, side in (("loan", "liability", "asset"), ("deposit", "saving", "liability")):
+            for row in conn.execute(f"SELECT product_code,name,interest_rate,maturity_days FROM {table} WHERE issuer=? ORDER BY product_code",
+                                    (issuer,)):
+                term = int(row["maturity_days"] or 0)
+                tenor = term if term > 0 else (365 if kind == "loan" else behavioural_days)
+                rate = cls._dec(row["interest_rate"])
+                transfer = ftp(tenor)
+                margin = rate - transfer if kind == "loan" else transfer - rate
+                products.append({"productCode": row["product_code"], "name": row["name"], "kind": kind, "ratePercent": rate,
+                                 "tenorDays": tenor, "tenorBasis": "contract term" if term > 0 else (
+                                     "default 365 days" if kind == "loan" else "behavioural maturity assumption"),
+                                 "ftpPercent": transfer, "marginPercent": margin})
+        wholesale = None
+        profile = FundingManager.profile(conn, issuer, now=now)["currencies"].get(base)
+        if profile:
+            wholesale = Decimal(profile["weighted_average_rate_bps"]) / 100
+        return {"liquidityPremiumPercent": premium, "wholesaleWeightedAverageRatePercent": wholesale,
+                "curve": [{"tenorDays": d, "ftpPercent": ftp(d)} for d in CURVE_TENORS_DAYS], "products": products,
+                "applied": False,
+                "method": ("preview only; no product rate is changed. FTP = funding curve + liquidity premium; loans: margin = rate - FTP, "
+                           "deposits: margin = FTP - rate; the wholesale weighted average is shown for reference, not blended in; "
+                           "behavioural maturity and the premium are explanatory assumptions set per jurisdiction")}
 
     @classmethod
     def report(cls, conn, issuer, *, now):
@@ -337,6 +402,8 @@ class ALMManager:
                              "wholesaleFunding": wholesale, "equity": equity, "fundingGap": funding_gap},
             "capital": capital, "leverage": leverage, "lcr": lcr, "nsfr": nsfr,
             "rateShock": cls.rate_shock(conn, issuer, base, param, tier1, now=now),
+            "ftp": cls.ftp_preview(conn, issuer, nationality, base, param, now) if nationality else None,
+            "forwardCurves": cls.forward_curves(conn, nationality, now=now) if nationality else None,
             "parameters": {"values": param, "overriddenForJurisdiction": overridden},
             "method": ("simulator policy, not a regulatory filing; no asset ledger: cash and reserves (HQLA level 1) are what deposits, "
                        "wholesale funding and equity fund beyond net loans; Tier 2 = stage 1-2 allowances up to the cap; AT1 and "

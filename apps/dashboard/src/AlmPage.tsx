@@ -20,6 +20,11 @@ type Report = {
   nsfr: { availableStableFunding: string; requiredStableFunding: string; asf: Row[]; rsf: Row[]; ratioPercent: number | null; minimumPercent: number; status: Status };
   rateShock: { shocks: { basisPoints: number; contractualNii: string; depositBetaNii: string; deltaNii: string; contractualEve: string; coreDepositEve: string; deltaEve: string; deltaEvePercentOfTier1: number | null }[];
     behavioralDeposits: string; coreDeposits: string; assumptions: { depositBetaBps: number; coreDepositShareBps: number; coreDepositYears: number }; method: string };
+  ftp: { liquidityPremiumPercent: string; wholesaleWeightedAverageRatePercent: string | null; applied: boolean; method: string;
+    curve: { tenorDays: number; ftpPercent: string }[];
+    products: { productCode: string; name: string; kind: "loan" | "deposit"; ratePercent: string; tenorDays: number; tenorBasis: string; ftpPercent: string; marginPercent: string }[] } | null;
+  forwardCurves: { method: string; curves: { benchmark: string; zero: { tenorDays: number; ratePercent: string }[];
+    forwards: { fromDays: number; toDays: number; forwardPercent: string; negative: boolean }[] }[] } | null;
   parameters: { values: Record<string, number>; overriddenForJurisdiction: string[] };
   method: string;
 };
@@ -40,12 +45,16 @@ const PARAMETER: Record<string, string> = {
   asf_equity_bps: "ASF · 자본", asf_retail_stable_bps: "ASF · 개인 안정", asf_retail_less_stable_bps: "ASF · 개인 덜 안정", asf_corporate_bps: "ASF · 법인",
   asf_wholesale_1y_plus_bps: "ASF · 도매 1년 이상", asf_wholesale_6m_to_1y_bps: "ASF · 도매 6개월~1년", asf_wholesale_under_6m_bps: "ASF · 도매 6개월 미만",
   deposit_beta_bps: "금리 충격 · 예금 금리베타", core_deposit_share_bps: "금리 충격 · 핵심예금 비중", core_deposit_years: "금리 충격 · 핵심예금 행동만기(년)",
+  ftp_liquidity_premium_bps: "FTP · 유동성 프리미엄", funding_auto_maturity_flag: "도매조달 자동 만기 처리 (옵트인)",
   rsf_cash_bps: "RSF · 현금", rsf_loan_under_1y_bps: "RSF · 대출 1년 미만", rsf_loan_1y_plus_bps: "RSF · 대출 1년 이상", rsf_defaulted_loan_bps: "RSF · 부실 대출",
 };
 
 const pct = (value: number | null | undefined, digits = 2) => value === null || value === undefined ? "—" : `${value.toFixed(digits)}%`;
 const bps = (value: number) => `${(value / 100).toFixed(2)}%`;
-const parameterText = (key: string, value: number) => key.endsWith("_bps") ? bps(value) : `${value}년`;
+const parameterText = (key: string, value: number) => key === "funding_auto_maturity_flag" ? (value === 1 ? "켜짐" : "꺼짐") : key.endsWith("_bps") ? bps(value) : `${value}년`;
+const BENCHMARK: Record<string, string> = { funding: "조달금리", bank_bond: "은행채", treasury: "국채" };
+const rate2 = (text: string | null) => text === null ? "—" : `${Number(text).toFixed(2)}%`;
+const tenorLabel = (days: number) => days < 365 ? `${days}일` : `${(days / 365).toFixed(days % 365 ? 1 : 0)}년`;
 const signed = (text: string, money: (text: string) => string) => `${Number(text) > 0 ? "+" : ""}${money(text)}`;
 
 function StatusTag({ status, empty }: { status: Status; empty?: boolean }) {
@@ -80,7 +89,9 @@ export function AlmPage({ ctx }: { ctx: Ctx }) {
   function saveParameter() {
     const value = Number(edit.value);
     if (!report || !Number.isInteger(value) || value < 0) { say("값은 0 이상의 정수(베이시스포인트, 100 = 1%)로 입력해주세요.", true); return; }
-    if (!window.confirm(`${report.jurisdiction} 관할의 ‘${PARAMETER[edit.key]}’을(를) ${parameterText(edit.key, value)}(으)로 바꿀까요? 이 관할 모든 은행의 지표에 반영됩니다.`)) return;
+    const autoWarning = edit.key === "funding_auto_maturity_flag" && value === 1
+      ? "\n켜면 이 관할 은행의 만기 도래 도매조달이 10분마다 자동 상환되고, 상환 이자가 은행 손익·자본에 반영됩니다." : "";
+    if (!window.confirm(`${report.jurisdiction} 관할의 ‘${PARAMETER[edit.key]}’을(를) ${parameterText(edit.key, value)}(으)로 바꿀까요? 이 관할 모든 은행에 반영됩니다.${autoWarning}`)) return;
     void run(() => api<{ success: boolean }>("/api/admin/compliance", { method: "POST",
       body: JSON.stringify({ action: "prudential_parameter_set", nationality: report.jurisdiction, key: edit.key, valueBps: value }) }),
     "기준을 저장하지 못했습니다.", () => { say("기준을 저장했습니다."); setEdit({ ...edit, value: "" }); loadReport(bankId); });
@@ -137,6 +148,22 @@ export function AlmPage({ ctx }: { ctx: Ctx }) {
         <p className="alm-note">{report.rateShock.method}</p>
       </Card>
 
+      {report.ftp && <Card title="FTP(자금이전가격) 미리보기" caption={`조달 곡선 + 유동성 프리미엄 ${rate2(report.ftp.liquidityPremiumPercent)}. 참고: 도매조달 가중평균 ${rate2(report.ftp.wholesaleWeightedAverageRatePercent)}. 미리보기일 뿐 상품 금리는 바뀌지 않습니다.`}>
+        <div className="scroll-x"><table><thead><tr><th>상품</th><th>구분</th><th className="alm-num">상품 금리</th><th className="alm-num">FTP 만기</th><th className="alm-num">FTP</th><th className="alm-num">마진</th></tr></thead>
+          <tbody>{report.ftp.products.length === 0 ? <tr><td colSpan={6} className="cap">이 은행의 상품이 없습니다.</td></tr> : report.ftp.products.map((row) => <tr key={`${row.kind}-${row.productCode}`}>
+            <td>{row.name} <span className="cap">{row.productCode}</span></td><td>{row.kind === "loan" ? "대출" : "예금"}</td><td className="alm-num">{rate2(row.ratePercent)}</td>
+            <td className="alm-num">{tenorLabel(row.tenorDays)} <span className="cap">({row.tenorBasis === "contract term" ? "계약" : row.tenorBasis === "behavioural maturity assumption" ? "행동만기 가정" : "기본 365일"})</span></td>
+            <td className="alm-num">{rate2(row.ftpPercent)}</td><td className="alm-num"><b className={Number(row.marginPercent) < 0 ? "alm-neg" : ""}>{rate2(row.marginPercent)}</b></td></tr>)}</tbody></table></div>
+        <p className="alm-note">{report.ftp.method}</p>
+      </Card>}
+
+      {report.forwardCurves && <Card title="곡선 · 선도금리" caption="관할의 제로 곡선에서 구간별 내재 선도금리를 계산합니다. 설명용 값이며 거래 가능한 금리가 아닙니다.">
+        <div className="scroll-x"><table><thead><tr><th>곡선</th>{report.forwardCurves.curves[0]?.forwards.map((f) => <th key={f.fromDays} className="alm-num">{tenorLabel(f.fromDays)}→{tenorLabel(f.toDays)}</th>)}</tr></thead>
+          <tbody>{report.forwardCurves.curves.map((curve) => <tr key={curve.benchmark}><td>{BENCHMARK[curve.benchmark] ?? curve.benchmark}</td>
+            {curve.forwards.map((f) => <td key={f.fromDays} className="alm-num">{f.negative && <span className="tag warn">음수</span>} {rate2(f.forwardPercent)}</td>)}</tr>)}</tbody></table></div>
+        <p className="alm-note">{report.forwardCurves.method}</p>
+      </Card>}
+
       <Card title="LCR 상세" caption={`현금성 자산(HQLA) ${money(report.lcr.hqla.total)} ÷ 30일 순유출 ${money(report.lcr.netOutflows)}`}>
         <div className="scroll-x"><table><thead><tr><th>유출 항목</th><th className="alm-num">잔액</th><th className="alm-num">유출률</th><th className="alm-num">유출액</th></tr></thead>
           <tbody>{rows(report.lcr.outflows, "rateBps")}
@@ -178,7 +205,7 @@ export function AlmPage({ ctx }: { ctx: Ctx }) {
             <select aria-label="기준 항목" value={edit.key} onChange={(event) => setEdit({ ...edit, key: event.target.value })}>
               {Object.keys(report.parameters.values).map((key) => <option key={key} value={key}>{PARAMETER[key] ?? key}</option>)}
             </select>
-            <input inputMode="numeric" aria-label="값(베이시스포인트)" placeholder={edit.key.endsWith("_bps") ? "bp (100 = 1%)" : "년(정수)"} value={edit.value} onChange={(event) => setEdit({ ...edit, value: event.target.value })} />
+            <input inputMode="numeric" aria-label="값(베이시스포인트)" placeholder={edit.key.endsWith("_bps") ? "bp (100 = 1%)" : edit.key === "funding_auto_maturity_flag" ? "0 = 끔, 1 = 켬" : "년(정수)"} value={edit.value} onChange={(event) => setEdit({ ...edit, value: event.target.value })} />
             <button type="button" className="btn primary" disabled={busy || !edit.value} onClick={saveParameter}>기준 저장</button>
           </div>
         </Card>

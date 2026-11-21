@@ -18,3 +18,4 @@
 .alm-edit input { width: 120px; }
 td.alm-num, th.alm-num { text-align: right; font-variant-numeric: tabular-nums; }
 .alm-total td { font-weight: 650; border-top: 1px solid var(--chip, rgba(0,0,0,.15)); }
+.alm-neg { color: var(--danger); }
