@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
-import { Card, errorText, type Ctx } from "./common";
+import { Card, Tabs, errorText, type Ctx } from "./common";
+import { FundingPanel } from "./FundingPanel";
 import "./alm.css";
 
 type Status = "ok" | "warning" | "breach" | "n/a";
@@ -54,6 +55,7 @@ export function AlmPage({ ctx }: { ctx: Ctx }) {
   const [bankId, setBankId] = useState("");
   const [report, setReport] = useState<Report | null>(null);
   const [edit, setEdit] = useState({ key: "lcr_min_bps", value: "" });
+  const [tab, setTab] = useState<"metrics" | "funding">("metrics");
 
   const money = (text: string) => {
     const places = report?.decimalPlaces ?? 0;
@@ -100,7 +102,9 @@ export function AlmPage({ ctx }: { ctx: Ctx }) {
       <button type="button" className="outline" disabled={busy || !bankId} onClick={() => loadReport(bankId)}>다시 계산</button>
       {report && <span className="cap">{report.jurisdiction} 관할 · 기준통화 {report.currency}</span>}
     </div>
-    {!report ? <p className="cap">은행을 고르면 지표를 계산합니다.</p> : <>
+    <Tabs value={tab} onChange={setTab} label="자금 · ALM 화면" options={[["metrics", "규제 지표"], ["funding", "도매조달"]]} />
+    {tab === "funding" ? (bankId ? <FundingPanel ctx={ctx} bankId={bankId} currency={report?.currency ?? "NWX"} /> : <p className="cap">은행을 고르면 조달 내역을 불러옵니다.</p>)
+      : !report ? <p className="cap">은행을 고르면 지표를 계산합니다.</p> : <>
       <div className="alm-two">
         <Card title="자본 비율" caption="위험가중자산 대비. 막대의 세로선이 완충자본을 더한 필요 수준입니다.">
           <div className="alm-gauges">{gauge("cet1", "보통주자본(CET1)")}{gauge("tier1", "기본자본(Tier 1)")}{gauge("total", "총자본")}</div>

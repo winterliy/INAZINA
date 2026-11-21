@@ -130,6 +130,38 @@ class FundingManager:
         return {"principal": principal, "interest": interest}
 
     @classmethod
+    def overview(cls, conn, issuer, *, now, history=100):
+        """What an administrator's funding screen needs: each limit with what is drawn against it, the newest draws, and the
+        maturity profile. Amounts are minor units; ``decimal_places`` says how to show them."""
+        when = int(BankJournal.validate_epoch(now))
+        issuer = str(issuer)
+        used = {(str(row["source_type"]), str(row["currency_code"])): int(row["total"]) for row in conn.execute(
+            """SELECT source_type,currency_code,SUM(principal_minor_units) total FROM institution_funding
+               WHERE issuer=? AND status='active' GROUP BY source_type,currency_code""", (issuer,))}
+        limits = []
+        for row in conn.execute("""SELECT source_type,currency_code,limit_minor_units,updated_by,updated_epoch
+                FROM institution_funding_limits WHERE issuer=? ORDER BY currency_code,source_type""", (issuer,)):
+            key = (str(row["source_type"]), str(row["currency_code"]))
+            limit, drawn = int(row["limit_minor_units"]), used.get(key, 0)
+            limits.append({"source_type": key[0], "currency_code": key[1], "decimal_places": currency_precision(conn, key[1]),
+                           "limit_minor_units": limit, "outstanding_minor_units": drawn,
+                           "available_minor_units": max(0, limit - drawn),
+                           "updated_by": row["updated_by"], "updated_epoch": int(row["updated_epoch"])})
+        draws = []
+        for row in conn.execute("""SELECT funding_id,reference_key,source_type,counterparty,currency_code,decimal_places,
+                principal_minor_units,rate_bps,collateral_minor_units,haircut_bps,start_epoch,maturity_epoch,status,
+                interest_minor_units,repaid_epoch FROM institution_funding WHERE issuer=?
+                ORDER BY funding_id DESC LIMIT ?""", (issuer, int(history))):
+            draws.append({**{key: row[key] for key in row.keys()},
+                          "funding_id": int(row["funding_id"]), "decimal_places": int(row["decimal_places"]),
+                          "principal_minor_units": int(row["principal_minor_units"]),
+                          "collateral_minor_units": int(row["collateral_minor_units"]),
+                          "interest_minor_units": int(row["interest_minor_units"]),
+                          "overdue": row["status"] == "active" and int(row["maturity_epoch"]) <= when})
+        return {"issuer": issuer, "as_of_epoch": when, "limits": limits, "draws": draws,
+                "overdue_count": sum(1 for draw in draws if draw["overdue"]), "profile": cls.profile(conn, issuer, now=when)}
+
+    @classmethod
     def profile(cls, conn, issuer, *, now):
         """Outstanding funding by currency: per source, weighted average rate and maturity ladder."""
         when = int(BankJournal.validate_epoch(now))

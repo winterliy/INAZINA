@@ -2049,6 +2049,17 @@ def admin_alm_report(bank_id):
         return ALMManager.report(connection, issuer, now=time.time())
 
 
+def admin_funding_overview(bank_id):
+    """Limits, draws and the maturity profile of one bank's wholesale funding (read-only)."""
+    from functions.banks import bank_issuer
+    from managers.funding_manager import FundingManager
+
+    with connect_readonly() as plain:
+        connection = LegacyNames(plain)
+        issuer = bank_issuer(connection, bank_id)
+        return FundingManager.overview(connection, issuer, now=time.time())
+
+
 def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
     """Read-only bank-book controls for an administrator's audit workbench."""
     from managers.bank_journal import BankJournal
@@ -5026,6 +5037,18 @@ class Handler(BaseHTTPRequestHandler):
                         "bank_id": bank_id, "currency": currency, "result_count": len(report["cashflows"]),
                     })
                     self.send_json(200, report)
+            elif path == "/internal/admin/funding":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    bank_id = parse_qs(parsed.query).get("bank_id", [""])[0].strip().upper()
+                    if not bank_id or len(bank_id) > 100:
+                        raise ValueError("invalid_funding_filter")
+                    report = admin_funding_overview(bank_id)
+                    audit_admin_access(user["userId"], "funding.read", {
+                        "bank_id": bank_id, "draws": len(report["draws"]), "overdue": report["overdue_count"]})
+                    self.send_json(200, report)
             elif path == "/internal/admin/alm":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -5673,6 +5696,82 @@ class Handler(BaseHTTPRequestHandler):
                     "closing_id": closing_id,
                 })
                 self.send_json(200, {"success": True, "closingId": closing_id})
+                return
+            if path == "/internal/admin/funding":
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                    return
+                import re as _re
+                from decimal import Decimal as _Decimal   # a plain `Decimal` is a local name of do_POST (imported in other branches)
+                from functions.banks import bank_issuer
+                from managers.funding_manager import FundingManager
+                from managers.funding_maturity import process_due_funding
+
+                def money(name):
+                    value = payload.get(name)
+                    if not isinstance(value, str) or not _re.fullmatch(r"\d{1,15}(\.\d{1,6})?", value):
+                        raise ValueError(f"invalid_funding_{name}")
+                    return _Decimal(value)
+
+                def whole(name, low, high):
+                    value = payload.get(name)
+                    if type(value) is not int or not low <= value <= high:
+                        raise ValueError(f"invalid_funding_{name}")
+                    return value
+
+                def code(name):
+                    value = str(payload.get(name) or "").strip()
+                    if not _re.fullmatch(r"[A-Za-z0-9_]{2,20}", value):
+                        raise ValueError(f"invalid_funding_{name}")
+                    return value
+
+                action = str(payload.get("action") or "")
+                shapes = {"set_limit": {"action", "bankId", "sourceType", "currency", "limit"},
+                          "draw": {"action", "bankId", "sourceType", "currency", "amount", "rateBps", "maturityDays", "referenceKey",
+                                   "counterparty", "collateral", "haircutBps"},
+                          "repay": {"action", "bankId", "fundingId"}, "process_due": {"action", "bankId"}}
+                if action not in shapes or set(payload) != shapes[action]:
+                    raise ValueError("invalid_funding_payload")
+                now = int(time.time())
+                actor = user["userId"]
+                with domain().db.atomic() as connection:
+                    issuer = bank_issuer(connection, str(payload["bankId"]))
+                    if action == "set_limit":
+                        source, currency = code("sourceType"), code("currency").upper()
+                        FundingManager.set_limit(connection, issuer, source, currency, money("limit"), actor=actor, now=now)
+                        result = {"sourceType": source, "currency": currency, "limit": str(payload["limit"])}
+                        audit_name, audit_payload = "funding.limit_set", {"bank_id": payload["bankId"], **result}
+                    elif action == "draw":
+                        source, currency = code("sourceType"), code("currency").upper()
+                        reference = str(payload.get("referenceKey") or "")
+                        if not _re.fullmatch(r"[A-Za-z0-9:_.-]{8,120}", reference):
+                            raise ValueError("invalid_funding_referenceKey")
+                        counterparty = str(payload.get("counterparty") or "").strip()
+                        if len(counterparty) > 100:
+                            raise ValueError("invalid_funding_counterparty")
+                        funding_id = FundingManager.draw(
+                            connection, issuer, source, currency, money("amount"), reference_key=reference,
+                            rate_bps=whole("rateBps", 0, 100000), maturity_days=whole("maturityDays", 1, 36500), now=now,
+                            counterparty=counterparty, collateral=money("collateral"), haircut_bps=whole("haircutBps", 0, 10000))
+                        result = {"fundingId": funding_id}
+                        audit_name = "funding.draw"
+                        audit_payload = {"bank_id": payload["bankId"], "funding_id": funding_id, "source": source, "currency": currency,
+                                         "amount": payload["amount"], "rate_bps": payload["rateBps"], "maturity_days": payload["maturityDays"],
+                                         "reference_key": reference}
+                    elif action == "repay":
+                        funding_id = whole("fundingId", 1, 9007199254740991)
+                        owner = connection.execute("SELECT issuer FROM institution_funding WHERE funding_id=?", (funding_id,)).fetchone()
+                        if not owner or owner["issuer"] != issuer:
+                            raise ValueError("funding_not_found")
+                        result = FundingManager.repay(connection, funding_id, now=now)
+                        audit_name, audit_payload = "funding.repay", {"bank_id": payload["bankId"], "funding_id": funding_id,
+                                                                       "principal": str(result["principal"]), "interest": str(result["interest"])}
+                    else:
+                        result = process_due_funding(connection, now=now, issuer=issuer)
+                        audit_name = "funding.process_due"
+                        audit_payload = {"bank_id": payload["bankId"], "repaid": len(result["repaid"]), "failed": len(result["failed"])}
+                audit_admin_access(actor, audit_name, audit_payload)
+                self.send_json(200, {"success": True, "result": result})
                 return
             if path == "/internal/admin/compliance":
                 if user["role"] != "admin":

@@ -7,8 +7,8 @@ from managers.bank_journal import BankJournal
 from managers.funding_manager import FundingManager
 
 
-def process_due_funding(conn, *, now, limit=100):
-    """Repay due rows in maturity order; isolate failures for a later retry."""
+def process_due_funding(conn, *, now, limit=100, issuer=None):
+    """Repay due rows in maturity order; isolate failures for a later retry. ``issuer`` limits it to one institution."""
     if not conn.in_transaction:
         raise ValueError("caller must start a transaction before processing funding")
     when = int(BankJournal.validate_epoch(now))
@@ -16,7 +16,8 @@ def process_due_funding(conn, *, now, limit=100):
         raise ValueError("limit must be an integer between 1 and 500")
     ids = [int(row[0]) for row in conn.execute(
         "SELECT funding_id FROM institution_funding WHERE status='active' AND maturity_epoch<=? "
-        "ORDER BY maturity_epoch, funding_id LIMIT ?", (when, limit))]
+        + ("AND issuer=? " if issuer is not None else "") + "ORDER BY maturity_epoch, funding_id LIMIT ?",
+        (when, *([str(issuer)] if issuer is not None else []), limit))]
     repaid, failed = [], []
     for funding_id in ids:
         conn.execute("SAVEPOINT funding_maturity_row")
