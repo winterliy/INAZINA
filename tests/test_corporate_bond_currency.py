@@ -76,3 +76,29 @@ class CorporateBondCurrencyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_a_bond_held_across_a_nationality_change_is_paid_in_the_new_home_currency_and_recorded(self):
+        """Corporate bonds are not liquidated by a nationality change; what they pay afterwards is exchanged and recorded."""
+        from types import SimpleNamespace
+        from managers.nationality_manager import NationalityManager
+        self.issue("CB-NAT", "corporate_bond", rate=36.5)
+        self._foreign_holder("CB-NAT", quantity=1)            # also creates SCD and its nationality
+        self.assertTrue(self.book.place_limit_order("alice", "CB-NAT", "buy", 10, 100)[0])
+        audit = SimpleNamespace(_audit=lambda *args, **kwargs: None)
+        bot = SimpleNamespace(db=self.db, user_mgr=self.users, order_book=self.book, bank_mgr=None, admin_control=audit)
+        with self.db.atomic() as conn:
+            conn.execute("INSERT OR IGNORE INTO country_currencies(nationality,currency_code) VALUES ('United Southerns','SCD')")
+            from managers.currency_manager import CurrencyManager
+            CurrencyManager.treasury_id(conn, 'United Southerns')
+        NationalityManager(bot).change("admin", "alice", "United Southerns")
+        kept = self.db.assets.execute_one("SELECT SUM(quantity) FROM user_assets WHERE user_id='alice' AND asset_code='CB-NAT'")[0]
+        self.assertEqual(int(kept), 10)
+        now = int(time.time())
+        with self.db.atomic() as conn:
+            conn.execute("UPDATE investment SET coupon_frequency_days=5,last_coupon_epoch=?,"
+                         "next_coupon_epoch=? WHERE product_code='CB-NAT'", (now - 5 * 86400, now))
+        paid = {row["user_id"]: row for row in self.products.pay_corporate_bond_coupons(now=now)}
+        coupon, tax = int(paid["alice"]["coupon"]), int(paid["alice"]["tax"])
+        rows = [row for row in self._fx() if row["user_id"] == "alice"]
+        self.assertEqual([(r["kind"], r["source_currency"], r["source_minor_units"], r["currency"]) for r in rows],
+                         [("corporate_bond_coupon", "NWX", coupon - tax, "SCD")])
