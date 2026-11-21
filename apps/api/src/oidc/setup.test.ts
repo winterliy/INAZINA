@@ -9,7 +9,7 @@ import type { InternalRequest } from "./idp.js";
 
 const internalRequest: InternalRequest = async (_method, _path, userId) =>
   userId === "alice" ? { status: 200, body: { user: { userId: "alice", nickname: "앨리스", role: "user", authVersion: 1 } } } : { status: 404, body: {} };
-const base = (env: NodeJS.ProcessEnv, dir: string) => ({ env, jwksFile: join(dir, "jwks.json"), authSecret: "secret", internalRequest, clientIp: () => "203.0.113.9" });
+const base = (env: NodeJS.ProcessEnv, dir: string) => ({ env, jwksFile: join(dir, "jwks.json"), authSecret: "secret", internalRequest, clientIp: () => "203.0.113.9", issueSession: (userId: string, authVersion: number) => `s=${userId}.${authVersion}` });
 
 async function through(handler: (request: any, response: any) => Promise<boolean>, host: string, path: string) {
   const server = createServer(async (request, response) => { if (!(await handler(request, response))) { response.writeHead(418); response.end(); } });
@@ -52,5 +52,20 @@ test("the discovery document is served on the identity provider host with the co
   try {
     const { idp } = await setupOidc(base({ INAZINA_OIDC_ISSUER: "https://id.inazina.localhost/oidc" }, dir));
     assert.equal((await through(idp!, "id.inazina.localhost", "/oidc/.well-known/openid-configuration")).status, 200);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("with an issuer the app hosts get the relying party; the API's own host does not", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "oidc-setup-"));
+  try {
+    const { rp } = await setupOidc(base({ INAZINA_OIDC_ISSUER: "https://id.inazina.localhost/oidc" }, dir));
+    assert.ok(rp);
+    const handleRp = (request: any, response: any) => rp.handle(request, response, new URL(request.url, "http://x"));
+    assert.equal(rp.servesHost("naru.inazina.localhost"), true);
+    assert.equal(rp.servesHost("console.inazina.localhost"), true);
+    assert.equal(rp.servesHost("127.0.0.1:4312"), false);
+    assert.equal((await through(handleRp, "naru.inazina.localhost", "/api/auth/oidc/callback")).status, 302, "handled: the callback redirects (no transaction cookie)");
+    assert.equal((await through(handleRp, "127.0.0.1:4312", "/api/auth/oidc/callback")).status, 418);
+    assert.equal((await setupOidc(base({}, dir))).rp, undefined);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

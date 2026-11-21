@@ -4,8 +4,12 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { loadClients } from "./clients.js";
 import { createIdp, type InternalRequest } from "./idp.js";
 import { createProvider, loadJwks } from "./provider.js";
+import { createRp } from "./rp.js";
 
-export type OidcSetup = { idp?: (request: IncomingMessage, response: ServerResponse) => Promise<boolean> };
+export type OidcSetup = {
+  idp?: (request: IncomingMessage, response: ServerResponse) => Promise<boolean>; // the identity provider's own host
+  rp?: ReturnType<typeof createRp>; // sign-in for the app hosts (naru, console)
+};
 
 export type SetupDeps = {
   env: NodeJS.ProcessEnv;
@@ -13,6 +17,7 @@ export type SetupDeps = {
   authSecret: string;
   internalRequest: InternalRequest;
   clientIp: (request: IncomingMessage) => string;
+  issueSession: (userId: string, authVersion: number) => string; // the Set-Cookie value of an app session
 };
 
 export async function setupOidc(deps: SetupDeps): Promise<OidcSetup> {
@@ -31,5 +36,5 @@ export async function setupOidc(deps: SetupDeps): Promise<OidcSetup> {
       return result.status === 200 && user ? { userId: user.userId, nickname: user.nickname, role: user.role, authVersion: user.authVersion } : undefined;
     },
   });
-  return { idp: createIdp({ provider, issuerHost: issuer.host, internalRequest, clientIp: deps.clientIp, appUrls: { home: app, register: `${app}?register=1`, reset: `${app}?reset=1` } }) };
+  return { rp: createRp({ env, authSecret: deps.authSecret, issueSession: deps.issueSession }), idp: createIdp({ provider, issuerHost: issuer.host, internalRequest, clientIp: deps.clientIp, appUrls: { home: app, register: `${app}?register=1`, reset: `${app}?reset=1` } }) };
 }

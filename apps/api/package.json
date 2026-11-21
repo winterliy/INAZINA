@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "NODE_EXTRA_CA_CERTS=${NODE_EXTRA_CA_CERTS:-/etc/ssl/cert.pem} node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test src/oidc/*.test.ts"
+    "test": "node --import tsx --test --test-timeout=60000 --test-force-exit src/oidc/*.test.ts"
   },
   "devDependencies": {
     "@types/node": "26.6.4",

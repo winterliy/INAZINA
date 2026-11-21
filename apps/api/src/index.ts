@@ -446,11 +446,14 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
 
   const browserNavigation = request.method === "GET" &&
     ((request.headers.accept ?? "").includes("text/html") || request.headers["sec-fetch-mode"] === "navigate");
-  const browserAuthExempt = url.pathname === "/api/auth/discord/start" || url.pathname === "/api/auth/discord/callback";
+  const browserAuthExempt = url.pathname === "/api/auth/discord/start" || url.pathname === "/api/auth/discord/callback" ||
+    url.pathname === "/api/auth/oidc/login" || url.pathname === "/api/auth/oidc/callback"; // top-level navigations of the single sign-on flow
   if (browserNavigation && url.pathname.startsWith("/api/") && !browserAuthExempt && !browserAuthorized) {
     await sendLanding(response, "login_required", `${url.pathname}${url.search}`, 401);
     return;
   }
+
+  if (oidc.rp && await oidc.rp.handle(request, response, url)) return; // single sign-on sign-in for the app hosts
 
   // People who open the API port in a browser get a page instead of raw JSON;
   // the apps' fetch calls (Accept: */*) keep receiving JSON.
@@ -552,7 +555,11 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/auth/config") {
-    send(response, 200, { discordOAuthConfigured: Boolean(discordClientId && discordClientSecret) });
+    send(response, 200, { discordOAuthConfigured: Boolean(discordClientId && discordClientSecret), oidc: Boolean(oidc.rp?.servesHost(request.headers.host)) });
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/auth/login" && oidc.rp?.servesHost(request.headers.host)) {
+    send(response, 410, { error: "sso_required" }); // app hosts sign in through the identity provider; direct loopback access keeps the password login
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/auth/login") {
@@ -612,7 +619,8 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     } else if (session?.kind === "session") {
       await internalRequest("POST", "/internal/auth/logout", session.userId, {});
     }
-    send(response, 200, { success: true }, { "set-cookie": cookieHeader(sessionCookie, "", 0) });
+    const logoutUrl = oidc.rp ? await oidc.rp.logoutUrl(request.headers.host ?? "") : undefined; // also ends the single sign-on session
+    send(response, 200, { success: true, ...(logoutUrl ? { logoutUrl } : {}) }, { "set-cookie": cookieHeader(sessionCookie, "", 0) });
     return;
   }
 
@@ -1378,7 +1386,8 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
 }
 
 // Single sign-on (docs/sso.md): with INAZINA_OIDC_ISSUER set, the identity provider answers its own host first.
-const oidc = await setupOidc({ env: process.env, jwksFile: join(projectRoot, "database", "oidc_jwks.json"), authSecret, internalRequest, clientIp });
+const oidc = await setupOidc({ env: process.env, jwksFile: join(projectRoot, "database", "oidc_jwks.json"), authSecret, internalRequest, clientIp,
+  issueSession: (userId, authVersion) => sessionHeader(userId, authVersion) });
 
 const server = createServer((request, response) => {
   const by = principalFor(request)?.by;

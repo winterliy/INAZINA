@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createHash, randomBytes } from "node:crypto";
 import { createServer, request as httpRequest } from "node:http";
 import { createLocalJWKSet, exportJWK, generateKeyPair, jwtVerify } from "jose";
 import { createProvider, type Account, type Jwk } from "./provider.js";
 import { createIdp, type InternalRequest } from "./idp.js";
 import { memoryStore } from "./memoryStore.js";
+import { Jar, send, newVerifier, challengeOf, followUntil } from "./harness.js";
 import type { OidcClient } from "./clients.js";
 
 const callback = "https://naru.inazina.localhost/api/auth/oidc/callback";
@@ -37,22 +37,9 @@ async function start() {
   return { base, port, logins, issuer: `${base}/oidc`, keys: createLocalJWKSet({ keys: [publicJwk as never] }), close: () => new Promise<void>((done) => server.close(() => done())) };
 }
 
-class Jar {
-  cookies = new Map<string, string>();
-  absorb(response: Response) { for (const line of response.headers.getSetCookie()) { const [pair] = line.split(";"); const i = pair.indexOf("="); this.cookies.set(pair.slice(0, i), pair.slice(i + 1)); } }
-  header() { return [...this.cookies].map(([name, value]) => `${name}=${value}`).join("; "); }
-}
-async function send(url: string, jar: Jar, init: RequestInit = {}): Promise<Response> {
-  const response = await fetch(url, { redirect: "manual", ...init, headers: { cookie: jar.header(), ...(init.headers as Record<string, string> | undefined) } });
-  jar.absorb(response);
-  return response;
-}
-
-const verifier = () => randomBytes(32).toString("base64url");
-const challenge = (value: string) => createHash("sha256").update(value).digest("base64url");
 const authUrl = (base: string, codeVerifier: string, extra: Record<string, string> = {}) => `${base}/oidc/auth?` + new URLSearchParams({
   client_id: "naru", response_type: "code", scope: "openid profile", redirect_uri: callback, state: "s1", nonce: "n1",
-  code_challenge: challenge(codeVerifier), code_challenge_method: "S256", ...extra });
+  code_challenge: challengeOf(codeVerifier), code_challenge_method: "S256", ...extra });
 
 // Starts the flow and returns the interaction uid plus the cookie jar holding the interaction cookies.
 async function begin(base: string, jar: Jar, codeVerifier: string) {
@@ -64,16 +51,7 @@ async function begin(base: string, jar: Jar, codeVerifier: string) {
 const postLogin = (base: string, jar: Jar, uid: string, loginId: string, password: string) =>
   send(`${base}/oidc/interaction/${uid}/login`, jar, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ loginId, password }) });
 
-// Follows redirects until one leaves for the registered redirect URI; returns that URL.
-async function followToCallback(base: string, jar: Jar, first: Response): Promise<URL> {
-  let response = first;
-  for (let hop = 0; hop < 8; hop += 1) {
-    const location = new URL(response.headers.get("location") ?? "", base);
-    if (location.href.startsWith(callback)) return location;
-    response = await send(location.href, jar);
-  }
-  throw new Error("redirect chain did not reach the callback");
-}
+const followToCallback = (base: string, jar: Jar, first: Response): Promise<URL> => followUntil(base, jar, first, callback);
 const exchange = (base: string, code: string, codeVerifier: string) => fetch(`${base}/oidc/token`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
   body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: callback, client_id: "naru", code_verifier: codeVerifier }) });
 
@@ -86,7 +64,7 @@ test("the interaction page is the shared login layout with a form posting to the
   const { base, close } = await start();
   try {
     const jar = new Jar();
-    const uid = await begin(base, jar, verifier());
+    const uid = await begin(base, jar, newVerifier());
     const page = await send(`${base}/oidc/interaction/${uid}`, jar);
     assert.equal(page.status, 200);
     assert.match(page.headers.get("content-type") ?? "", /text\/html/);
@@ -100,7 +78,7 @@ test("the interaction page is the shared login layout with a form posting to the
 test("a correct login ends at the registered redirect URI with a code and the original state", async () => {
   const { base, close } = await start();
   try {
-    const target = await signIn(base, new Jar(), verifier());
+    const target = await signIn(base, new Jar(), newVerifier());
     assert.equal(target.origin + target.pathname, callback);
     assert.equal(target.searchParams.get("state"), "s1");
     assert.ok(target.searchParams.get("code"));
@@ -110,7 +88,7 @@ test("a correct login ends at the registered redirect URI with a code and the or
 test("the token response carries a signed ID token with sub, name, role, auth_version and the nonce", async () => {
   const { base, issuer, keys, close } = await start();
   try {
-    const codeVerifier = verifier();
+    const codeVerifier = newVerifier();
     const target = await signIn(base, new Jar(), codeVerifier);
     const response = await exchange(base, target.searchParams.get("code")!, codeVerifier);
     assert.equal(response.status, 200);
@@ -124,12 +102,12 @@ test("the token response carries a signed ID token with sub, name, role, auth_ve
 test("a code cannot be used twice, nor with another verifier", async () => {
   const { base, close } = await start();
   try {
-    const codeVerifier = verifier();
+    const codeVerifier = newVerifier();
     const code = (await signIn(base, new Jar(), codeVerifier)).searchParams.get("code")!;
     assert.equal((await exchange(base, code, codeVerifier)).status, 200);
     assert.equal((await exchange(base, code, codeVerifier)).status, 400);
     const second = (await signIn(base, new Jar(), codeVerifier)).searchParams.get("code")!;
-    const wrong = await exchange(base, second, verifier());
+    const wrong = await exchange(base, second, newVerifier());
     assert.equal(wrong.status, 400);
     assert.equal(((await wrong.json()) as { error: string }).error, "invalid_grant");
   } finally { await close(); }
@@ -139,7 +117,7 @@ test("a wrong password re-renders the page with 401 and a message; an unknown ac
   const { base, close } = await start();
   try {
     const jar = new Jar();
-    const uid = await begin(base, jar, verifier());
+    const uid = await begin(base, jar, newVerifier());
     const wrong = await postLogin(base, jar, uid, "alice", "nope");
     assert.equal(wrong.status, 401);
     const html = await wrong.text();
@@ -153,7 +131,7 @@ test("the ninth failed attempt in 15 minutes from one address and id is refused 
   const { base, close } = await start();
   try {
     const jar = new Jar();
-    const uid = await begin(base, jar, verifier());
+    const uid = await begin(base, jar, newVerifier());
     for (let attempt = 0; attempt < 8; attempt += 1) assert.equal((await postLogin(base, jar, uid, "alice", "nope")).status, 401);
     assert.equal((await postLogin(base, jar, uid, "alice", "pw")).status, 429);
   } finally { await close(); }
@@ -162,7 +140,7 @@ test("the ninth failed attempt in 15 minutes from one address and id is refused 
 test("the login call carries the client address, user agent and the app label used by the login history", async () => {
   const { base, logins, close } = await start();
   try {
-    await signIn(base, new Jar(), verifier());
+    await signIn(base, new Jar(), newVerifier());
     assert.equal(logins[0].path, "/internal/auth/login");
     assert.equal(logins[0].body.loginId, "alice");
     assert.deepEqual({ clientIp: logins[0].body.meta.clientIp, app: logins[0].body.meta.app }, { clientIp: "203.0.113.9", app: "hts" });
@@ -172,7 +150,7 @@ test("the login call carries the client address, user agent and the app label us
 test("an interaction used without its cookie cannot log in", async () => {
   const { base, close } = await start();
   try {
-    const uid = await begin(base, new Jar(), verifier());
+    const uid = await begin(base, new Jar(), newVerifier());
     const response = await postLogin(base, new Jar(), uid, "alice", "pw");
     assert.ok(response.status >= 400 && response.status < 500);
   } finally { await close(); }
@@ -182,8 +160,8 @@ test("signing out ends the single sign-on session: the next authorization asks f
   const { base, close } = await start();
   try {
     const jar = new Jar();
-    await signIn(base, jar, verifier());
-    const silent = await send(authUrl(base, verifier()), jar);
+    await signIn(base, jar, newVerifier());
+    const silent = await send(authUrl(base, newVerifier()), jar);
     assert.ok((silent.headers.get("location") ?? "").startsWith(callback), "a live session returns a code without a prompt");
     const page = await send(`${base}/oidc/session/end`, jar);
     assert.equal(page.status, 200);
@@ -192,7 +170,7 @@ test("signing out ends the single sign-on session: the next authorization asks f
     const xsrf = /name="xsrf" value="([^"]+)"/.exec(html)![1];
     const confirmed = await send(`${base}/oidc/session/end/confirm`, jar, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ xsrf, logout: "yes" }) });
     assert.equal(confirmed.status, 303);
-    const again = await send(authUrl(base, verifier()), jar);
+    const again = await send(authUrl(base, newVerifier()), jar);
     assert.match(again.headers.get("location") ?? "", /\/oidc\/interaction\//);
   } finally { await close(); }
 });
