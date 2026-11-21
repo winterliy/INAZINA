@@ -36,3 +36,11 @@ def test_threat_model_rows_have_controls_or_are_marked_missing():
         controls = re.findall(r"C-\d{2}", row)
         assert all(f"| {c} |" in matrix for c in controls), f"unknown control in {cells[0]}"
         assert controls or "미비" in row or cells[3], f"{cells[0]} has neither a control nor a 미비 mark"
+
+
+def test_controls_screen_data_marks_every_control_verified():
+    from web_api import controls_overview
+    data = controls_overview.overview()
+    assert data["summary"]["total"] >= 10
+    assert [row["id"] for row in data["controls"] if row["status"] != "verified"] == []
+    assert data["restoreDrills"] and data["accessReviews"] and len(data["stress"]["scenarios"]) == 6

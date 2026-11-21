@@ -884,6 +884,16 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     return;
   }
 
+  if (url.pathname === "/api/admin/controls" && request.method === "GET") {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const result = await internalGet("/internal/admin/controls", principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+
   const liquidityDetail = url.pathname.match(/^\/api\/admin\/liquidity\/([^/]+)$/);
   if (liquidityDetail && request.method === "GET") {
     if (user.role !== "admin") {

@@ -4985,6 +4985,14 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "admin_required"})
                 else:
                     self.send_json(200, accounting_close_overview(check=(parse_qs(urlsplit(self.path).query).get("check") or ["0"])[0] == "1"))
+            elif path == "/internal/admin/controls":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    from web_api import controls_overview
+                    audit_admin_access(user["userId"], "controls.read", {})
+                    self.send_json(200, controls_overview.overview())
             elif path == "/internal/admin/liquidity":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
