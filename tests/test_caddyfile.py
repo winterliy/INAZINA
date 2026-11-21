@@ -19,10 +19,11 @@ def _body(text, start):
 
 
 def blocks(text):
-    """Top-level site label -> body (placeholders like {$X} are skipped by looking for ' {' at line end)."""
+    """Top-level site label -> body for every `label {` line outside another block."""
     out = {}
     for m in re.finditer(r"^(\S[^\n]*?) \{$", text, re.M):
-        if text.count("\n", 0, m.start()) and text[:m.start()].count("{") != text[:m.start()].count("}"):
+        before = text[:m.start()]
+        if before.count("{") != before.count("}"):  # still inside an earlier block
             continue
         out[m.group(1).strip()] = _body(text, m.end() - 1)
     return out
