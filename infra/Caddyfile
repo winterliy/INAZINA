@@ -1,6 +1,7 @@
 # INAZINA public edge. api.<domain> and port 4313 (internal gateway) are
 # intentionally NOT published here.
-# Env: INAZINA_DOMAIN (default inazina.localhost), INAZINA_TLS ("internal" locally, empty in production).
+# Env: INAZINA_DOMAIN (default inazina.localhost), WL_DOMAIN (default wl.kr.localhost; production: wl.kr),
+#      INAZINA_TLS ("internal" locally, empty in production).
 
 (common) {
 	tls {$INAZINA_TLS}
@@ -27,32 +28,50 @@ corp.{$INAZINA_DOMAIN:inazina.localhost} {
 	reverse_proxy 127.0.0.1:4314
 }
 
+# Identity provider: only the OIDC and account pages are reachable.
 id.{$INAZINA_DOMAIN:inazina.localhost} {
 	import common
 	@idpaths path /oidc/* /login /register /reset
-	reverse_proxy @idpaths 127.0.0.1:4312
-	respond 404
+	handle @idpaths {
+		reverse_proxy 127.0.0.1:4312
+	}
+	handle {
+		respond 404
+	}
 }
 
 naru.{$INAZINA_DOMAIN:inazina.localhost} {
 	import common
 	@internal path /api/internal*
-	respond @internal 404
+	handle @internal {
+		respond 404
+	}
 	@api path /api/*
-	reverse_proxy @api 127.0.0.1:4312
-	reverse_proxy 127.0.0.1:4311
+	handle @api {
+		reverse_proxy 127.0.0.1:4312
+	}
+	handle {
+		reverse_proxy 127.0.0.1:4311
+	}
 }
 
 console.{$INAZINA_DOMAIN:inazina.localhost} {
 	import common
 	@internal path /api/internal*
-	respond @internal 404
+	handle @internal {
+		respond 404
+	}
 	@api path /api/*
-	reverse_proxy @api 127.0.0.1:4312
-	reverse_proxy 127.0.0.1:4310
+	handle @api {
+		reverse_proxy 127.0.0.1:4312
+	}
+	handle {
+		reverse_proxy 127.0.0.1:4310
+	}
 }
 
-wl.kr.{$INAZINA_DOMAIN:inazina.localhost} {
+# A separate domain with its own entry password; not part of the SSO.
+{$WL_DOMAIN:wl.kr.localhost} {
 	import common
 	reverse_proxy 127.0.0.1:4315
 }
@@ -63,5 +82,5 @@ wl.kr.{$INAZINA_DOMAIN:inazina.localhost} {
 # 	reverse_proxy 127.0.0.1:0000
 # }
 # mc.{$INAZINA_DOMAIN:inazina.localhost} {
-# 	# Minecraft TCP needs caddy-l4, or use plain DNS-only record.
+# 	# Minecraft TCP needs caddy-l4, or use a plain DNS-only record.
 # }
