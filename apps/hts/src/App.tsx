@@ -721,9 +721,9 @@ export default function App() {
   // The administrator comes back here, in the HTS, as themselves; the wallet and orders reload for them.
   const logout = async () => {
     const delegated = Boolean(user?.delegatedBy);
-    let result: { returnedTo?: ApiUser };
+    let result: { returnedTo?: ApiUser; logoutUrl?: string };
     try {
-      result = await api<{ returnedTo?: ApiUser }>("/api/auth/logout", { method: "POST" });
+      result = await api<{ returnedTo?: ApiUser; logoutUrl?: string }>("/api/auth/logout", { method: "POST" });
     } catch (cause) {
       if (delegated) { setNotice(errorText(cause, "관리자 계정으로 돌아가지 못했습니다. 잠시 후 다시 시도해주세요.")); return; }
       result = {};
