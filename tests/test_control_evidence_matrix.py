@@ -42,7 +42,8 @@ class ControlEvidenceMatrixTests(unittest.TestCase):
         for control_id, description, location, evidence in rows:
             with self.subTest(control=control_id):
                 self.assertTrue(description)
-                self.assertTrue((ROOT / location).is_file(), f"{location} does not exist")
+                for part in [item.strip() for item in location.split(",") if item.strip()]:
+                    self.assertTrue((ROOT / part).is_file(), f"{part} does not exist")
                 references = [item.strip() for item in evidence.split(",") if item.strip()]
                 self.assertTrue(references, "a control needs at least one piece of evidence")
                 for reference in references:
