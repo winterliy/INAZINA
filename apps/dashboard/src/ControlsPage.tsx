@@ -17,11 +17,12 @@ export function ControlsPage({ ctx }: { ctx: Ctx }) {
   if (!data) return <p className="cap">불러오는 중…</p>;
   return <>
     <Card title="통제 증빙표" caption={`${data.summary.verified} / ${data.summary.total}개 통제의 증빙 시험이 실제로 존재합니다. 존재만 확인하며 통과 여부는 시험 실행으로 확인합니다.`}>
-      <div className="scroll-x"><table><thead><tr><th>ID</th><th>통제</th><th>구현 위치</th><th>증빙</th><th>상태</th></tr></thead><tbody>
+      <div className="scroll-x"><table><thead><tr><th>ID</th><th>상태</th><th>증빙</th><th>통제</th><th>구현 위치</th></tr></thead><tbody>
         {data.controls.map((row) => <tr key={row.id}>
-          <td>{row.id}</td><td>{row.control}</td><td className="cap">{row.location}</td>
-          <td className="cap">{row.evidence.length}건</td>
+          <td>{row.id}</td>
           <td className={row.status === "verified" ? "" : "neg"}>{row.status === "verified" ? "확인됨" : "증빙 없음"}</td>
+          <td className="cap">{row.evidence.length}건</td>
+          <td>{row.control}</td><td className="cap">{row.location}</td>
         </tr>)}
       </tbody></table></div>
     </Card>
