@@ -1,0 +1,67 @@
+# INAZINA public edge. api.<domain> and port 4313 (internal gateway) are
+# intentionally NOT published here.
+# Env: INAZINA_DOMAIN (default inazina.localhost), INAZINA_TLS ("internal" locally, empty in production).
+
+(common) {
+	tls {$INAZINA_TLS}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options SAMEORIGIN
+	}
+}
+
+{$INAZINA_DOMAIN:inazina.localhost} {
+	import common
+	redir https://www.{$INAZINA_DOMAIN:inazina.localhost}{uri} permanent
+}
+
+www.{$INAZINA_DOMAIN:inazina.localhost} {
+	import common
+	reverse_proxy 127.0.0.1:4314
+}
+
+corp.{$INAZINA_DOMAIN:inazina.localhost} {
+	import common
+	reverse_proxy 127.0.0.1:4314
+}
+
+id.{$INAZINA_DOMAIN:inazina.localhost} {
+	import common
+	@idpaths path /oidc/* /login /register /reset
+	reverse_proxy @idpaths 127.0.0.1:4312
+	respond 404
+}
+
+naru.{$INAZINA_DOMAIN:inazina.localhost} {
+	import common
+	@internal path /api/internal*
+	respond @internal 404
+	@api path /api/*
+	reverse_proxy @api 127.0.0.1:4312
+	reverse_proxy 127.0.0.1:4311
+}
+
+console.{$INAZINA_DOMAIN:inazina.localhost} {
+	import common
+	@internal path /api/internal*
+	respond @internal 404
+	@api path /api/*
+	reverse_proxy @api 127.0.0.1:4312
+	reverse_proxy 127.0.0.1:4310
+}
+
+wl.kr.{$INAZINA_DOMAIN:inazina.localhost} {
+	import common
+	reverse_proxy 127.0.0.1:4315
+}
+
+# Placeholders, not yet active:
+# work.{$INAZINA_DOMAIN:inazina.localhost} {
+# 	import common
+# 	reverse_proxy 127.0.0.1:0000
+# }
+# mc.{$INAZINA_DOMAIN:inazina.localhost} {
+# 	# Minecraft TCP needs caddy-l4, or use plain DNS-only record.
+# }
