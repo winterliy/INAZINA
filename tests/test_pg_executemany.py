@@ -116,3 +116,23 @@ class PgExecuteManyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PgJoinedSavepointTests(PgExecuteManyTests):
+    """A statement inside a transaction goes out as savepoint + statement + release in one message; a failing one still leaves the
+    transaction usable and its earlier work intact."""
+
+    def test_failed_statement_keeps_the_transaction_and_earlier_rows(self):
+        with self.db.atomic() as conn:
+            conn.execute(INSERT, ("ZZ9", 1, 1))
+            with self.assertRaises(sqlite3.Error):
+                conn.execute("INSERT INTO no_such_table_zz(a) VALUES (?)", (1,))
+            conn.execute(INSERT, ("ZZ9", 2, 2))
+            self.assertEqual(len(self.rows(conn, "ZZ9")), 2)
+
+    def test_semicolon_and_percent_in_values_and_rowcount(self):
+        with self.db.atomic() as conn:
+            cursor = conn.execute(INSERT, ("Z;--%Z", 5, 5))
+            self.assertEqual(cursor.rowcount, 1)
+            self.assertEqual(self.rows(conn, "Z;--%Z"), [("Z;--%Z", 5, 5)])
+            self.assertEqual(conn.execute("SELECT price FROM market_price_history WHERE asset_code=?", ("Z;--%Z",)).fetchone()[0], 5)

@@ -22,7 +22,7 @@ trips = {"statement": 0, "savepoint": 0, "batch": 0, "batch_rows": 0}
 orig_execute, orig_many = psycopg.Cursor.execute, psycopg.Cursor.executemany
 def execute(self, query, params=None, **kw):
     text = query if isinstance(query, str) else str(query)
-    trips["savepoint" if text.startswith(("SAVEPOINT", "RELEASE", "ROLLBACK TO")) else "statement"] += 1
+    trips["savepoint" if text.startswith(("SAVEPOINT", "RELEASE", "ROLLBACK TO")) and not text.startswith("SAVEPOINT inazina_statement;") else "statement"] += 1
     return orig_execute(self, query, params, **kw)
 def executemany(self, query, params_seq, **kw):
     params_seq = list(params_seq)

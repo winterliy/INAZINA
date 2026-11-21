@@ -525,14 +525,22 @@ class PgCursor:
         # SQLite's behavior for callers that catch an error and carry on.
         guarded = connection.in_transaction
         cursor = self._cursor
+        # The three statements (savepoint, the statement, release) go out as one simple-protocol message when the text is a single
+        # statement without comments (parameters are bound client-side, so nothing is lost): one round trip instead of three, the
+        # same result and the same state after an error (the statement failed, the release was skipped, ROLLBACK TO below undoes it).
+        joined = guarded and ";" not in text and "--" not in text and "/*" not in text
         try:
-            if guarded:
-                cursor.execute("SAVEPOINT inazina_statement")
-            cursor.execute(text, self._params(parameters))
+            if joined:
+                cursor.execute(f"SAVEPOINT inazina_statement; {text}; RELEASE SAVEPOINT inazina_statement", self._params(parameters))
+                cursor.nextset()
+            else:
+                if guarded:
+                    cursor.execute("SAVEPOINT inazina_statement")
+                cursor.execute(text, self._params(parameters))
             names = [d.name for d in cursor.description] if cursor.description else None
             rows = cursor.fetchall() if names is not None else []
             self.rowcount = cursor.rowcount
-            if guarded:
+            if guarded and not joined:
                 cursor.execute("RELEASE SAVEPOINT inazina_statement")
         except psycopg.Error as error:
             if guarded:
