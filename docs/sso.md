@@ -36,7 +36,7 @@
 ## 로컬에서 켜기
 1. `.env` 에 `INAZINA_OIDC_ISSUER=https://id.inazina.localhost/oidc` 와 고정 `INAZINA_AUTH_SECRET`(없으면 `openssl rand -hex 32` 로 만든 값)을 넣는다.
 2. `brew install caddy` 후 `./start_all.command` — 위 값이 있고 Caddy 가 있으면 함께 시작한다(`INAZINA_TLS` 기본 `internal`). 로그인 화면(`apps/id`)이 없으면 처음 한 번 빌드한다.
-3. **브라우저가 로컬 인증서를 믿게 하기:** 터미널에서 `caddy trust` 를 실행한다. macOS 가 관리자 암호(또는 Touch ID)를 물으면 입력한다. Caddy 가 만든 "Caddy Local Authority" 가 시스템에 신뢰 등록되어 Chrome·Safari 가 `https://naru.inazina.localhost` 를 경고 없이 연다(Firefox 는 별도 경고가 날 수 있다). 되돌리기: `caddy untrust`. 그 인증서의 `root.key` 는 이 맥에서 어떤 사이트 인증서든 만들 수 있으니 공유하지 않는다.
+3. **브라우저가 로컬 인증서를 믿게 하기:** `caddy trust` 는 **실행 중인 Caddy**(관리 주소 `localhost:2019`)에 물어보므로 Caddy 가 켜져 있어야 한다(`./start_all.command` 로 켰거나, 다른 터미널에서 `INAZINA_TLS=internal caddy run --config infra/Caddyfile --adapter caddyfile`). 그 상태에서 다른 터미널에 `caddy trust` 를 실행한다. 꺼져 있으면 `connection refused` 가 난다. Caddy 없이 하려면 `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$HOME/Library/Application Support/Caddy/pki/authorities/local/root.crt"`. macOS 가 관리자 암호(또는 Touch ID)를 물으면 입력한다. Caddy 가 만든 "Caddy Local Authority" 가 시스템에 신뢰 등록되어 Chrome·Safari 가 `https://naru.inazina.localhost` 를 경고 없이 연다(Firefox 는 별도 경고가 날 수 있다). 되돌리기: `caddy untrust`. 그 인증서의 `root.key` 는 이 맥에서 어떤 사이트 인증서든 만들 수 있으니 공유하지 않는다.
 4. **API 서버(Node)가 로컬 인증서를 믿게 하기:** Node 는 키체인을 보지 않고 `NODE_EXTRA_CA_CERTS` 가 가리키는 파일만 믿는다. 개발 실행 스크립트는 이 값이 비어 있으면 시스템 인증서 묶음(`/etc/ssl/cert.pem`)을 쓰는데 직접 지정하면 그 기본값이 대체되므로, 두 파일을 합친다.
    ```
    cat /etc/ssl/cert.pem "$HOME/Library/Application Support/Caddy/pki/authorities/local/root.crt" > "$HOME/.inazina-ca.pem"
