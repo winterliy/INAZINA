@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Restore a pg_dump backup (custom format) into a temporary database and inspect it; the source file is only read.
 
-    python tools/backup_restore_drill.py database/backups/inazina-pg-<time>.dump [--require-table NAME]... [--reconcile]
+    python tools/backup_restore_drill.py database/backups/inazina-pg-<time>.dump [--require-table NAME]... [--reconcile] [--sync-schema]
 
 The server comes from INAZINA_PG_DSN (host/user only: the drill creates and drops its own `inazina_drill_*` database there).
 Prints one JSON report and exits 0 when ok, 1 otherwise. SQLite backups ended on 2026-11-20; the old SQLite version of this tool is
@@ -42,6 +42,7 @@ def main():
     parser.add_argument("backup", type=Path, help="a pg_dump custom-format backup file")
     parser.add_argument("--require-table", action="append", default=[], metavar="NAME", help="require this table after restore (repeatable)")
     parser.add_argument("--reconcile", action="store_true", help="run the financial close checks on the restored copy")
+    parser.add_argument("--sync-schema", action="store_true", help="bring the restored copy up to the current code (pg_schema_sync) before the checks; an older backup lacks newer tables (data rows are not synced)")
     args = parser.parse_args()
     start = time.monotonic()
     name = f"inazina_drill_{os.getpid()}_{int(time.time())}"
@@ -71,8 +72,19 @@ def main():
                                 capture_output=True, text=True, timeout=1800, env=restore_env)
         if result.returncode:
             raise RuntimeError(f"pg_restore failed: {result.stderr.strip()[:300]}")
+        sync = None
+        if args.sync_schema:   # only ever the temporary restored database
+            from database import pg_schema_sync
+            os.environ["INAZINA_PG_DSN"] = restored_dsn
+            os.environ["INAZINA_DB_BACKEND"] = "postgres"
+            summary = pg_schema_sync.ensure_current(restored_dsn, force=True) or {}
+            sync = {kind: len(items) for kind, items in summary.items()}
+            if summary.get("errors"):
+                raise RuntimeError(f"schema sync reported {len(summary['errors'])} errors: {str(summary['errors'][0])[:200]}")
         verification = verify(restored_dsn, args.require_table)
         report = {"ok": verification["ok"], "verification": verification}
+        if sync is not None:
+            report["schema_sync"] = sync
         if args.reconcile and report["ok"]:
             os.environ["INAZINA_PG_DSN"] = restored_dsn
             os.environ["INAZINA_DB_BACKEND"] = "postgres"
@@ -85,7 +97,7 @@ def main():
                 check = AccountingJournal.reconcile_all_financial_ledgers(conn)
             report["reconciliation"] = {
                 "status": check["status"], "close_ready": check["close_ready"], "coverage": check["coverage"],
-                "finding_count": len(check["findings"]), "unconnected_tables": check["consumer_coverage"]["unconnected"]}
+                "finding_count": len(check["findings"]), "findings": check["findings"][:10], "unconnected_tables": check["consumer_coverage"]["unconnected"]}
             report["ok"] = check["status"] == "matched" and check["close_ready"]
     except Exception as exc:  # a drill reports every failure as data, whatever its type
         report = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}

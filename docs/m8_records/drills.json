@@ -21,23 +21,64 @@
       "cleanup_ok": true,
       "error": "relation fx_revaluation_corrections does not exist",
       "note": "통합 대사는 현재 코드가 기대하는 표가 덤프에 없어 실패했다. 운영 DB에 M4의 새 표가 아직 반영되지 않은 상태의 백업이라서다(서버 시작 시 스키마 동기화로 생김). 복구 도구가 복원본에 스키마 동기화를 먼저 적용하지 않는다는 한계가 드러났다. 통합 대사 통과 기록은 아직 없다."
+    },
+    {
+      "date": "2026-11-21",
+      "source": "운영 DB 읽기 전용 pg_dump 새 복사본",
+      "command": "tools/backup_restore_drill.py <덤프> --require-table users --require-table accounts --reconcile --sync-schema",
+      "ok": false,
+      "tables": 264,
+      "foreign_key_violations": 0,
+      "elapsed_seconds": 69.2,
+      "cleanup_ok": true,
+      "error": "통합 대사 발견 1건: amount_schema_coverage insolvency_policies.exempt_amount unclassified_money_candidate",
+      "note": "복원본에 스키마 동기화(표 3, 인덱스 1, 트리거 4)를 적용하면 표 누락은 사라진다. 남은 1건은 면제 등록부(financial_amount_field_exemptions)에 insolvency_policies.exempt_amount 행이 운영 DB에 없어서다. 스키마 동기화는 데이터 행을 옮기지 않는다. 운영 반영에는 사용자 승인이 필요한 데이터 삽입 1건이 있다."
+    },
+    {
+      "date": "2026-11-21",
+      "source": "같은 덤프의 임시 복사본(inazina_m8_seed, 삭제함)",
+      "command": "tools/backup_restore_drill.py <덤프> --sync-schema 로 복원한 뒤, 임시 복사본에 면제 1행을 수기로 삽입하고 reconcile_all_financial_ledgers 실행",
+      "ok": true,
+      "cleanup_ok": true,
+      "note": "status=matched, close_ready=true, 발견 0건. 즉 운영에 면제 1행만 반영되면 복원본 통합 대사가 통과한다(수기 확인, 도구 자동 실행 아님)."
     }
   ],
   "access_reviews": [
     {
       "date": "2026-11-21",
       "scope": "운영 DB 읽기 전용 조회",
-      "admins": [{"user_id_tail": "0278", "role": "admin", "bootstrap_id": true}],
+      "admins": [
+        {
+          "user_id_tail": "0278",
+          "role": "admin",
+          "bootstrap_id": true
+        }
+      ],
       "admin_count": 1,
       "audit_rows": 1995,
       "audit_range": "2026-10-16 ~ 2026-11-19",
-      "top_actions_30d": {"admin_users.read": 580, "organization.size_auto_change": 152, "dr_voting_meetings.list": 143, "dr_custody_events.read": 141},
-      "findings": ["관리자는 1명이고 코드의 BOOTSTRAP_ADMIN_IDS와 같은 계정이다.", "관리자 접근 검토를 정기로 돌릴 절차는 아직 없다(이 기록이 첫 수기 검토)."]
+      "top_actions_30d": {
+        "admin_users.read": 580,
+        "organization.size_auto_change": 152,
+        "dr_voting_meetings.list": 143,
+        "dr_custody_events.read": 141
+      },
+      "findings": [
+        "관리자는 1명이고 코드의 BOOTSTRAP_ADMIN_IDS와 같은 계정이다.",
+        "관리자 접근 검토를 정기로 돌릴 절차는 아직 없다(이 기록이 첫 수기 검토)."
+      ]
     }
   ],
   "stress": {
     "test_file": "tests/test_m8_stress_scenarios.py",
-    "scenarios": ["rate_spike", "deposit_run", "correlated_defaults", "collateral_decline", "fx_rate_jump", "settlement_failures"],
+    "scenarios": [
+      "rate_spike",
+      "deposit_run",
+      "correlated_defaults",
+      "collateral_decline",
+      "fx_rate_jump",
+      "settlement_failures"
+    ],
     "last_run": "2026-11-21",
     "result": "6 passed"
   }
