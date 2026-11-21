@@ -148,3 +148,30 @@ class FillAndMarginNotificationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_the_withdrawal_fee_keeps_the_payers_exchange_record(self):
+        """A payer whose own currency differs is paid the fee exchanged, and that exchange is recorded like any other."""
+        from unittest.mock import patch
+        self._close_position_without_an_nwx_account()
+        payout = self._pending()[0]
+        opened = payout["created_epoch"] + 10
+        with self.db.atomic() as conn:
+            PayoutManager.open_temp(conn, self.USER, payout["payout_id"], now=opened)
+        self.db.products.execute(
+            "INSERT OR IGNORE INTO saving(product_code,name,interest_rate,quote_currency,product_kind,status) "
+            "VALUES ('FX_NWX','NWX 외환통장',0,'NWX','saving','active')")
+        CurrencyExchangeManager(self.db).open_account(self.USER, "FX_NWX")
+        real = CurrencyManager.receive
+        fee = PayoutManager.fee_minor_units(int(payout["amount"]))
+
+        def receive(conn, user_id, currency, minor_units):
+            if int(minor_units) == fee and str(user_id) != self.USER:      # the payer's side of the fee
+                return {"currency": "USD", "decimal_places": 2, "minor_units": 1, "rate": __import__("fractions").Fraction(1, 1500)}
+            return real(conn, user_id, currency, minor_units)
+
+        with patch.object(CurrencyManager, "receive", receive), self.db.atomic() as conn:
+            PayoutManager.withdraw(conn, self.USER, payout["payout_id"], now=opened + 200)
+        with self.db.readonly() as conn:
+            rows = conn.execute("SELECT kind,reference,currency_code,minor_units FROM cash_fx_settlements WHERE reference=?",
+                                (f"payout:{payout['payout_id']}:fee",)).fetchall()
+        self.assertEqual([tuple(r) for r in rows], [(f"payout:{payout['kind']}", f"payout:{payout['payout_id']}:fee", "NWX", fee)])

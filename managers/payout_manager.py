@@ -145,7 +145,7 @@ class PayoutManager:
         UserManager._credit_source(conn, user_id, account_number, from_minor_units(minor - fee, places),
                                    event="payout_withdrawal", reference=f"payout:{payout_id}", currency=currency)
         if fee:
-            CurrencyManager.receive(conn, row["payer_id"], currency, fee)
+            cls._receive(conn, row["payer_id"], row, f"payout:{payout_id}:fee", fee, now)
         conn.execute("UPDATE payout_requests SET status='withdrawn',decided_epoch=?,withdrawn_account=?,"
                      "fee_minor_units=? WHERE payout_id=?", (now, account_number or "wallet", fee, int(payout_id)))
         AccountingJournal.link_cash(conn, row["kind"], f"payout:{payout_id}:withdraw", mark, now)
