@@ -729,6 +729,35 @@ def admin_feedback_action(actor, feedback_id, payload):
     return "✅ 처리 상태를 바꿨습니다."
 
 
+def oidc_store_call(operation, payload):
+    """The Node API's OIDC adapter calls: `{"result": ...}` for reads, `{"success": True}` otherwise."""
+    from web_api import oidc_store
+    text = lambda key, limit=256: _oidc_text(payload.get(key), key, limit)
+    reads = {"find": ("model", "id"), "find_by_uid": ("model", "uid"), "find_by_user_code": ("model", "user_code")}
+    writes = {"consume": ("model", "id"), "destroy": ("model", "id"), "revoke_by_grant_id": ("grant_id",)}
+    if operation not in {"upsert", *reads, *writes}:
+        raise ValueError("oidc_operation_unknown")
+    with connect_db(timeout=2) as connection:
+        oidc_store.ensure_table(connection)
+        if operation == "upsert":
+            if not isinstance(payload.get("payload"), dict) or type(payload.get("expires_at")) is not int:
+                raise ValueError("invalid_oidc_payload")
+            optional = lambda key: text(key) if payload.get(key) is not None else None
+            oidc_store.upsert(connection, text("model"), text("id"), payload["payload"], payload["expires_at"],
+                              optional("grant_id"), optional("uid"), optional("user_code"))
+            return {"success": True}
+        if operation in reads:
+            return {"result": getattr(oidc_store, operation)(connection, *(text(key) for key in reads[operation]))}
+        getattr(oidc_store, operation)(connection, *(text(key) for key in writes[operation]))
+        return {"success": True}
+
+
+def _oidc_text(value, name, limit):
+    if not isinstance(value, str) or not value or len(value) > limit:
+        raise ValueError(f"invalid_oidc_{name}")
+    return value
+
+
 def ensure_auth_table(connection):
     connection.execute("""CREATE TABLE IF NOT EXISTS web_auth_credentials (
         user_id TEXT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
@@ -5537,6 +5566,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/internal/auth/password/reset":
                 user = save_password(verified_id, payload.get("password"))
                 self.send_json(200, {"user": user})
+                return
+            if path.startswith("/internal/oidc/store/"):
+                self.send_json(200, oidc_store_call(path.removeprefix("/internal/oidc/store/"), payload))
                 return
             if path == "/internal/auth/logout":
                 with connect_db(timeout=2) as connection:
