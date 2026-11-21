@@ -8,7 +8,8 @@ type Residual = { currency: string; decimalPlaces: number; dust: string; recogni
 type Entry = { clearing_id: number; kind: "recognize" | "transfer"; currency_code: string; decimal_places: number; minor_units: number; recipient_user_id: string | null; actor: string; recorded_epoch: number };
 type Position = { currency: string; decimalPlaces: number; position: number; rate: string; previousRate: string | null; pnl: number; baseline: boolean };
 type RevalRun = { run_id: number; kind: "baseline" | "revalue" | "reverse"; period_key: string; currency_code: string; decimal_places: number; position_minor_units: number; rate_text: string; pnl_base_minor_units: number; actor: string; recorded_epoch: number };
-type Overview = { gates: Gate[]; checked: boolean; closeReady: boolean | null; residuals: Residual[]; history: Entry[]; revaluation: { preview: Position[]; history: RevalRun[]; period: string }; baselines: { table: string; label: string; rows: number }[] };
+type Correction = { correction_id: number; run_id: number; revision: number; period_key: string; currency_code: string; decimal_places: number; position_minor_units: number; rate_text: string; pnl_base_minor_units: number; delta_base_minor_units: number; actor: string; recorded_epoch: number };
+type Overview = { gates: Gate[]; checked: boolean; closeReady: boolean | null; residuals: Residual[]; history: Entry[]; revaluation: { preview: Position[]; history: RevalRun[]; corrections?: Correction[]; period: string }; baselines: { table: string; label: string; rows: number }[] };
 /** A stored rate is an exact fraction ("1/120"); show it with six decimals. */
 const rateValue = (text: string) => { const [top, bottom] = text.split("/"); return (Number(top) / Number(bottom ?? 1)).toFixed(6); };
 const RUN_LABEL = { baseline: "기준 저장", revalue: "평가", reverse: "되돌림" } as const;
@@ -84,6 +85,11 @@ export function AccountingClosePage({ ctx }: { ctx: Ctx }) {
         <tbody>{data.revaluation.history.map((run) => <tr key={run.run_id}><td>{date(run.recorded_epoch)}</td><td>{run.period_key}</td><td>{RUN_LABEL[run.kind]}</td>
           <td>{run.currency_code}</td><td>{amount(run.position_minor_units, run.decimal_places)}</td><td>{rateValue(run.rate_text)}</td>
           <td>{run.pnl_base_minor_units ? run.pnl_base_minor_units.toLocaleString("ko-KR") : "—"}</td></tr>)}</tbody></table></div>}
+      {(data.revaluation.corrections ?? []).length > 0 && <div className="scroll-x close-sub"><table>
+        <thead><tr><th>정정 시각</th><th>기간</th><th>통화</th><th>차수</th><th>포지션</th><th>환율</th><th>누적 손익</th><th>이번 차액</th></tr></thead>
+        <tbody>{(data.revaluation.corrections ?? []).map((fix) => <tr key={fix.correction_id}><td>{date(fix.recorded_epoch)}</td><td>{fix.period_key}</td><td>{fix.currency_code}</td>
+          <td>{fix.revision}</td><td>{amount(fix.position_minor_units, fix.decimal_places)}</td><td>{rateValue(fix.rate_text)}</td>
+          <td>{fix.pnl_base_minor_units.toLocaleString("ko-KR")}</td><td>{fix.delta_base_minor_units.toLocaleString("ko-KR")}</td></tr>)}</tbody></table></div>}
     </Card>
 
     <Card title="기준선 현황" caption="근거가 없어 복원하지 못한 과거는 추정하지 않고 기준선으로 따로 기록합니다. 아래는 그 기록이 얼마나 되는지입니다. 건수가 0이면 그 원장은 처음부터 모두 기록으로 이어져 있습니다.">

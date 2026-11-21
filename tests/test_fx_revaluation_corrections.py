@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from managers.accounting_journal import AccountingJournal
 from managers.currency_manager import CurrencyManager
-from managers.fx_revaluation import FxRevaluation
+from managers.fx_revaluation import FxRevaluation, period_key
 from tests.test_fx_revaluation import FxRevaluationTests, T0, DAY
 
 
@@ -58,3 +58,14 @@ class FxRevaluationCorrectionTests(unittest.TestCase):
         with self.db.readonly() as conn:
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM fx_revaluation_corrections').fetchone()[0], 0)
         self.assertEqual(self.run_at(T0 + DAY + 1)[0][1], 'correction')
+
+    def test_corrections_are_listed_for_the_close_screen(self):
+        self.open_position()
+        self.run_at(T0)
+        self.set_rate(1500)
+        self.run_at(T0 + DAY)
+        self.set_rate(1600)
+        self.run_at(T0 + DAY + 1)
+        with self.db.readonly() as conn:
+            rows = FxRevaluation.corrections(conn)
+        self.assertEqual([(r['currency_code'], r['revision'], r['period_key']) for r in rows], [('USD', 1, period_key(T0 + DAY))])

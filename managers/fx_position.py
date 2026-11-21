@@ -185,3 +185,10 @@ class FxPosition:
                 findings.append({'currency': currency, 'status': 'posting_mismatch'})
         return {'period': key, 'status': 'matched' if not findings else 'mismatch', 'findings': findings}
 
+    @staticmethod
+    def corrections(conn, limit=50):
+        """Appended corrections to period runs (newest first), with the run's period and currency."""
+        return [dict(row) for row in conn.execute(
+            "SELECT c.correction_id,c.run_id,c.revision,r.period_key,r.currency_code,c.decimal_places,c.position_minor_units,"
+            "c.rate_text,c.pnl_base_minor_units,c.delta_base_minor_units,c.actor,c.recorded_epoch FROM fx_revaluation_corrections c "
+            "JOIN fx_revaluation_runs r ON r.run_id=c.run_id ORDER BY c.correction_id DESC LIMIT ?", (int(limit),))]

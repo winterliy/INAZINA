@@ -4629,7 +4629,8 @@ def accounting_close_overview(check=False):
         baselines = BaselineReport.collect(conn)
         fx_check = FxRevaluation.close_check(conn)
         revaluation = {"preview": FxRevaluation.preview(conn), "history": FxRevaluation.history(conn),
-                       "period": fx_check['period'], "closeCheck": fx_check}
+                       "period": fx_check['period'], "closeCheck": fx_check,
+                       "corrections": FxRevaluation.corrections(conn)}
         report = AccountingJournal.reconcile_all_financial_ledgers(conn) if check else None
     pending = sum(1 for row in residuals if row["pending"] > 0)
     fx_findings = revaluation["closeCheck"]["findings"]
