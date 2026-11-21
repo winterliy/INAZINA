@@ -6,7 +6,8 @@ import { Field } from "./common";
 type Source = "product" | "stock" | "loan" | "els" | "dividend" | "user" | "country" | "exchange" | "currency";
 type Spec = { key: string; label: string; type?: "text" | "number" | "select"; options?: [string, string][]; source?: Source; optional?: boolean; hint?: string; placeholder?: string };
 type Product = { code: string; name: string; kind: string; status: string };
-type Lookup = { products: Product[]; users: { userId: string; nickname: string }[]; countries: string[]; exchanges: string[]; currencies: string[] };
+type UserHit = { userId: string; nickname: string };
+type Lookup = { products: Product[]; countries: string[]; exchanges: string[]; currencies: string[] };
 
 const OP: [string, string][] = [["add", "더하기 (add)"], ["del", "빼기 (del)"], ["modify", "지정값으로 (modify)"]];
 const MOOD: [string, string][] = [["bull", "강세 (bull)"], ["flat", "보합 (flat)"], ["bear", "약세 (bear)"]];
@@ -67,41 +68,97 @@ export function buildArguments(fields: Spec[], values: Record<string, string>) {
   return fields.map((field) => (values[field.key] ?? "").trim()).filter((value, index) => value || !fields[index].optional).map(quote).join(" ");
 }
 
+const withObject = (label: string) => {
+  const last = label.trim().slice(-1).charCodeAt(0);
+  if (last >= 0xac00 && last <= 0xd7a3) return `${label}${(last - 0xac00) % 28 ? "을" : "를"}`;
+  return `${label}을(를)`;
+};
+
+export type SlotGap = { field: Spec; later: Spec; message: string };
+
+/**
+ * Arguments are positional. If an optional field is empty while a LATER optional field has a value, the later value
+ * would slide into the empty slot and the bot would read it as the wrong argument, so that case is reported here.
+ * (A leading optional field followed only by required fields, like 세율's country, is meant to be dropped.)
+ */
+export function slotGaps(fields: Spec[], values: Record<string, string>): SlotGap[] {
+  const filled = (field: Spec) => (values[field.key] ?? "").trim() !== "";
+  const gaps: SlotGap[] = [];
+  fields.forEach((field, index) => {
+    if (!field.optional || filled(field)) return;
+    const later = fields.slice(index + 1).find((item) => item.optional && filled(item));
+    if (later) gaps.push({ field, later, message: `${withObject(later.label)} 쓰려면 ${field.label}도 입력해야 합니다.` });
+  });
+  return gaps;
+}
+
+// Products, countries and exchanges are the same for every command form: fetch once and share.
+const LOOKUP_TTL = 5 * 60_000;
+let lookupCache: { at: number; value: Lookup } | null = null;
+let lookupRequest: Promise<Lookup> | null = null;
+function loadLookup(): Promise<Lookup> {
+  if (lookupCache && Date.now() - lookupCache.at < LOOKUP_TTL) return Promise.resolve(lookupCache.value);
+  lookupRequest ??= Promise.all([
+    api<{ products: Product[] }>("/api/admin/products?group=market"),
+    api<{ products: Product[] }>("/api/admin/products?group=finance"),
+    api<{ countries: { nationality: string }[] }>("/api/admin/countries"),
+    api<{ exchanges: { exchange_id: string }[] }>("/api/admin/exchanges"),
+  ]).then(([market, finance, countries, exchanges]) => {
+    const value: Lookup = {
+      products: [...market.products, ...finance.products],
+      countries: countries.countries.map((item) => item.nationality), exchanges: exchanges.exchanges.map((item) => item.exchange_id),
+      currencies: finance.products.filter((item) => item.kind === "currency").map((item) => item.code),
+    };
+    lookupCache = { at: Date.now(), value };
+    return value;
+  }).finally(() => { lookupRequest = null; });
+  return lookupRequest;
+}
+const EMPTY_LOOKUP: Lookup = { products: [], countries: [], exchanges: [], currencies: [] };
+
+function initialValues(spec: (typeof COMMAND_FORMS)[string] | undefined, prefill: string) {
+  const defaults: Record<string, string> = Object.fromEntries((spec?.fields ?? []).filter((field) => field.type === "select" && !field.optional).map((field) => [field.key, field.options![0][0]]));
+  // Links from other pages pass the target code; it fills the first free-text field.
+  const target = (spec?.fields ?? []).find((field) => field.type !== "select");
+  if (prefill.trim() && target) defaults[target.key] = prefill.trim();
+  return defaults;
+}
+
 export function CommandForm({ command, usage, prefill, busy, onRun, openProducts }: { command: string; usage: string; prefill: string; busy: boolean; onRun: (args: string) => void; openProducts: (group: "market" | "finance") => void }) {
   const spec = COMMAND_FORMS[command];
-  const [values, setValues] = useState<Record<string, string>>({});
-  const [raw, setRaw] = useState(false);
-  const [rawArgs, setRawArgs] = useState("");
-  const [lookup, setLookup] = useState<Lookup>({ products: [], users: [], countries: [], exchanges: [], currencies: [] });
+  const [values, setValues] = useState<Record<string, string>>(() => initialValues(spec, prefill));
+  const [raw, setRaw] = useState(!spec);
+  const [rawArgs, setRawArgs] = useState(() => spec ? "" : prefill.trim());
+  const [lookup, setLookup] = useState<Lookup>(lookupCache?.value ?? EMPTY_LOOKUP);
+  const [users, setUsers] = useState<UserHit[]>([]);
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      api<{ products: Product[] }>("/api/admin/products?group=market"),
-      api<{ products: Product[] }>("/api/admin/products?group=finance"),
-      api<{ users: { userId: string; nickname: string }[] }>("/api/admin/users?search="),
-      api<{ countries: { nationality: string }[] }>("/api/admin/countries"),
-      api<{ exchanges: { exchange_id: string }[] }>("/api/admin/exchanges"),
-    ]).then(([market, finance, users, countries, exchanges]) => {
-      if (cancelled) return;
-      setLookup({
-        products: [...market.products, ...finance.products], users: users.users,
-        countries: countries.countries.map((item) => item.nationality), exchanges: exchanges.exchanges.map((item) => item.exchange_id),
-        currencies: finance.products.filter((item) => item.kind === "currency").map((item) => item.code),
-      });
-    }).catch(() => undefined);
+    loadLookup().then((value) => { if (!cancelled) setLookup(value); }).catch(() => undefined);
     return () => { cancelled = true; };
   }, []);
 
+  // The command changed or another page passed a new target: start the form over.
   useEffect(() => {
-    const defaults: Record<string, string> = Object.fromEntries((spec?.fields ?? []).filter((field) => field.type === "select" && !field.optional).map((field) => [field.key, field.options![0][0]]));
-    // Links from other pages pass the target code; it fills the first free-text field.
-    const target = (spec?.fields ?? []).find((field) => field.type !== "select");
-    if (prefill.trim() && target) defaults[target.key] = prefill.trim();
-    setValues(defaults);
+    setValues(initialValues(spec, prefill));
     setRawArgs(spec ? "" : prefill.trim());
     setRaw(!spec);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [command, prefill]);
+
+  // Users are searched on the server as the field is typed; the whole user list is never loaded.
+  const userField = spec?.fields.find((field) => field.source === "user");
+  const userTerm = userField ? (values[userField.key] ?? "").trim() : "";
+  useEffect(() => {
+    if (!userTerm) { setUsers([]); return; }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      api<{ users: UserHit[] }>(`/api/admin/users?search=${encodeURIComponent(userTerm)}`, { signal: controller.signal })
+        .then((result) => { if (!controller.signal.aborted) setUsers(result.users.slice(0, 30)); })
+        .catch(() => undefined);
+    }, 250);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [userTerm]);
 
   const options = useMemo(() => ({
     product: lookup.products.filter((item) => !["currency"].includes(item.kind)),
@@ -111,41 +168,52 @@ export function CommandForm({ command, usage, prefill, busy, onRun, openProducts
     dividend: lookup.products.filter((item) => ["stock", "preferred", "asset", "etf", "fund", "indexfund", "commodity"].includes(item.kind)),
   }), [lookup]);
 
-  const args = raw ? rawArgs.trim() : buildArguments(spec?.fields ?? [], values);
+  const fields = spec?.fields ?? [];
+  const gaps = useMemo(() => raw ? [] : slotGaps(fields, values), [raw, fields, values]);
+  const gapOf = (field: Spec) => gaps.find((gap) => gap.field.key === field.key);
+  const args = raw ? rawArgs.trim() : buildArguments(fields, values);
+  const invalid = gaps.length > 0;
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (invalid) return;
     onRun(args);
   }
 
   function input(field: Spec) {
     const value = values[field.key] ?? "";
     const set = (next: string) => setValues({ ...values, [field.key]: next });
+    const bad = gapOf(field) ? true : undefined;
     if (field.type === "select") {
-      return <select value={value} onChange={(event) => set(event.target.value)}>{field.optional && <option value="">선택 안 함</option>}{field.options!.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select>;
+      return <select value={value} aria-invalid={bad} onChange={(event) => set(event.target.value)}>{field.optional && <option value="">선택 안 함</option>}{field.options!.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select>;
     }
     if (field.source === "country" || field.source === "exchange" || field.source === "currency") {
       const list = field.source === "country" ? lookup.countries : field.source === "exchange" ? lookup.exchanges : lookup.currencies;
-      return <select value={value} required={!field.optional} onChange={(event) => set(event.target.value)}><option value="">{field.optional ? (field.source === "exchange" ? "전체 거래소" : "선택 안 함") : "선택하세요"}</option>{list.map((item) => <option key={item} value={item}>{item}</option>)}</select>;
+      return <select value={value} aria-invalid={bad} required={!field.optional} onChange={(event) => set(event.target.value)}><option value="">{field.optional ? (field.source === "exchange" ? "전체 거래소" : "선택 안 함") : "선택하세요"}</option>{list.map((item) => <option key={item} value={item}>{item}</option>)}</select>;
     }
     const listId = field.source ? `command-${field.source}` : undefined;
-    return <input className={field.type === "number" || field.source ? "mono" : undefined} list={listId} inputMode={field.type === "number" ? "decimal" : undefined} value={value} required={!field.optional} placeholder={field.placeholder} onChange={(event) => set(event.target.value)} />;
+    return <input className={field.type === "number" || field.source ? "mono" : undefined} list={listId} inputMode={field.type === "number" ? "decimal" : undefined} value={value} aria-invalid={bad} required={!field.optional} placeholder={field.placeholder} onChange={(event) => set(event.target.value)} />;
   }
 
   return <form onSubmit={submit}>
     {spec?.note && <p className="hint form-note">{spec.note}</p>}
     {(command === "상품생성" || command === "상품수정") && !raw && <div className="actions form-note"><button type="button" className="btn primary small" onClick={() => openProducts("market")}>종목·상품 탭 열기</button><button type="button" className="soft" onClick={() => openProducts("finance")}>금융 상품 탭 열기</button></div>}
-    {!raw && spec && spec.fields.length > 0 && <div className="form-grid">{spec.fields.map((field) => <Field key={field.key} label={field.label} hint={[field.optional ? "선택" : "", field.hint ?? ""].filter(Boolean).join(" · ") || undefined}>{input(field)}</Field>)}</div>}
+    {!raw && spec && fields.length > 0 && <div className="form-grid">{fields.map((field) => <Field key={field.key} label={field.label} error={gapOf(field)?.message} hint={[field.optional ? "선택" : "", field.hint ?? ""].filter(Boolean).join(" · ") || undefined}>{input(field)}</Field>)}</div>}
     {raw && <div className="form-grid"><Field label="인자 직접 입력" wide hint={usage || "인자 없음"}><input className="mono" value={rawArgs} onChange={(event) => setRawArgs(event.target.value)} placeholder={usage || "인자 없음"} /></Field></div>}
+    {!raw && fields.length > 1 && <ol className="slot-chips" aria-label="인자 칸 순서">{fields.map((field, index) => {
+      const value = (values[field.key] ?? "").trim();
+      const gap = gapOf(field);
+      return <li key={field.key} className={gap ? "gap" : undefined}><span className="n">{index + 1}</span><span>{field.label}</span>{value ? <span className="v">{value}</span> : <span className="empty-slot">{gap ? "비어 있음 · 채워야 함" : "비어 있음"}</span>}</li>;
+    })}</ol>}
     <div className="command-bar">
       <code className="mono preview">${command}{args ? ` ${args}` : ""}</code>
       <label className="check"><input type="checkbox" checked={raw} onChange={(event) => setRaw(event.target.checked)} />직접 입력</label>
-      <button className="btn primary" disabled={busy || ((command === "상품생성" || command === "상품수정") && !raw)}>{busy ? "실행 중…" : "실행"}</button>
+      <button className="btn primary" disabled={busy || invalid || ((command === "상품생성" || command === "상품수정") && !raw)} title={invalid ? gaps[0].message : undefined}>{busy ? "실행 중…" : "실행"}</button>
     </div>
     <datalist id="command-product">{options.product.map((item) => <option key={item.code} value={item.code}>{item.name} · {item.kind}{item.status !== "active" ? ` · ${item.status}` : ""}</option>)}</datalist>
     <datalist id="command-stock">{options.stock.map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}</datalist>
     <datalist id="command-loan">{options.loan.map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}</datalist>
     <datalist id="command-els">{options.els.map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}</datalist>
     <datalist id="command-dividend">{options.dividend.map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}</datalist>
-    <datalist id="command-user">{lookup.users.map((item) => <option key={item.userId} value={item.userId}>{item.nickname}</option>)}</datalist>
+    <datalist id="command-user">{users.map((item) => <option key={item.userId} value={item.userId}>{item.nickname}</option>)}</datalist>
   </form>;
 }

@@ -41,3 +41,11 @@ test('home conversion, transfer remainder and betting chips preserve 100경 plus
   assert.equal(moneyMultiply(amount, 3), '3000000000000000003');
   assert.throws(() => moneyDivide(amount, 0));
 });
+
+test('moneyDivideFloor floors, but a price that would floor to 0 stays at one minor unit', () => {
+  assert.equal(moneyDivideFloor('10', 3, 2), '3.33');
+  assert.equal(moneyDivideFloor('0.01', 2, 2), '0.01', 'floor would be 0.00, so the minimum price is kept');
+  assert.equal(moneyDivideFloor('0', 2, 2), '0.01');
+  assert.equal(moneyDivideFloor('10', 0, 2), '0');
+  assert.equal(moneyDivideFloor('10', 1.5, 2), '0');
+});

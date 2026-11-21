@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { formatQuantity } from "./money";
 import "./OwnershipGraph.css";
 
 export type OwnershipGraphData = {
@@ -364,7 +365,7 @@ function Holdings({ graph, onSelectCompany }: { graph?: OwnershipGraphData; onSe
       <button type="button" disabled={!onSelectCompany} onClick={() => onSelectCompany?.(item.code)}>
         <strong>{item.name}</strong>
         <span>경제 {percent(item.equity_percent ?? undefined)} · 의결 {percent(item.voting_percent ?? undefined)}</span>
-        <small>{item.unit === "capital_interest" ? "출자지분" : `${Number(item.shares ?? 0).toLocaleString("ko-KR")}주`}</small>
+        <small>{item.unit === "capital_interest" ? "출자지분" : `${formatQuantity(item.shares ?? 0)}주`}</small>
       </button>
     </li>)}</ul>
   </section>;

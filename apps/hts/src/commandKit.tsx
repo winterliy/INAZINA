@@ -2,6 +2,8 @@ import { formatMoney, minorMoney, type Money } from "../../shared/money";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../../shared/api";
+import type { Instrument, Order, Portfolio } from "./types";
+export type { Instrument, Order, Portfolio } from "./types";
 
 export type Field = { key: string; label: string; kind: string; optional: boolean; hint: string; source: string | null };
 export type Command = { name: string; group: string; description: string; guide: string; fields: Field[]; job: boolean };
@@ -15,11 +17,9 @@ export type Lookups = {
   countries: string[];
 };
 export type Result = { id: number; command: string; message: string; data: unknown; success: boolean; time: number };
-export type Instrument = { code: string; name: string; type: string; price: Money; quote_currency?: string };
-export type Portfolio = { stocks: { code: string; name: string; qty: number }[] };
-export type Order = { order_id: number; asset_code: string; side: string; limit_price: Money; remaining_quantity: number; status: string };
 
 export const READ_ONLY = new Set(["내주문", "호가", "옵션체인", "내복권", "복권결과", "복권규칙", "법정최고이자", "재무"]);
+let resultId = 0;
 export const OPEN = new Set(["open", "partial", "scheduled"]);
 
 // Korean names for the columns that come back from the game's managers.
@@ -132,7 +132,9 @@ export function useCommands({ instruments, portfolio, orders, homeCurrency, onDo
   const [commands, setCommands] = useState<Command[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [lookups, setLookups] = useState<Lookups | null>(null);
-  const [busy, setBusy] = useState(false);
+  // Counts running state-changing calls, so two overlapping calls keep "busy" until both finish.
+  const [pending, setPending] = useState(0);
+  const busy = pending > 0;
   const [error, setError] = useState("");
 
   const load = useCallback(() => api<{ commands: Command[]; lookups: Lookups }>("/api/hts/commands").then((result) => {
@@ -162,17 +164,17 @@ export function useCommands({ instruments, portfolio, orders, homeCurrency, onDo
   async function execute(target: Command, input: Record<string, string>, ask = true): Promise<Result | null> {
     const summary = target.fields.filter((field) => input[field.key] && field.kind !== "password").map((field) => `${field.label}: ${input[field.key]}`).join("\n");
     if (ask && !READ_ONLY.has(target.name) && !window.confirm(`${target.description}\n${summary ? `\n${summary}\n` : ""}\n진행할까요?`)) return null;
-    setBusy(true);
-    setError("");
+    const readOnly = READ_ONLY.has(target.name);
+    if (!readOnly) { setPending((count) => count + 1); setError(""); }
     let entry: Result;
     try {
       const result = await api<{ success: boolean; message: string; data: unknown }>("/api/hts/commands", { method: "POST", body: JSON.stringify({ command: target.name, values: input }) });
-      entry = { id: Date.now(), command: target.name, message: plain(result.message).replace(/^[✅❌⏳⚠️💀🎉]\s*/u, ""), data: result.data, success: result.success, time: Date.now() };
+      entry = { id: ++resultId, command: target.name, message: plain(result.message).replace(/^[✅❌⏳⚠️💀🎉]\s*/u, ""), data: result.data, success: result.success, time: Date.now() };
       if (!READ_ONLY.has(target.name)) { onDone(); void load(); }
     } catch (cause) {
-      entry = { id: Date.now(), command: target.name, message: cause instanceof Error ? cause.message : "요청을 처리하지 못했습니다.", data: null, success: false, time: Date.now() };
+      entry = { id: ++resultId, command: target.name, message: cause instanceof Error ? cause.message : "요청을 처리하지 못했습니다.", data: null, success: false, time: Date.now() };
     } finally {
-      setBusy(false);
+      if (!readOnly) setPending((count) => count - 1);
     }
     return entry;
   }

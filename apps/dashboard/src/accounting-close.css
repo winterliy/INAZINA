@@ -1,4 +1,5 @@
-.close-gates td { padding: 10px 8px; }
+.close-gates { min-width: 0; }
+.close-gates td { padding: 10px 8px; white-space: normal; }
 .close-gates td:last-child { text-align: right; }
 .close-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 14px 0 0; }
 .close-move { width: 120px; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--chip, rgba(0,0,0,.15)); background: var(--surface); color: var(--ink); font: inherit; }

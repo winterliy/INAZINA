@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode, WheelEvent as ReactWheelEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode, WheelEvent as ReactWheelEvent } from "react";
 import { axisWidth, panelHeight, PRICE_LABEL_PX, priceTicks, TIME_LABEL_PX, timeTicks } from "./chartScale";
 
 export type Point = { time: number; price: number };
@@ -10,7 +10,7 @@ type View = { minTime: number; maxTime: number; minPrice: number; maxPrice: numb
 type Gesture =
   | { kind: "pan"; start: { x: number; y: number }; view: View }
   | { kind: "draw"; start: Point }
-  | { kind: "move"; start: Point; drawing: Drawing; anchor: number | null };
+  | { kind: "move"; start: Point; drawing: Drawing; anchor: number | null; before: Drawing[]; moved: boolean };
 
 // The price axis (its width) and the lower panels (their height) are sized per render from chartScale.
 const BOTTOM = 26, TOP = 12, LEFT = 8;
@@ -46,7 +46,7 @@ type Value = { time: number; value: number };
  * Like an HTS, the scales re-plan for the space: price steps for the height, calendar
  * steps for the width, an axis as wide as its labels, and panels sized to the chart.
  */
-export function PriceChart({ points: sourcePoints, candles: sourceCandles, candleInterval, mode, fallbackPrice: sourceFallbackPrice, drawings, onDrawingsChange, tool, onToolChange, resetKey, controls, label, indicators, data, catalog, onIndicatorsChange }: {
+export function PriceChart({ points, candles, candleInterval, mode, fallbackPrice, drawings, onDrawingsChange, tool, onToolChange, resetKey, controls, label, indicators, data, catalog, onIndicatorsChange }: {
   points: Point[]; candles: Candle[]; candleInterval: number; mode: "candle" | "line"; fallbackPrice: number;
   drawings: Drawing[]; onDrawingsChange: (next: Drawing[]) => void; tool: Tool; onToolChange: (tool: Tool) => void;
   resetKey: string; controls: ReactNode; label: string;
@@ -93,25 +93,22 @@ export function PriceChart({ points: sourcePoints, candles: sourceCandles, candl
     if (before === size.w) return;
     setView((current) => {
       if (!current) return current;
-      const span = (current.maxTime - current.minTime) * (size.w - axis - LEFT) / (before - axis - LEFT);
-      return { ...current, minTime: current.maxTime - span, ...fit(current.maxTime - span, current.maxTime) };
+      const span = (current.maxTime - current.minTime) * (size.w - axisRef.current - LEFT) / (before - axisRef.current - LEFT);
+      return { ...current, minTime: current.maxTime - span, ...fitRef.current(current.maxTime - span, current.maxTime) };
     });
-    // fit reads the latest series; only width changes should trigger this.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [size.w]);
 
-  // Chart pixels explicitly approximate exact monetary JSON strings; order inputs retain the originals.
-  const points = useMemo(() => sourcePoints.map((point) => ({ ...point, price: Number(point.price) })), [sourcePoints]);
-  const candles = useMemo(() => sourceCandles.map((candle) => ({ ...candle, open: Number(candle.open), high: Number(candle.high), low: Number(candle.low), close: Number(candle.close) })), [sourceCandles]);
-  const fallbackPrice = Number(sourceFallbackPrice);
+  // Points, candles and the fallback price arrive as numbers (the caller converts the exact money strings once).
   const showCandles = mode === "candle" && candles.length > 0;
   const series = useMemo(() => showCandles ? candles.map((item) => ({ time: item.time, price: item.close }))
     : points.length ? points : [{ time: Date.now() / 1000, price: fallbackPrice || 1 }], [showCandles, candles, points, fallbackPrice]);
   // Wide enough for the largest price this series can show.
   const axis = useMemo(() => axisWidth([money(Math.max(...series.map((item) => item.price)) * 1.1)]), [series]);
+  const axisRef = useRef(axis);
+  axisRef.current = axis;
 
   // Price range fitted to the data inside [minTime, maxTime].
-  function fit(minTime: number, maxTime: number) {
+  const fit = useCallback((minTime: number, maxTime: number) => {
     const inside = showCandles
       ? candles.filter((item) => item.time + candleInterval >= minTime && item.time <= maxTime).flatMap((item) => [item.low, item.high])
       : series.filter((item) => item.time >= minTime && item.time <= maxTime).map((item) => item.price);
@@ -121,7 +118,9 @@ export function PriceChart({ points: sourcePoints, candles: sourceCandles, candl
     if (low === high) { low *= .99; high *= 1.01; }
     const gap = (high - low) * .08;
     return { minPrice: Math.max(0, low - gap), maxPrice: high + gap };
-  }
+  }, [showCandles, candles, series, candleInterval]);
+  const fitRef = useRef(fit);
+  fitRef.current = fit;
 
   // Live view: latest data, as many candles as the width holds at BAR_SPACING.
   const auto = useMemo<View>(() => {
@@ -133,8 +132,7 @@ export function PriceChart({ points: sourcePoints, candles: sourceCandles, candl
       minTime = end - capacity * candleInterval;
     }
     return { minTime, maxTime, ...fit(minTime, maxTime) };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [series, showCandles, candles, candleInterval, size.w, axis]);
+  }, [series, showCandles, candles, candleInterval, size.w, axis, fit]);
   const v = view ?? auto;
 
   // Lower panels stack under the price plot in catalog order, sharing its time axis; the canvas grows per panel.
@@ -193,13 +191,32 @@ export function PriceChart({ points: sourcePoints, candles: sourceCandles, candl
     freeze();
     setSelected(drawing.id);
     const at = local(event);
-    history.current.push(drawings);
-    gesture.current = { kind: "move", start: toPoint(at.x, at.y), drawing, anchor };
+    // The undo step is recorded on the first real movement, so a plain click leaves no history entry.
+    gesture.current = { kind: "move", start: toPoint(at.x, at.y), drawing, anchor, before: drawings, moved: false };
     svgRef.current?.setPointerCapture(event.pointerId);
   }
 
+  // Pointer moves are applied once per animation frame: pan and drag redraw at most at the display rate.
+  const pendingMove = useRef<{ x: number; y: number } | null>(null);
+  const pendingWheel = useRef<{ factor: number; x: number } | null>(null);
+  const frame = useRef(0);
+  const applyRef = useRef<() => void>(() => undefined);
+  const schedule = () => { if (!frame.current) frame.current = requestAnimationFrame(() => { frame.current = 0; applyRef.current(); }); };
+  const flushPending = () => { if (frame.current) { cancelAnimationFrame(frame.current); frame.current = 0; } applyRef.current(); };
+  useEffect(() => () => { if (frame.current) cancelAnimationFrame(frame.current); }, []);
   function move(event: ReactPointerEvent<SVGSVGElement>) {
-    const at = local(event);
+    pendingMove.current = local(event);
+    schedule();
+  }
+  applyRef.current = () => {
+    const wheelStep = pendingWheel.current;
+    pendingWheel.current = null;
+    if (wheelStep) zoom(wheelStep.factor, wheelStep.x);
+    const at = pendingMove.current;
+    pendingMove.current = null;
+    if (at) applyMove(at);
+  };
+  function applyMove(at: { x: number; y: number }) {
     setHover(at);
     const active = gesture.current;
     if (!active) return;
@@ -214,6 +231,7 @@ export function PriceChart({ points: sourcePoints, candles: sourceCandles, candl
       const now = toPoint(at.x, at.y);
       const dt = now.time - active.start.time, dp = now.price - active.start.price;
       const original = active.drawing;
+      if (!active.moved) { active.moved = true; history.current.push(active.before); }
       onDrawingsChange(drawings.map((item) => item.id !== original.id ? item : {
         ...original,
         anchors: original.anchors.map((anchor, index) => active.anchor === null || active.anchor === index
@@ -223,6 +241,8 @@ export function PriceChart({ points: sourcePoints, candles: sourceCandles, candl
   }
 
   function up(event: ReactPointerEvent<SVGSVGElement>) {
+    pendingMove.current = local(event);
+    flushPending();
     const active = gesture.current;
     gesture.current = null;
     if (active?.kind === "draw") {
@@ -239,22 +259,39 @@ export function PriceChart({ points: sourcePoints, candles: sourceCandles, candl
   }
 
   function wheel(event: ReactWheelEvent<SVGSVGElement>) {
-    zoom(event.deltaY > 0 ? 1.15 : 1 / 1.15, local(event).x);
+    const factor = event.deltaY > 0 ? 1.15 : 1 / 1.15;
+    pendingWheel.current = { factor: (pendingWheel.current?.factor ?? 1) * factor, x: local(event).x };
+    schedule();
+  }
+  // Keyboard on the chart: arrows pan, + and - zoom, Home returns to the live view.
+  function chartKey(event: ReactKeyboardEvent<SVGSVGElement>) {
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.key === "ArrowLeft") shift(-1);
+    else if (event.key === "ArrowRight") shift(1);
+    else if (event.key === "+" || event.key === "=") zoom(1 / 1.5);
+    else if (event.key === "-" || event.key === "_") zoom(1.5);
+    else if (event.key === "Home") setView(null);
+    else return;
+    event.preventDefault();
   }
 
   function undo() { const last = history.current.pop(); if (last) onDrawingsChange(last); }
   function remove() { if (!selected) return; commit(drawings.filter((item) => item.id !== selected)); setSelected(""); }
 
+  // One window listener for the chart's lifetime; it always calls the handler of the latest render.
+  const keyHandler = useRef<(event: KeyboardEvent) => void>(() => undefined);
+  keyHandler.current = key;
   useEffect(() => {
-    function key(event: KeyboardEvent) {
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
-      if ((event.key === "Delete" || event.key === "Backspace") && selected) { event.preventDefault(); remove(); }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") { event.preventDefault(); undo(); }
-      if (event.key === "Escape") { gesture.current = null; setDraft(null); onToolChange("select"); }
-    }
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  });
+    const listener = (event: KeyboardEvent) => keyHandler.current(event);
+    window.addEventListener("keydown", listener);
+    return () => window.removeEventListener("keydown", listener);
+  }, []);
+  function key(event: KeyboardEvent) {
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement) return;
+    if ((event.key === "Delete" || event.key === "Backspace") && selected) { event.preventDefault(); remove(); }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") { event.preventDefault(); undo(); }
+    if (event.key === "Escape") { gesture.current = null; setDraft(null); onToolChange("select"); }
+  }
 
   // React's onWheel is passive; a native listener lets the chart zoom without scrolling the page.
   useEffect(() => {
@@ -280,12 +317,11 @@ export function PriceChart({ points: sourcePoints, candles: sourceCandles, candl
   const path = (values: Value[], y: (value: number) => number) => values.filter(near).map((item, index) => `${index ? "L" : "M"}${X(item.time).toFixed(1)},${y(item.value).toFixed(1)}`).join(" ");
 
   // Server series are index-aligned to candles; leading shifts (일목 선행스팬) run past the last candle.
-  const seriesTime = (index: number) => candles.length ? (index < candles.length ? candles[index].time : candles.at(-1)!.time + (index - candles.length + 1) * candleInterval) + candleInterval / 2 : 0;
-  const points2 = (item: Series): Value[] => item.values.flatMap((value, index) => value === null ? [] : [{ time: seriesTime(index), value }]);
+  const seriesTime = useCallback((index: number) => candles.length ? (index < candles.length ? candles[index].time : candles.at(-1)!.time + (index - candles.length + 1) * candleInterval) + candleInterval / 2 : 0, [candles, candleInterval]);
+  const points2 = useCallback((item: Series): Value[] => item.values.flatMap((value, index) => value === null ? [] : [{ time: seriesTime(index), value }]), [seriesTime]);
   const visibleIndex = (index: number) => { const time = seriesTime(index); return time >= v.minTime - span * .1 && time <= v.maxTime + span * .1; };
   const upperSeries = useMemo(() => catalog.upper.filter((item) => indicators.upper.includes(item.key)).flatMap((item) => (data.upper[item.key] ?? []).map((entry) => ({ key: item.key, entry, values: points2(entry) }))),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [catalog, indicators.upper, data, candles, candleInterval]);
+    [catalog, indicators.upper, data, points2]);
   const linePath = showCandles ? "" : series.filter((item) => item.time >= v.minTime - span && item.time <= v.maxTime + span).map((item, index) => `${index ? "L" : "M"}${X(item.time).toFixed(1)},${Y(item.price).toFixed(1)}`).join(" ");
   const candleWidth = Math.max(1, Math.min(28, (candleInterval / span) * (R - LEFT) * .7));
   const hoverPoint = hover && hover.x >= LEFT && hover.x <= R && hover.y >= TOP && hover.y <= B ? toPoint(hover.x, hover.y) : null;
@@ -331,31 +367,32 @@ export function PriceChart({ points: sourcePoints, candles: sourceCandles, candl
   };
 
   // Indicator layers depend on the view and data, not on the pointer: hovering only redraws the crosshair.
-  const viewKey = `${v.minTime}:${v.maxTime}:${v.minPrice}:${v.maxPrice}:${size.w}:${size.h}`;
-  const overlayLayer = useMemo(() => <>
+  // The drawing helpers are re-created every render, so the memo reads the latest ones through a ref
+  // and lists the values that really change the picture.
+  const drawers = useRef({ profileBars, lowerPanel, near, path, X, Y });
+  drawers.current = { profileBars, lowerPanel, near, path, X, Y };
+  const overlayLayer = useMemo(() => { const { profileBars, near, path, X, Y } = drawers.current; return <>
           {indicators.upper.includes("volume_profile") && profileBars()}
           {upperSeries.filter((item) => item.entry.kind !== "profile").map(({ key, entry, values }) => entry.kind === "marker"
             ? <g key={`${key}-${entry.label}`} style={{ fill: entry.color }}>{values.filter(near).map((item) => <circle key={item.time} cx={X(item.time)} cy={Y(item.value)} r={2.4} />)}</g>
             : <path key={`${key}-${entry.label}`} d={path(values, Y)} className="overlay-path" style={{ stroke: entry.color }} />)}
-  </>,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [viewKey, upperSeries, indicators.upper, candles]);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const lowerLayer = useMemo(() => lowers.map(lowerPanel), [viewKey, lowers.join(","), data, candles, candleInterval, catalog]);
+  </>; }, [v, size.w, size.h, upperSeries, indicators.upper, candles]);
+  const lowerKey = lowers.join(",");
+  const lowerLayer = useMemo(() => lowerKey ? lowerKey.split(",").map(drawers.current.lowerPanel) : [], [v, size.w, size.h, lowerKey, data, candles, candleInterval, catalog]);
 
   return <section className="chart-panel">
     <div className="chart-head">
       <div className="segmented">{controls}</div>
       <div className="drawing-tools">
-        <button title="이전 구간" onClick={() => shift(-1)}>←</button>
-        <button title="다음 구간" onClick={() => shift(1)}>→</button>
-        <button title="확대 (휠)" onClick={() => zoom(1 / 1.5)}>＋</button>
-        <button title="축소 (휠)" onClick={() => zoom(1.5)}>－</button>
-        <button className={view ? "live" : "live selected"} title="자동 맞춤 · 최신 시세 따라가기" onClick={() => setView(null)}>{view ? "실시간" : "● 실시간"}</button>
+        <button type="button" title="이전 구간" aria-label="이전 구간" onClick={() => shift(-1)}>←</button>
+        <button type="button" title="다음 구간" aria-label="다음 구간" onClick={() => shift(1)}>→</button>
+        <button type="button" title="확대 (휠)" aria-label="확대" onClick={() => zoom(1 / 1.5)}>＋</button>
+        <button type="button" title="축소 (휠)" aria-label="축소" onClick={() => zoom(1.5)}>－</button>
+        <button type="button" aria-pressed={!view} className={view ? "live" : "live selected"} title="자동 맞춤 · 최신 시세 따라가기" onClick={() => setView(null)}>{view ? "실시간" : "● 실시간"}</button>
         <span className="divider" aria-hidden="true" />
-        <button className={tool === "select" ? "selected" : ""} title="선택 · 선 이동 · 끝점 조절 · 빈 곳 드래그로 이동" onClick={() => onToolChange("select")}>선택</button>
-        <button className={tool === "trend" ? "selected" : ""} title="드래그해서 추세선" onClick={() => onToolChange("trend")}>추세선</button>
-        <button className={tool === "horizontal" ? "selected" : ""} title="클릭한 가격에 수평선" onClick={() => onToolChange("horizontal")}>수평선</button>
+        <button type="button" aria-pressed={tool === "select"} className={tool === "select" ? "selected" : ""} title="선택 · 선 이동 · 끝점 조절 · 빈 곳 드래그로 이동" onClick={() => onToolChange("select")}>선택</button>
+        <button type="button" aria-pressed={tool === "trend"} className={tool === "trend" ? "selected" : ""} title="드래그해서 추세선" onClick={() => onToolChange("trend")}>추세선</button>
+        <button type="button" aria-pressed={tool === "horizontal"} className={tool === "horizontal" ? "selected" : ""} title="클릭한 가격에 수평선" onClick={() => onToolChange("horizontal")}>수평선</button>
         <button title="되돌리기 (Ctrl/⌘+Z)" disabled={!history.current.length} onClick={undo}>되돌리기</button>
         <button title="선택한 선 삭제 (Delete)" disabled={!selected} onClick={remove}>삭제</button>
         <button title="모든 선 삭제" disabled={!drawings.length} onClick={() => { if (window.confirm("이 종목의 차트 선을 모두 삭제할까요?")) { commit([]); setSelected(""); } }}>전체 삭제</button>
@@ -374,7 +411,7 @@ export function PriceChart({ points: sourcePoints, candles: sourceCandles, candl
       </div>
     </div>
     <div className="chart-canvas" ref={wrapRef} style={{ "--lower-panels": lowers.length } as CSSProperties}>
-      <svg ref={svgRef} width={size.w} height={size.h} viewBox={`0 0 ${size.w} ${size.h}`} role="img" aria-label={`${label} 차트`}
+      <svg ref={svgRef} width={size.w} height={size.h} viewBox={`0 0 ${size.w} ${size.h}`} role="img" tabIndex={0} aria-keyshortcuts="ArrowLeft ArrowRight + - Home" aria-label={`${label} 차트 (←→ 이동, +/- 확대·축소, Home 실시간)`} onKeyDown={chartKey}
         className={`chart-svg ${tool !== "select" ? "drawing-mode" : gesture.current?.kind === "pan" ? "panning" : ""}`}
         onPointerDown={down} onMouseDown={(event) => event.preventDefault()} onDragStart={(event) => event.preventDefault()} onPointerMove={move} onPointerUp={up} onPointerCancel={() => { gesture.current = null; setDraft(null); }} onPointerLeave={() => setHover(null)} onWheel={wheel} onDoubleClick={() => setView(null)}>
         <defs><clipPath id="plot"><rect x={LEFT} y={TOP} width={R - LEFT} height={B - TOP} /></clipPath>{lowers.map((key, index) => <clipPath key={key} id={`${key}-plot`}><rect x={LEFT} y={panelTop(index)} width={R - LEFT} height={PANEL_H} /></clipPath>)}</defs>

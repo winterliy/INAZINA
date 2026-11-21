@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api } from "../../shared/api";
 import { Card, number, type Ctx } from "./common";
@@ -26,40 +26,72 @@ function Icon({ size = 15, children }: { size?: number; children: ReactNode }) {
 export function DatabasePage({ ctx }: { ctx: Ctx }) {
   const { busy, run, say, query } = ctx;
   const [tables, setTables] = useState<TableInfo[]>([]);
-  const [table, setTable] = useState("settings");
+  // Table, search and page position live in one state so that changing any of them sends exactly one request.
+  const [view, setView] = useState({ table: "settings", query, offset: 0 });
   const [tablePage, setTablePage] = useState<TablePage | null>(null);
-  const [offset, setOffset] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [reload, setReload] = useState(0);
   const [edits, setEdits] = useState<Record<number, Record<string, string>>>({});
   const [newRow, setNewRow] = useState<Record<string, string> | null>(null);
   const [filter, setFilter] = useState("");
+  const latest = useRef(0);
+  const { table, offset } = view;
 
   const failed = (cause: unknown) => say(cause instanceof Error ? cause.message : "테이블을 불러오지 못했습니다.", true);
-  useEffect(() => { api<{ tables: TableInfo[] }>("/api/admin/db/tables").then((list) => setTables(list.tables)).catch(failed); }, []);
-  const load = useCallback(async () => {
-    setTablePage(await api<TablePage>(`/api/admin/db/tables/${encodeURIComponent(table)}?${new URLSearchParams({ search: query, offset: String(offset) })}`));
+  const dirtyCount = Object.keys(edits).length;
+  /** Unsaved cell edits are lost when the sheet changes, so ask first. */
+  const confirmDiscard = () => !dirtyCount || window.confirm("저장하지 않은 변경이 있습니다. 버리고 이동할까요?");
+  const go = (next: Partial<typeof view>) => {
+    if (!confirmDiscard()) return;
+    setNewRow(null);
     setEdits({});
-  }, [table, query, offset]);
-  useEffect(() => { load().catch(failed); }, [load]);
-  useEffect(() => { setOffset(0); setNewRow(null); }, [table, query]);
+    setView((current) => ({ ...current, offset: 0, ...next }));
+  };
+
+  useEffect(() => { api<{ tables: TableInfo[] }>("/api/admin/db/tables").then((list) => setTables(list.tables)).catch(failed); }, []);
+
+  // The search box belongs to the page header; apply it after a short pause, and not at all if the user keeps their edits.
+  useEffect(() => {
+    if (query === view.query) return;
+    const timer = window.setTimeout(() => {
+      if (!confirmDiscard()) return;
+      setNewRow(null);
+      setEdits({});
+      setView((current) => ({ ...current, query, offset: 0 }));
+    }, 300);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, view.query, dirtyCount]);
+
+  // Only the newest request may update the sheet; older ones are aborted and ignored.
+  useEffect(() => {
+    const id = ++latest.current;
+    const controller = new AbortController();
+    setLoading(true);
+    api<TablePage>(`/api/admin/db/tables/${encodeURIComponent(view.table)}?${new URLSearchParams({ search: view.query, offset: String(view.offset) })}`, { signal: controller.signal })
+      .then((result) => { if (id !== latest.current) return; setTablePage(result); setEdits({}); setLoading(false); })
+      .catch((cause) => { if (controller.signal.aborted || id !== latest.current) return; setLoading(false); failed(cause); });
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, reload]);
+  const load = () => setReload((count) => count + 1);
 
   const tableInfo = tables.find((item) => item.name === table);
   const columnOf = (name: string) => tableInfo?.columns.find((column) => column.name === name);
 
-  function saveRow(row: Row) {
-    const rowid = row.__rowid__!;
+  function saveRow(row: Row, rowid: number) {
     const values = Object.fromEntries(Object.entries(edits[rowid] ?? {}).map(([name, input]) => [name, parseCell(input, columnOf(name))]));
     if (!Object.keys(values).length) return;
     const summary = Object.entries(values).map(([name, value]) => `${name}: ${showCell(row[name])} → ${showCell(value)}`).join("\n");
     if (!window.confirm(`${table} #${rowid} 행을 저장할까요?\n\n${summary}`)) return;
     void run(() => api(`/api/admin/db/tables/${encodeURIComponent(table)}/rows/${rowid}`, { method: "POST", body: JSON.stringify({ values }) }),
-      "행을 저장하지 못했습니다.", () => { say(`${table} #${rowid} 행을 저장했습니다.`); void load(); });
+      "행을 저장하지 못했습니다.", () => { say(`${table} #${rowid} 행을 저장했습니다.`); load(); });
   }
 
-  function deleteRow(row: Row) {
-    const rowid = row.__rowid__!;
+  function deleteRow(rowid: number) {
     if (!window.confirm(`${table} #${rowid} 행을 삭제할까요? 되돌릴 수 없으며 작업 기록에 남습니다.`)) return;
     void run(() => api(`/api/admin/db/tables/${encodeURIComponent(table)}/rows/${rowid}/delete`, { method: "POST" }),
-      "행을 삭제하지 못했습니다.", () => { say(`${table} #${rowid} 행을 삭제했습니다.`); void load(); });
+      "행을 삭제하지 못했습니다.", () => { say(`${table} #${rowid} 행을 삭제했습니다.`); load(); });
   }
 
   function insertRow(event: FormEvent<HTMLFormElement>) {
@@ -72,7 +104,7 @@ export function DatabasePage({ ctx }: { ctx: Ctx }) {
     }
     if (!window.confirm(`${table}에 새 행을 추가할까요?`)) return;
     void run(() => api(`/api/admin/db/tables/${encodeURIComponent(table)}/rows`, { method: "POST", body: JSON.stringify({ values }) }),
-      "행을 추가하지 못했습니다.", () => { setNewRow(null); say(`${table}에 행을 추가했습니다.`); void load(); });
+      "행을 추가하지 못했습니다.", () => { setNewRow(null); say(`${table}에 행을 추가했습니다.`); load(); });
   }
 
   const shownTables = tables.filter((item) => item.name.toLowerCase().includes(filter.trim().toLowerCase()));
@@ -90,7 +122,7 @@ export function DatabasePage({ ctx }: { ctx: Ctx }) {
         <input type="search" aria-label="테이블 이름 필터" placeholder={`테이블 ${number(tables.length)}개`} value={filter} onChange={(event) => setFilter(event.target.value)} />
       </label>
       <div className="db-table-list">
-        {shownTables.map((item) => <button key={item.name} type="button" className="db-table" aria-current={item.name === table ? "true" : undefined} onClick={() => setTable(item.name)}>
+        {shownTables.map((item) => <button key={item.name} type="button" className="db-table" aria-current={item.name === table ? "true" : undefined} onClick={() => { if (item.name !== table) go({ table: item.name }); }}>
           <span className="mono">{item.name}</span>
           <small>{item.editable ? `${item.columns.length}열` : <><Icon size={11}><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></Icon>읽기 전용</>}</small>
         </button>)}
@@ -112,9 +144,9 @@ export function DatabasePage({ ctx }: { ctx: Ctx }) {
         <div className="db-actions">
           <button className={newRow ? "outline" : "btn primary"} type="button" disabled={busy || !tablePage?.editable} onClick={() => setNewRow(newRow ? null : {})}>{newRow ? "추가 취소" : "행 추가"}</button>
           <div className="db-pager" role="group" aria-label="페이지">
-            <button type="button" aria-label="이전 페이지" disabled={busy || first <= 1} onClick={() => setOffset(Math.max(0, offset - pageSize))}>‹</button>
+            <button type="button" aria-label="이전 페이지" disabled={busy || loading || first <= 1} onClick={() => go({ offset: Math.max(0, offset - pageSize) })}>‹</button>
             <span className="mono">{number(first)}–{number(last)}</span>
-            <button type="button" aria-label="다음 페이지" disabled={busy || !tablePage || last >= tablePage.total} onClick={() => setOffset(offset + pageSize)}>›</button>
+            <button type="button" aria-label="다음 페이지" disabled={busy || loading || !tablePage || last >= tablePage.total} onClick={() => go({ offset: offset + pageSize })}>›</button>
           </div>
         </div>
       </header>
@@ -144,32 +176,36 @@ export function DatabasePage({ ctx }: { ctx: Ctx }) {
             {tablePage?.editable && <th className="db-row-actions" aria-label="행 작업" />}
           </tr></thead>
           <tbody>
-            {tablePage?.rows.map((row) => {
-              const rowid = row.__rowid__ ?? -1;
-              const rowEdits = edits[rowid] ?? {};
-              const dirty = rowid in edits;
-              return <tr key={rowid} className={dirty ? "dirty" : undefined}>
-                <td className="db-rowid mono">{rowid >= 0 ? rowid : "—"}</td>
+            {tablePage?.rows.map((row, position) => {
+              // A row the server gave no id for cannot be addressed, so it is shown read-only.
+              const rowid = typeof row.__rowid__ === "number" ? row.__rowid__ : null;
+              const editable = tablePage.editable && rowid !== null;
+              const rowEdits = rowid !== null ? edits[rowid] ?? {} : {};
+              const dirty = rowid !== null && rowid in edits;
+              return <tr key={rowid ?? `row-${position}`} className={dirty ? "dirty" : undefined}>
+                <td className="db-rowid mono">{rowid ?? "—"}</td>
                 {tablePage.columns.map((column) => {
                   const edited = column.name in rowEdits;
                   const isNull = row[column.name] === null && !edited;
                   const value = edited ? rowEdits[column.name] : showCell(row[column.name]);
                   return <td key={column.name} className={edited ? "edited" : isNull ? "null" : undefined}>
-                    {tablePage.editable
+                    {editable
                       ? <input aria-label={`${rowid} ${column.name}`} className="mono" value={value} onChange={(event) => setEdits({ ...edits, [rowid]: { ...rowEdits, [column.name]: event.target.value } })} />
                       : <span className="mono">{value}</span>}
                   </td>;
                 })}
                 {tablePage.editable && <td className="db-row-actions">
-                  <button type="button" className="db-icon save" aria-label={`${rowid} 행 저장`} title="저장" disabled={busy || !dirty} onClick={() => saveRow(row)}><Icon><path d="M5 12.5l4.5 4.5L19 7.5" /></Icon></button>
-                  <button type="button" className="db-icon" aria-label={`${rowid} 행 변경 취소`} title="변경 취소" disabled={busy || !dirty} onClick={() => dropEdits(rowid)}><Icon><path d="M9 14L4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" /></Icon></button>
-                  <button type="button" className="db-icon danger" aria-label={`${rowid} 행 삭제`} title="삭제" disabled={busy} onClick={() => deleteRow(row)}><Icon><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" /></Icon></button>
+                  {editable ? <>
+                    <button type="button" className="db-icon save" aria-label={`${rowid} 행 저장`} title="저장" disabled={busy || loading || !dirty} onClick={() => saveRow(row, rowid)}><Icon><path d="M5 12.5l4.5 4.5L19 7.5" /></Icon></button>
+                    <button type="button" className="db-icon" aria-label={`${rowid} 행 변경 취소`} title="변경 취소" disabled={busy || !dirty} onClick={() => dropEdits(rowid)}><Icon><path d="M9 14L4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" /></Icon></button>
+                    <button type="button" className="db-icon danger" aria-label={`${rowid} 행 삭제`} title="삭제" disabled={busy || loading} onClick={() => deleteRow(rowid)}><Icon><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" /></Icon></button>
+                  </> : <small className="mono" title="이 행은 식별 번호가 없어 편집할 수 없습니다">편집 불가</small>}
                 </td>}
               </tr>;
             })}
           </tbody>
         </table>
-        {tablePage && !tablePage.rows.length && <p className="empty">{query ? "검색과 일치하는 행이 없습니다." : "행이 없습니다."}</p>}
+        {tablePage && !tablePage.rows.length && <p className="empty">{view.query ? "검색과 일치하는 행이 없습니다." : "행이 없습니다."}</p>}
       </div>
 
       {editedRows.length > 0 && <div className="db-pending" role="status">

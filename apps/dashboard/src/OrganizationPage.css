@@ -32,6 +32,3 @@
 .organization-layout label, .organization-inset label, .card-body > .organization-form-row label { display: grid; gap: 6px; color: var(--ink2); font-size: 13px; font-weight: 500; }
 .organization-inset label select, .organization-inset label input { color: var(--ink); font-weight: 400; }
 .organization-inset select { min-height: 38px; font-size: 14px; }
-.card-body .soft { color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); font-weight: 400; }
-.card-body .soft:hover:not(:disabled) { color: var(--ink); background: transparent; box-shadow: inset 0 0 0 1px var(--ink2); }
-.card-body .soft:disabled { opacity: .45; }

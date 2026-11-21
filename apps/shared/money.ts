@@ -59,7 +59,12 @@ export function moneyMultiply(a: Money, b: Money): string {
   const left = parseMoney(a), right = parseMoney(b);
   return decimal({ units: left.units * right.units, scale: left.scale + right.scale });
 }
-/** Positive price division, rounded down once at the currency boundary. */
+/**
+ * Positive price division, rounded down once at the currency boundary, but never below one minor unit:
+ * a positive price whose floor would be 0 comes back as the smallest price (1 minor unit), because a
+ * listed price of 0 is not valid. A non-positive or non-integer divisor returns "0". Callers: the
+ * dashboard's reverse-split price preview (CompaniesPage.tsx).
+ */
 export function moneyDivideFloor(value: Money, divisor: number, places: number): string {
   if (!Number.isSafeInteger(divisor) || divisor <= 0) return "0";
   const parsed = parseMoney(value);

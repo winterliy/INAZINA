@@ -1754,6 +1754,75 @@ def execute_order(user_id, payload):
     return success, message
 
 
+ORDER_REQUEST_TTL = 24 * 3600     # a finished order's key is remembered this long, so a late retry replays it
+ORDER_REQUEST_PENDING_TTL = 120   # a claim whose order never finished (crash) is forgotten after this
+_ORDER_REQUEST_KEY = re.compile(r"[A-Za-z0-9_-]{8,64}")
+
+
+class OrderInProgress(Exception):
+    """The same clientOrderId is still being processed."""
+
+
+def ensure_order_requests_table(connection):
+    connection.execute("""CREATE TABLE IF NOT EXISTS web_order_requests (
+        user_id TEXT NOT NULL, client_order_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
+        state TEXT NOT NULL, message TEXT NOT NULL, created_epoch INTEGER NOT NULL,
+        PRIMARY KEY(user_id, client_order_id))""")
+
+
+def _forget_order_request(user_id, key):
+    with connect_db(timeout=5) as connection:
+        connection.execute("DELETE FROM web_order_requests WHERE user_id=? AND client_order_id=?", (user_id, key))
+
+
+def execute_order_once(user_id, payload):
+    """execute_order with an optional ``clientOrderId`` idempotency key.
+
+    Returns (success, message, replayed). A key that already produced an accepted order replays that answer instead of
+    placing a second order; a key still being processed raises OrderInProgress. Rejected orders forget the key, so the
+    user can fix the cause and send again with the same key. Without a key this is plain execute_order."""
+    key = payload.get("clientOrderId") if isinstance(payload, dict) else None
+    if key is None:
+        return (*execute_order(user_id, payload), False)
+    if not isinstance(key, str) or not _ORDER_REQUEST_KEY.fullmatch(key):
+        raise ValueError("주문 요청 번호를 확인해주세요.")
+    fingerprint = json.dumps([payload.get(name) for name in ("assetCode", "side", "quantity", "limitPrice", "orderType")],
+                             separators=(",", ":"), default=str)
+    now = int(time.time())
+    try:
+        with connect_db(timeout=5) as connection:
+            ensure_order_requests_table(connection)
+            connection.execute(
+                "DELETE FROM web_order_requests WHERE (state='done' AND created_epoch<?) OR (state='pending' AND created_epoch<?)",
+                (now - ORDER_REQUEST_TTL, now - ORDER_REQUEST_PENDING_TTL))
+            connection.execute(
+                "INSERT INTO web_order_requests(user_id,client_order_id,fingerprint,state,message,created_epoch) "
+                "VALUES (?,?,?,'pending','',?)", (user_id, key, fingerprint, now))
+    except sqlite3.IntegrityError:
+        with connect_db(timeout=5) as connection:
+            row = connection.execute(
+                "SELECT fingerprint,state,message FROM web_order_requests WHERE user_id=? AND client_order_id=?",
+                (user_id, key)).fetchone()
+        if row and row["fingerprint"] != fingerprint:
+            raise ValueError("같은 주문 요청 번호로 다른 주문을 보낼 수 없습니다.") from None
+        if row and row["state"] == "done":
+            return True, row["message"], True
+        raise OrderInProgress() from None
+    try:
+        success, message = execute_order(user_id, payload)
+    except BaseException:
+        _forget_order_request(user_id, key)
+        raise
+    if success:
+        with connect_db(timeout=5) as connection:
+            connection.execute(
+                "UPDATE web_order_requests SET state='done',message=? WHERE user_id=? AND client_order_id=?",
+                (str(message), user_id, key))
+    else:
+        _forget_order_request(user_id, key)
+    return success, message, False
+
+
 def cancel_order(user_id, order_id):
     success, message = domain().order_book.cancel_order(user_id, order_id)
     return success, message
@@ -2518,7 +2587,8 @@ def admin_command_catalog():
 
 # Tables the dashboard must never expose or edit: credentials, the audit trail
 # itself, and per-user web state.
-DB_EDITOR_HIDDEN = {"web_auth_credentials", "admin_audit", "admin_audit_delete_grant", "web_chart_drawings"}
+DB_EDITOR_HIDDEN = {"web_auth_credentials", "admin_audit", "admin_audit_delete_grant", "web_chart_drawings",
+                    "web_order_requests"}
 DB_EDITOR_PAGE_SIZE = 50
 DB_VALUE_TYPES = (str, int, float, type(None))
 # Secrets stay hidden in the editor and the audit trail; they can still be overwritten.
@@ -6123,10 +6193,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {"user": change_password(user["userId"], payload.get("password"), payload.get("newPassword"))})
             elif path == "/internal/market/orders":
                 trader = trading_user_id(user["userId"])
-                success, message = execute_order(trader, payload)
-                if success:
-                    _read_cache.invalidate(("portfolio", trader), ("orders", trader))
-                self.send_json(200 if success else 400, {"success": success, "message": message})
+                try:
+                    success, message, replayed = execute_order_once(trader, payload)
+                except OrderInProgress:
+                    self.send_json(409, {"success": False, "message": "같은 주문을 처리하고 있습니다. 잠시 후 주문 내역을 확인해주세요."})
+                else:
+                    if success:
+                        _read_cache.invalidate(("portfolio", trader), ("orders", trader))
+                    self.send_json(200 if success else 400, {"success": success, "message": message,
+                                                             **({"replayed": True} if replayed else {})})
             elif path.startswith("/internal/market/orders/") and path.endswith("/cancel"):
                 order_id = int(path.removeprefix("/internal/market/orders/").removesuffix("/cancel"))
                 trader = trading_user_id(user["userId"])

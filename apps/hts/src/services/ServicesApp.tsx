@@ -1,4 +1,5 @@
 import type { Money } from "../../../shared/money";
+import { ErrorBoundary } from "../ErrorBoundary";
 import { useCommands, type Instrument, type Order, type Portfolio } from "../commandKit";
 import { BankPage } from "./BankPage";
 import { CasinoPage } from "./CasinoPage";
@@ -27,6 +28,6 @@ export function ServicesApp({ path, instruments, portfolio, orders, userId, home
     <ServiceNav here={path} />
     <header className="svc-head"><h1>{service.label}</h1><p>{service.description}</p></header>
     {kit.error && <p className="account-error" role="alert">{kit.error}</p>}
-    {!kit.loaded ? <p className="svc-empty">불러오는 중…</p> : <Page kit={kit} cash={cash} userId={userId} homeCurrency={homeCurrency} homeDigits={homeDigits} creditScore={creditScore} accounts={accounts} orders={orders} />}
+    {!kit.loaded ? <p className="svc-empty">불러오는 중…</p> : <ErrorBoundary label={service.label} resetKey={path}><Page kit={kit} cash={cash} userId={userId} homeCurrency={homeCurrency} homeDigits={homeDigits} creditScore={creditScore} accounts={accounts} orders={orders} /></ErrorBoundary>}
   </main>;
 }

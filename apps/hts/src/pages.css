@@ -11,7 +11,7 @@
   min-height: 100vh; color: var(--bg-ink); background: #fff; font-family: var(--bg-font); letter-spacing: -.01em;
 }
 :is(.portfolio-page-shell, .heatmap-page-shell) > :is(.wall, .blob) { display: none; }
-.up { color: var(--bg-up) !important; } .down { color: var(--bg-down) !important; }
+:is(.portfolio-page-shell, .heatmap-page-shell) .up { color: var(--bg-up) !important; } :is(.portfolio-page-shell, .heatmap-page-shell) .down { color: var(--bg-down) !important; }
 
 .bg-page { padding-left: 250px; }
 
@@ -139,7 +139,6 @@ button.bg-row:hover, button.bg-row:focus-visible { background: #f6f7f9; }
 .bg-heat .bg-tile:hover:not(:disabled), .bg-heat .bg-tile:focus-visible { transform: translateY(-2px); color: #fff; background: rgb(var(--tint) / var(--heat-alpha)); box-shadow: 0 10px 20px -10px rgb(var(--tint) / .7); }
 .bg-heat .bg-tile.neutral:hover:not(:disabled), .bg-heat .bg-tile.neutral:focus-visible { color: var(--bg-ink); background: var(--bg-panel); box-shadow: none; }
 
-:where(.bg-page) :focus-visible { outline: 2px solid var(--bg-orange); outline-offset: 2px; }
 
 @media (max-width: 900px) {
   .bg-page { padding-left: 0; }

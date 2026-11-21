@@ -3,16 +3,19 @@ import type { FormEvent } from "react";
 import { api } from "../../../shared/api";
 import { formatMoneyFixed, moneyCompare, type Money } from "../../../shared/money";
 import { accountBalance, depositLabel, kindRule, type Result } from "../commandKit";
+import { tabListKeys } from "../tabKeys";
 import { Outcome, won, type ServiceProps } from "./ServiceKit";
 
 type Tab = "accounts" | "savings" | "loans";
 type Open = { kind: "join" | "close" | "borrow" | "repay"; key: string } | null;
 type WalletEvent = { entryId: number; epoch: number; currency: string; decimalPlaces: number; amount: Money; balance: Money; label: string; detail: string; counterpart: string | null; counterpartUserId: string | null };
 
-function WalletStatement({ sourceType, sourceAccount }: { sourceType: "cash" | "account"; sourceAccount: string }) {
+function WalletStatement({ sourceType, sourceAccount, refreshKey }: { sourceType: "cash" | "account"; sourceAccount: string; refreshKey: number }) {
   const [open, setOpen] = useState(false);
   const [events, setEvents] = useState<WalletEvent[] | null>(null);
   const [error, setError] = useState("");
+  // A finished deposit, withdrawal or repayment makes the cached statement stale.
+  useEffect(() => { setEvents(null); setError(""); }, [refreshKey]);
   useEffect(() => {
     if (!open || events) return;
     let cancelled = false;
@@ -47,6 +50,7 @@ export function BankPage({ kit, userId, cash, homeCurrency, homeDigits, creditSc
   const [open, setOpen] = useState<Open>(null);
   const [form, setForm] = useState<Record<string, string>>({});
   const [result, setResult] = useState<Result | null>(null);
+  const [statementKey, setStatementKey] = useState(0);
   const lookups = kit.lookups;
   const accounts = lookups?.accounts ?? [];
   const loans = lookups?.loans ?? [];
@@ -58,28 +62,28 @@ export function BankPage({ kit, userId, cash, homeCurrency, homeDigits, creditSc
   }
   function submit(event: FormEvent<HTMLFormElement>, name: string, values: Record<string, string>) {
     event.preventDefault();
-    void kit.run(name, values).then((next) => { if (next) setResult(next); if (next?.success) setForm({}); });
+    void kit.run(name, values).then((next) => { if (next) setResult(next); if (next?.success) { setForm({}); setStatementKey((key) => key + 1); } });
   }
   const field = (key: string, label: string, props: Record<string, unknown> = {}) => <label className="svc-field">{label}<input value={form[key] ?? ""} onChange={(event) => setForm({ ...form, [key]: event.target.value })} {...props} /></label>;
 
   return <div className="svc-bank">
-    <div className="svc-tabs" role="tablist" aria-label="은행 메뉴">
-      {([["accounts", `내 통장 ${accounts.length}`], ["savings", "예금 · 적금"], ["loans", `대출${loans.length ? ` ${loans.length}` : ""}`]] as const).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => { setTab(id); toggle(null); }}>{label}</button>)}
+    <div className="svc-tabs" role="tablist" aria-label="은행 메뉴" onKeyDown={tabListKeys}>
+      {([["accounts", `내 통장 ${accounts.length}`], ["savings", "예금 · 적금"], ["loans", `대출${loans.length ? ` ${loans.length}` : ""}`]] as const).map(([id, label]) => <button key={id} type="button" role="tab" id={`bank-tab-${id}`} aria-controls="bank-panel" tabIndex={tab === id ? 0 : -1} aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => { setTab(id); toggle(null); }}>{label}</button>)}
     </div>
 
-    {tab === "accounts" && <section className="svc-list">
+    {tab === "accounts" && <section id="bank-panel" role="tabpanel" aria-labelledby={`bank-tab-${tab}`} className="svc-list">
       <article className="svc-row-card">
         <div><small>현금 지갑 · 기본 계정</small><b className="mono">{userId}</b></div>
         <strong>{won(cash, homeDigits)} <small>{homeCurrency}</small></strong>
         <span className="svc-wallet-kind">유저 ID 지갑</span>
-        <WalletStatement sourceType="cash" sourceAccount={userId} />
+        <WalletStatement sourceType="cash" sourceAccount={userId} refreshKey={statementKey} />
       </article>
       {accounts.map((account) => <article key={account.account_number} className="svc-row-card">
         <div><small>{depositLabel(account.quote_currency, homeCurrency, { ...lookups?.savingProducts?.find((item) => item.code === account.product_code), account_kind: account.account_kind ?? lookups?.savingProducts?.find((item) => item.code === account.product_code)?.account_kind })} · {account.product_code}</small><b className="mono">{account.account_number}</b></div>
         <strong>{won(accountBalance(account), 2)} <small>{account.quote_currency}</small></strong>
         {account.account_kind === "combined" && <p className="svc-hint">마이너스 사용 {won((account.overdraft_units ?? 0) / 1e6, 2)} / 한도 {won((account.overdraft_limit_units ?? 0) / 1e6, 2)} {account.quote_currency}</p>}
         <div className="svc-row-actions"><a href={`/transfer`}>이체</a><button type="button" onClick={() => toggle({ kind: "close", key: account.account_number })}>해지</button></div>
-        <WalletStatement sourceType="account" sourceAccount={account.account_number} />
+        <WalletStatement sourceType="account" sourceAccount={account.account_number} refreshKey={statementKey} />
         {open?.kind === "close" && open.key === account.account_number && <form className="svc-inline" onSubmit={(event) => submit(event, "계좌해지", { account: account.account_number, password: form.password ?? "", destination: form.destination ?? "" })}>
           {field("password", "계좌 비밀번호", { type: "password", required: true, autoComplete: "off" })}
           <label className="svc-field">잔액 받을 곳<select value={form.destination ?? ""} onChange={(event) => setForm({ ...form, destination: event.target.value })}><option value="">내 지갑</option>{accounts.filter((other) => other.account_number !== account.account_number).map((other) => <option key={other.account_number} value={other.account_number}>{other.product_code} {other.account_number}</option>)}</select></label>
@@ -91,7 +95,7 @@ export function BankPage({ kit, userId, cash, homeCurrency, homeDigits, creditSc
       {!accounts.length && <div className="svc-empty"><b>아직 통장이 없습니다.</b><button type="button" onClick={() => setTab("savings")}>예금 · 적금 둘러보기</button></div>}
     </section>}
 
-    {tab === "savings" && <section className="svc-products">
+    {tab === "savings" && <section id="bank-panel" role="tabpanel" aria-labelledby={`bank-tab-${tab}`} className="svc-products">
       {(lookups?.savingProducts ?? []).map((product) => <article key={product.code} className={open?.key === product.code ? "svc-product open" : "svc-product"}>
         <small>{depositLabel(product.quote_currency, homeCurrency, product)}</small>
         <h3>{product.name}</h3>
@@ -108,7 +112,7 @@ export function BankPage({ kit, userId, cash, homeCurrency, homeDigits, creditSc
       {!lookups?.savingProducts.length && <p className="svc-empty">가입할 수 있는 상품이 없습니다.</p>}
     </section>}
 
-    {tab === "loans" && <>
+    {tab === "loans" && <div id="bank-panel" role="tabpanel" aria-labelledby={`bank-tab-${tab}`}>
       {loans.length > 0 && <section className="svc-list"><h3 className="svc-section-title">이용 중인 대출</h3>{loans.map((loan) => <article key={loan.loan_id} className="svc-row-card">
         <div><small>대출 #{loan.loan_id} · {loan.product_code}</small><b>남은 원금</b></div>
         <strong>{won(loan.outstanding_balance, 2)} <small>{loan.quote_currency}</small></strong>
@@ -137,6 +141,6 @@ export function BankPage({ kit, userId, cash, homeCurrency, homeDigits, creditSc
           </form>}
         </article>;
       })}</section>
-    </>}
+    </div>}
   </div>;
 }

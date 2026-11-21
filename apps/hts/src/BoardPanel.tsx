@@ -4,6 +4,7 @@ import type { FormEvent } from "react";
 import { api, type ApiUser } from "../../shared/api";
 import { DateTimePicker } from "./DateTimePicker";
 import { PlazaLogo } from "./PlazaLogo";
+import { safeUrl, tabListKeys } from "./tabKeys";
 import { BoardAccount, loadBoardDefaults, type BoardDefaults } from "./BoardAccount";
 
 type Category = { category_id: number; name: string };
@@ -118,15 +119,23 @@ export function BoardPanel({ user, initialAsset = "", onLogin, onLogout }: { use
 
   // Bumped to reload the list after writing, even when the board and page stay the same.
   const [reloadKey, setReloadKey] = useState(0);
+  const listSeq = useRef(0);
+  const openSeq = useRef(0);
   const loadList = useCallback(async () => {
+    const seq = ++listSeq.current;
     const query = new URLSearchParams({ page: String(page) });
     if (board) query.set("board", board);
     if (category) query.set("category", String(category));
     if (asset) query.set("asset", asset);
     if (term) query.set("search", term);
-    setList(await api<Page>(`/api/board/posts?${query}`));
+    const result = await api<Page>(`/api/board/posts?${query}`);
+    // A slower, older request must not overwrite the list of the board now on screen.
+    if (seq === listSeq.current) setList(result);
   }, [board, category, asset, term, page, reloadKey]);
-  useEffect(() => { loadList().catch((cause) => setError(errorText(cause))); }, [loadList]);
+  useEffect(() => {
+    const seq = listSeq.current + 1;
+    loadList().catch((cause) => { if (seq === listSeq.current) setError(errorText(cause)); });
+  }, [loadList]);
   // The open post or draft sits above the list, as on gallery boards: bring it into view.
   const mainRef = useRef<HTMLDivElement>(null);
   const shown = draft ? `draft:${draft.postId ?? "new"}` : post ? `post:${post.post_id}` : "";
@@ -145,8 +154,12 @@ export function BoardPanel({ user, initialAsset = "", onLogin, onLogout }: { use
   async function open(postId: number) {
     setError("");
     setAccountOpen(false);
-    try { setPost((await api<{ post: Post }>(`/api/board/posts/${postId}`)).post); setDraft(null); }
-    catch (cause) { setError(errorText(cause)); }
+    const seq = ++openSeq.current;
+    try {
+      const opened = (await api<{ post: Post }>(`/api/board/posts/${postId}`)).post;
+      if (seq !== openSeq.current) return;
+      setPost(opened); setDraft(null);
+    } catch (cause) { if (seq === openSeq.current) setError(errorText(cause)); }
   }
 
   // Runs a write; a visitor is sent to the login screen instead.
@@ -163,13 +176,15 @@ export function BoardPanel({ user, initialAsset = "", onLogin, onLogout }: { use
   function submitDraft(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!draft) return;
+    const badLink = draft.links.find((link) => link.url.trim() && !safeUrl(link.url));
+    if (badLink) { setError("링크는 http:// 또는 https://로 시작하는 주소만 쓸 수 있습니다."); return; }
     const poll = draft.poll && !draft.postId ? {
       question: draft.poll.question, options: draft.poll.options.map((option) => option.trim()).filter(Boolean),
       anonymous: draft.poll.anonymous, multiple: draft.poll.multiple,
       closesEpoch: draft.poll.closes } : undefined;
     const body = { board: draft.board, categoryId: draft.categoryId, title: draft.title, body: draft.body,
       assetCode: boardInfo(draft.board)?.allow_asset ? draft.assetCode.trim() : "", anonymous: draft.anonymous, secret: draft.secret, pinned: draft.pinned, notice: draft.notice,
-      attachments: draft.uploads.map((item) => item.attachmentId), links: draft.links.filter((link) => link.url.trim()), removeAttachments: draft.remove, ...(poll ? { poll } : {}),
+      attachments: draft.uploads.map((item) => item.attachmentId), links: draft.links.filter((link) => link.url.trim()).map((link) => ({ ...link, url: link.url.trim() })), removeAttachments: draft.remove, ...(poll ? { poll } : {}),
       ...(draft.news && !draft.postId ? { news: { eventType: draft.news.eventType, severity: Math.round(Number(draft.news.severity)), durationSeconds: Math.round(Number(draft.news.minutes) * 60),
         targetPrice: draft.news.targetPrice.trim() ? exactMoney(draft.news.targetPrice) : null, publishEpoch: draft.news.publish } } : {}) };
     if (draft.postId) void write(`/api/board/posts/${draft.postId}/edit`, body, async () => { await open(draft.postId!); setReloadKey((key) => key + 1); });
@@ -209,7 +224,8 @@ export function BoardPanel({ user, initialAsset = "", onLogin, onLogout }: { use
     if (!user) { onLogin(); return; }
     const reason = window.prompt("신고 사유를 적어 주세요. (300자 이내)");
     if (!reason?.trim()) return;
-    void write("/api/board/reports", { ...target, reason }, () => window.alert("신고를 접수했습니다. 3명 이상이 신고하면 관리자 확인 전까지 숨겨집니다."));
+    if (reason.trim().length > 300) { setError("신고 사유는 300자 이내로 적어 주세요."); return; }
+    void write("/api/board/reports", { ...target, reason: reason.trim() }, () => window.alert("신고를 접수했습니다. 3명 이상이 신고하면 관리자 확인 전까지 숨겨집니다."));
   }
 
   function startDraft(existing?: Post) {
@@ -326,7 +342,7 @@ export function BoardPanel({ user, initialAsset = "", onLogin, onLogout }: { use
         </li>)}</ul>
       </section>}
       <nav className="plaza-boards plaza-gnb" aria-label="게시판 목록">
-          <div className="board-tabs" role="tablist" aria-label="게시판">{[{ board_id: "", name: "전체" }, ...boards].map((item) => <button key={item.board_id || "all"} type="button" role="tab" aria-selected={board === item.board_id} className={board === item.board_id ? "active" : ""} onClick={() => { setBoard(item.board_id); setAdminPostsBoard(""); setCategory(null); setPage(1); if (!boardInfo(item.board_id)?.allow_asset) setAsset(""); }}>{boardInfo(item.board_id)?.secret ? "🔒 " : ""}{item.name}</button>)}</div>
+          <div className="board-tabs" role="tablist" aria-label="게시판" onKeyDown={tabListKeys}>{[{ board_id: "", name: "전체" }, ...boards].map((item) => <button key={item.board_id || "all"} type="button" role="tab" tabIndex={board === item.board_id ? 0 : -1} aria-selected={board === item.board_id} className={board === item.board_id ? "active" : ""} onClick={() => { setBoard(item.board_id); setAdminPostsBoard(""); setCategory(null); setPage(1); if (!boardInfo(item.board_id)?.allow_asset) setAsset(""); }}>{boardInfo(item.board_id)?.secret ? "🔒 " : ""}{item.name}</button>)}</div>
       </nav>
       <div className="board-body plaza-body">
         <div className="plaza-center">
@@ -350,7 +366,7 @@ export function BoardPanel({ user, initialAsset = "", onLogin, onLogout }: { use
               <label className="board-file">파일 추가 <small>10MB 이하 · 글당 5개 · pdf, 이미지, 문서, zip 등</small><input type="file" multiple disabled={busy} onChange={(event) => { void uploadFiles(event.target.files); event.target.value = ""; }} /></label>
               {draft.links.map((link, index) => <div className="board-link-row" key={index}>
                 <input placeholder="링크 이름 (선택)" maxLength={100} value={link.title} onChange={(event) => setDraft({ ...draft, links: draft.links.map((item, at) => at === index ? { ...item, title: event.target.value } : item) })} />
-                <input placeholder="https://" maxLength={500} value={link.url} onChange={(event) => setDraft({ ...draft, links: draft.links.map((item, at) => at === index ? { ...item, url: event.target.value } : item) })} />
+                <input placeholder="https://" type="url" maxLength={500} pattern="https?://.*" value={link.url} onChange={(event) => setDraft({ ...draft, links: draft.links.map((item, at) => at === index ? { ...item, url: event.target.value } : item) })} />
                 <button type="button" onClick={() => setDraft({ ...draft, links: draft.links.filter((_, at) => at !== index) })}>빼기</button>
               </div>)}
               <button type="button" className="board-add" onClick={() => setDraft({ ...draft, links: [...draft.links, { title: "", url: "" }] })}>+ 링크</button>
@@ -395,7 +411,7 @@ export function BoardPanel({ user, initialAsset = "", onLogin, onLogout }: { use
             <div className={post.locked ? "board-post-body board-locked" : "board-post-body"}>{post.locked ? <>🔒 {post.body}</> : post.body}</div>
             {post.attachments.length > 0 && <ul className="board-attachments" aria-label="첨부">{post.attachments.map((item) => <li key={item.attachment_id}>{item.kind === "file"
               ? <a href={`/api/board/files/${item.attachment_id}`} download>📎 {item.name} <small>{bytes(item.size)}</small></a>
-              : <a href={item.url ?? "#"} target="_blank" rel="noopener noreferrer nofollow">🔗 {item.name}</a>}</li>)}</ul>}
+              : safeUrl(item.url) ? <a href={safeUrl(item.url)!} target="_blank" rel="noopener noreferrer nofollow">🔗 {item.name}</a> : <span>🔗 {item.name}</span>}</li>)}</ul>}
             {post.poll && (() => {
               const poll = post.poll;
               const total = poll.options.reduce((sum, option) => sum + option.votes, 0);

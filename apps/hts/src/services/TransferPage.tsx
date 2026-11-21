@@ -12,7 +12,6 @@ export function TransferPage({ kit, cash, homeCurrency, homeDigits, accounts }: 
   const [source, setSource] = useState("");
   const [recipient, setRecipient] = useState("");
   const [amount, setAmount] = useState("");
-  const [memo, setMemo] = useState("");
   const [result, setResult] = useState<Result | null>(null);
 
   const active = accounts.filter((account) => account.resolution_status === "active");
@@ -36,7 +35,7 @@ export function TransferPage({ kit, cash, homeCurrency, homeDigits, accounts }: 
     setResult(outcome);
     setStep("done");
   }
-  function reset() { setStep("input"); setRecipient(""); setAmount(""); setMemo(""); setResult(null); }
+  function reset() { setStep("input"); setRecipient(""); setAmount(""); setResult(null); }
 
   return <div className="svc-transfer">
     <ol className="svc-steps" aria-label="이체 단계">{["정보 입력", "내용 확인", "이체 완료"].map((label, index) => <li key={label} aria-current={["input", "confirm", "done"][index] === step ? "step" : undefined}><i>{index + 1}</i>{label}</li>)}</ol>
@@ -57,7 +56,6 @@ export function TransferPage({ kit, cash, homeCurrency, homeDigits, accounts }: 
         <label className="svc-field">이체 금액<div className="svc-amount"><input required inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))} placeholder="0" /><span>{currency}</span></div></label>
         <div className="svc-chips">{QUICK.map((step) => <button type="button" key={step} onClick={() => setAmount(moneyAdd(value, step))}>+{won(step)}</button>)}<button type="button" onClick={() => setAmount(String(balance))}>전액</button><button type="button" onClick={() => setAmount("")}>정정</button></div>
         {exceeds && <p className="svc-hint warn">출금 가능 금액보다 많습니다.</p>}
-        <label className="svc-field">받는 분 통장 표시 (선택)<input maxLength={20} value={memo} onChange={(event) => setMemo(event.target.value)} placeholder="화면 기록용 메모" /></label>
       </section>
       <div className="svc-actions"><button className="svc-submit" disabled={!recipient.trim() || !positive || exceeds}>다음</button></div>
     </form>}
@@ -67,7 +65,6 @@ export function TransferPage({ kit, cash, homeCurrency, homeDigits, accounts }: 
         <div><dt>출금 계좌</dt><dd>{from ? `${from.product_name} ${from.number}` : "내 지갑"}</dd></div>
         <div><dt>받는 분</dt><dd>{own ? `내 ${own.product_name} ${own.number}` : recipient}</dd></div>
         <div><dt>이체 금액</dt><dd className="svc-big">{won(value, digits)} {currency}</dd></div>
-        {memo && <div><dt>메모</dt><dd>{memo}</dd></div>}
         <div><dt>이체 후 잔액</dt><dd>{won(moneyAdd(balance, value, true), digits)} {currency}</dd></div>
       </dl>
       <div className="svc-actions"><button type="button" onClick={() => setStep("input")}>수정</button><button type="button" className="svc-submit" disabled={kit.busy} onClick={() => void send()}>{kit.busy ? "이체 중…" : "이체하기"}</button></div>

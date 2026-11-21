@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
+import { cookieValue, failureLimiter, SESSION_COOKIE, sessionCookie, sessionStore } from "./gate";
 import { wlSecurity } from "./security-store";
 
 // Wide-Learning viewer. It only READS docs/wide-learning (and runs the read-only
@@ -35,8 +36,19 @@ const security = wlSecurity(root, process.env.INAZINA_WL_SECURITY_PATH);
 // A small JSON body (at most 4 KB), read whole; a bad one answers 400.
 function readJson(request: IncomingMessage, response: ServerResponse, done: (body: Record<string, unknown>) => void) {
   let text = "";
-  request.on("data", (chunk: Buffer) => { if (text.length < 4096) text += chunk; });
+  let tooBig = false;
+  request.setEncoding("utf8");
+  request.on("data", (chunk: string) => {
+    if (tooBig) return;
+    text += chunk;
+    if (text.length > 4096) {
+      tooBig = true;
+      sendJson(response, { error: "too large" }, 413);
+      request.destroy();
+    }
+  });
   request.on("end", () => {
+    if (tooBig) return;
     let body: unknown;
     try { body = JSON.parse(text); } catch { return sendJson(response, { error: "bad body" }, 400); }
     if (!body || typeof body !== "object" || Array.isArray(body)) return sendJson(response, { error: "bad body" }, 400);
@@ -62,8 +74,15 @@ function locate(ip: string): Promise<string> {
   });
 }
 
-// Wrong current passwords on the settings tab: five in ten minutes, then it waits.
-const misses = new Map<string, { count: number; resetAt: number }>();
+// Per address, five failures in ten minutes, then it waits (expired entries are pruned on every call):
+// wrong entry passwords, wrong log codes, and wrong current passwords on the settings tab.
+const entryMisses = failureLimiter();
+const logMisses = failureLimiter();
+const misses = failureLimiter();
+// Entering the right password hands out a random session token (HttpOnly cookie, 12 h); every other
+// /wl-api route except the entry ones needs it.
+const sessions = sessionStore();
+const OPEN_ROUTES = ["/entry-attempt", "/entry-log"];
 
 function sendJson(response: ServerResponse, body: unknown, status = 200) {
   response.statusCode = status;
@@ -84,6 +103,12 @@ function wideLearningData(): Plugin {
       server.watcher.on("change", notify);
       server.watcher.on("add", notify);
       server.watcher.on("unlink", notify);
+      server.middlewares.use("/wl-api", (request, response, next) => {
+        const path = (request.url ?? "").split("?")[0];
+        if (OPEN_ROUTES.includes(path)) return next();
+        if (!sessions.valid(cookieValue(request.headers.cookie, SESSION_COOKIE))) return sendJson(response, { error: "unauthorized" }, 401);
+        next();
+      });
       server.middlewares.use("/wl-api/files", (_request, response) => {
         const files = Object.fromEntries(FILES.map((name) => {
           const path = join(docs, name);
@@ -95,15 +120,15 @@ function wideLearningData(): Plugin {
       });
       server.middlewares.use("/wl-api/entry-attempt", (request, response) => {
         if (request.method !== "POST") return sendJson(response, { error: "POST only" }, 405);
-        let body = "";
-        request.on("data", (chunk: Buffer) => { if (body.length < 4096) body += chunk; });
-        request.on("end", () => {
-          let typed = "";
-          try { typed = String(JSON.parse(body).typed ?? "").slice(0, 128); } catch { return sendJson(response, { error: "bad body" }, 400); }
+        const ip = clientIp(request);
+        if (entryMisses.blocked(ip)) return sendJson(response, { pass: false, error: "잠시 뒤에 다시 시도해주세요." }, 429);
+        readJson(request, response, (body) => {
+          const typed = String(body.typed ?? "").slice(0, 128);
           const pass = security.verifyEntry(typed);
-          const ip = clientIp(request);
+          if (pass) entryMisses.clear(ip); else entryMisses.fail(ip);
           void locate(ip).then((location) => {
             appendFileSync(ENTRY_LOG, JSON.stringify({ at: new Date().toISOString(), ip, location, length: [...typed].length, pass }) + "\n");
+            if (pass) response.setHeader("set-cookie", sessionCookie(sessions.issue()));
             sendJson(response, { pass });
           });
         });
@@ -111,8 +136,11 @@ function wideLearningData(): Plugin {
       // The hidden login log opens only with the log code (the digits typed last), checked here.
       server.middlewares.use("/wl-api/entry-log", (request, response) => {
         if (request.method !== "POST") return sendJson(response, { error: "POST only" }, 405);
+        const ip = clientIp(request);
+        if (logMisses.blocked(ip)) return sendJson(response, { error: "forbidden" }, 429);
         readJson(request, response, (body) => {
-          if (!security.verifyLogCode(String(body.code ?? "").slice(-8))) return sendJson(response, { error: "forbidden" }, 403);
+          if (!security.verifyLogCode(String(body.code ?? "").slice(-8))) { logMisses.fail(ip); return sendJson(response, { error: "forbidden" }, 403); }
+          logMisses.clear(ip);
           const lines = existsSync(ENTRY_LOG) ? readFileSync(ENTRY_LOG, "utf8").split("\n").filter(Boolean) : [];
           const entries = lines.slice(-500).reverse().flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } });
           sendJson(response, { entries });
@@ -124,15 +152,14 @@ function wideLearningData(): Plugin {
         if (request.method !== "POST") return sendJson(response, { error: "GET or POST only" }, 405);
         readJson(request, response, (body) => {
           const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : undefined);
-          const ip = clientIp(request), miss = misses.get(ip);
-          if (miss && miss.resetAt > Date.now() && miss.count >= 5) return sendJson(response, { ok: false, message: "잠시 뒤에 다시 시도해주세요." }, 429);
+          const ip = clientIp(request);
+          if (misses.blocked(ip)) return sendJson(response, { ok: false, message: "잠시 뒤에 다시 시도해주세요." }, 429);
           try {
             security.change(String(body.current ?? ""), text(body.entryPassword), text(body.logCode));
             sendJson(response, { ok: true, ...security.state() });
-            misses.delete(ip);
+            misses.clear(ip);
           } catch (error) {
-            const live = miss && miss.resetAt > Date.now();
-            misses.set(ip, { count: live ? miss.count + 1 : 1, resetAt: live ? miss.resetAt : Date.now() + 600_000 });
+            misses.fail(ip);
             sendJson(response, { ok: false, message: error instanceof Error ? error.message : "바꾸지 못했습니다." }, 400);
           }
         });

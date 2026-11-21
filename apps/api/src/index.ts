@@ -400,7 +400,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     return;
   }
   if (request.method === "POST" && url.pathname === "/__browser-access") {
-    const key = request.socket.remoteAddress ?? "local";
+    const key = clientIp(request);  // the real client (loopback peer: last X-Forwarded-For), not the proxy
     const now = Date.now();
     const attempt = browserLoginAttempts.get(key);
     if (attempt && attempt.resetAt > now && attempt.count >= 10) {

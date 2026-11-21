@@ -87,7 +87,8 @@ button.rawbtn{margin-top:10px;padding:0;border:0;background:none;color:var(--acc
         btn.addEventListener("click",function(){
           // a plain white page with only the response text, in a new tab
           var esc=raw.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-          var doc='<!doctype html><meta charset="utf-8"><title>'+target+'</title><body style="margin:0;padding:16px;background:#fff;color:#000;font:13px/1.6 ui-monospace,Menlo,monospace"><div style="color:#666;margin-bottom:8px">'+target.replace(/&/g,"&amp;").replace(/</g,"&lt;")+'</div><pre style="margin:0;white-space:pre-wrap;word-break:break-word">'+esc+'</pre>';
+          var te=target.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+          var doc='<!doctype html><meta charset="utf-8"><title>'+te+'</title><body style="margin:0;padding:16px;background:#fff;color:#000;font:13px/1.6 ui-monospace,Menlo,monospace"><div style="color:#666;margin-bottom:8px">'+te+'</div><pre style="margin:0;white-space:pre-wrap;word-break:break-word">'+esc+'</pre>';
           window.open(URL.createObjectURL(new Blob([doc],{type:"text/html;charset=utf-8"})),"_blank","noopener");
         });
         if(box.children.length)out.appendChild(box);out.appendChild(btn);out.hidden=false;pw.value=""})

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { tabListKeys } from "../tabKeys";
 import { ActionCard, type ServiceProps } from "./ServiceKit";
 
 const SECTIONS = [
@@ -9,7 +10,7 @@ const SECTIONS = [
 export function InvestPage({ kit }: ServiceProps) {
   const [section, setSection] = useState<(typeof SECTIONS)[number][0]>("options");
   return <div className="svc-invest">
-    <div className="svc-tabs" role="tablist" aria-label="투자상품">{SECTIONS.map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={section === id} className={section === id ? "active" : ""} onClick={() => setSection(id)}>{label}</button>)}</div>
+    <div className="svc-tabs" role="tablist" aria-label="투자상품" onKeyDown={tabListKeys}>{SECTIONS.map(([id, label]) => <button key={id} type="button" role="tab" tabIndex={section === id ? 0 : -1} aria-selected={section === id} className={section === id ? "active" : ""} onClick={() => setSection(id)}>{label}</button>)}</div>
     {section === "options" && <div className="svc-two">
       <ActionCard kit={kit} name="옵션체인" title="옵션 시세표" description="거래할 수 있는 콜·풋 옵션입니다. 기초 주식을 고르면 그 종목만 봅니다." autoRun submit="시세 보기" />
       <ActionCard kit={kit} name="옵션작성" title="옵션 매도 (작성)" description="콜은 기초 주식을, 풋은 행사가만큼 현금을 담보로 맡기고 매도 호가를 냅니다. 만기까지 의무가 남습니다." submit="옵션 작성" />

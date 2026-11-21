@@ -78,3 +78,14 @@ test("chat filters keep a claim's reply chain and respect the author", () => {
   assert.deepEqual(idsOf(filterThread(all, all, "CODEX", "all")), ["G-004"]);
   assert.deepEqual(idsOf(filterThread(all, all, "CLAUDE", "verified")), ["C-003", "C-009"]);
 });
+
+test("only http(s) links and known doc routes are clickable; script-ish schemes never become hrefs", () => {
+  for (const bad of ["javascript:alert(1)", "JaVaScRiPt:alert(1)", "data:text/html,<b>x</b>", "vbscript:msgbox(1)", "//evil.example/x", "&#106;avascript:alert(1)"]) {
+    const html = inline(`[x](${bad})`);
+    assert.ok(!/<a\b/i.test(html), `${bad} must not render an anchor`);
+    assert.ok(!/href\s*=\s*"?\s*(javascript|data|vbscript):/i.test(html), bad);
+  }
+  assert.ok(inline("[ok](http://example.com/a?b=1&c=2)").includes('href="http://example.com/a?b=1&#38;c=2"'));
+  assert.ok(inline("[ok](https://example.com)").includes('rel="noopener noreferrer"'));
+  assert.ok(!/<a\b/.test(inline("[rel](./some/other.md)")), "unknown relative links stay plain text");
+});

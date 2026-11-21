@@ -1,5 +1,6 @@
 import type { Money } from "./money";
 const TOKEN_KEY = "inazina.web.token";
+const UNAUTHORIZED_EVENT = "inazina:unauthorized";
 
 export type ApiUser = {
   userId: string;
@@ -21,12 +22,27 @@ export const appUrl = (app: "hts" | "dashboard", path = "/") => `${location.prot
 /** True when the server said the session is gone (not when it was merely unreachable or slow). */
 export const signedOut = (cause: unknown) => [401, 403].includes((cause as { status?: number })?.status ?? 0);
 
+/** Cookie auth replaced the old sessionStorage token; this only wipes a leftover one. */
 export function clearToken(): void {
-  sessionStorage.removeItem(TOKEN_KEY);
+  try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* storage blocked */ }
 }
 
-/** The error api() throws for a failed response: a readable message plus the HTTP status. */
-export function apiError(status: number, body: { error?: string; message?: string }): Error & { status: number } {
+/** Runs when any api() call (outside /api/auth/) comes back 401, so a page can drop to its login screen. */
+export function onUnauthorized(handler: () => void): () => void {
+  window.addEventListener(UNAUTHORIZED_EVENT, handler);
+  return () => window.removeEventListener(UNAUTHORIZED_EVENT, handler);
+}
+
+/** The error api() throws: a readable message, the HTTP status and the server's machine code. */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number, readonly code?: string) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+/** Builds the ApiError for a failed response. Callers throw the result. */
+export function apiError(status: number, body: { error?: string; message?: string }): ApiError {
   const messages: Record<string, string> = {
     authentication_required: "인증 토큰을 확인해주세요.",
     web_auth_not_configured: "서버에 웹 인증 토큰이 설정되지 않았습니다.",
@@ -48,7 +64,7 @@ export function apiError(status: number, body: { error?: string; message?: strin
     database_unavailable: "데이터베이스를 읽지 못했습니다.",
   };
   const text = body.error === "database_unavailable" && body.message ? body.message : (body.error ? messages[body.error] : undefined) ?? body.message ?? body.error ?? `HTTP ${status}`;
-  throw Object.assign(new Error(text), { status: status });
+  return new ApiError(text, status, body.error);
 }
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -57,7 +73,17 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (typeof init.body === "string") headers.set("Content-Type", "application/json");
 
   const response = await fetch(path, { ...init, headers, cache: "no-store", credentials: "include" });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw apiError(response.status, body);
+  const raw = await response.text();
+  let body: { error?: string; message?: string } = {};
+  let isJson = true;
+  if (raw.trim()) {
+    try { body = JSON.parse(raw) ?? {}; } catch { isJson = false; }
+  }
+  if (!response.ok) {
+    if (response.status === 401 && !path.startsWith("/api/auth/")) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+    throw apiError(response.status, isJson ? body : {});
+  }
+  // A 200 that is not JSON is a proxy or gateway page, not our server.
+  if (!isJson) throw new ApiError("서버 응답을 해석하지 못했습니다. 잠시 후 다시 시도해주세요.", response.status, "invalid_response");
   return body as T;
 }

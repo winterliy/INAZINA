@@ -11,7 +11,12 @@ const RANKS = ["1등", "2등", "3등", "4등", "5등"];
 const at = (epoch: number) => new Date(epoch * 1000).toLocaleString("ko-KR", { month: "long", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit" });
 const balls = (numbers: number[], bonus?: number | null) => <span className="lotto-row">{numbers.map((number) => <i key={number} className={`lotto-ball small ${ball(number)}`}>{number}</i>)}{bonus ? <><b>+</b><i className={`lotto-ball small ${ball(bonus)}`}>{bonus}</i></> : null}</span>;
 
-/** 이번 회차, 내 복권, 당첨 결과 — the lottery's read-only views laid out as a lottery site would. */
+/** A ticket row with unreadable numbers shows no balls instead of blanking the whole page. */
+const ticketNumbers = (json: string): number[] => {
+  try { const parsed = JSON.parse(json); return Array.isArray(parsed) ? parsed.filter((item): item is number => typeof item === "number") : []; } catch { return []; }
+};
+
+/** 이번 회차, 당첨 결과 — the lottery's read-only views laid out as a lottery site would. */
 function LottoBoard({ kit, refresh }: { kit: Kit; refresh: number }) {
   const [round, setRound] = useState<Round | null>(null);
   const [tickets, setTickets] = useState<Ticket[]>([]);
@@ -47,7 +52,7 @@ function LottoBoard({ kit, refresh }: { kit: Kit; refresh: number }) {
       <header><h3>내 복권</h3><span className="lotto-status">{tickets.length}장</span></header>
       {tickets.length ? <ul className="lotto-tickets">{tickets.slice(0, 30).map((ticket) => <li key={ticket.ticket_id}>
         <small>제 {ticket.round_id}회 · #{ticket.ticket_id}</small>
-        {balls(JSON.parse(ticket.numbers_json))}
+        {balls(ticketNumbers(ticket.numbers_json))}
         <em className={ticket.rank ? "won" : ""}>{ticket.rank ? `${ticket.rank}등 · ${won(ticket.net ?? 0)}` : ticket.rank === 0 ? "낙첨" : "추첨 전"}</em>
       </li>)}</ul> : <p className="lotto-empty">이번 회차에 산 복권이 없습니다.</p>}
     </section>
@@ -94,7 +99,11 @@ export function CasinoPage({ kit, cash, homeCurrency, homeDigits, accounts }: Se
     if (outcome) { setSlip(outcome); if (outcome.success) { setPicked([]); setRefresh((value) => value + 1); } }
   }
   // 도박 answers 🎉 당첨 on a win and 💀 꽝 (success false) on a loss; anything else is an error.
-  const outcome = !spin ? "idle" : spin.success && spin.message.includes("당첨") ? "win" : spin.message.includes("꽝") ? "lose" : "error";
+  // A server `outcome` field wins when present; the message text is only the fallback.
+  const serverOutcome = (spin?.data as { outcome?: unknown } | null | undefined)?.outcome;
+  const outcome = !spin ? "idle"
+    : serverOutcome === "win" || serverOutcome === "lose" ? serverOutcome
+      : spin.success && spin.message.includes("당첨") ? "win" : spin.message.includes("꽝") ? "lose" : "error";
 
   return <div className="casino">
     <section className="casino-hero">

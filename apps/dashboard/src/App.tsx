@@ -1,10 +1,11 @@
 import type { Money } from "../../shared/money";
-import { validMoney, moneyCompare, formatMoney } from "../../shared/money";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { validMoney, moneyCompare } from "../../shared/money";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { api, appUrl, clearToken, signedOut, type ApiUser } from "../../shared/api";
+import { api, appUrl, clearToken, onUnauthorized, signedOut, type ApiUser } from "../../shared/api";
 import { AuthPanel } from "../../shared/AuthPanel";
-import { Card, plain, type Ctx } from "./common";
+import { Card, date, errorText, number, plain, type Ctx } from "./common";
+import { JumpDialog, type JumpTarget } from "./JumpDialog";
 import { TopBar } from "./TopBar";
 import { Logo } from "../../shared/Logo";
 import { PageHead } from "./PageHead";
@@ -54,7 +55,7 @@ type NationalCommand = { name: string; fields: NationalField[] };
 type HelpPage = { label: string; description: string; fields: { name: string; value: string }[] };
 type Flow = { history_id: number; asset_code: string; anchor_price: Money; target_price: Money; change_percent: number; start_epoch: number; end_epoch: number; active: boolean };
 type BotJob = { job_id: number; kind: string; actor_id: string; payload: string; status: "pending" | "running" | "done" | "failed"; result: string | null; created_epoch: number; updated_epoch: number };
-type CommandResult = { command: string; arguments: string; message: string; success: boolean; time: number; national: boolean };
+type CommandResult = { id: number; command: string; arguments: string; message: string; success: boolean; time: number; national: boolean };
 
 const pages: { id: Page; label: string }[] = [
   { id: "home", label: "메인" },
@@ -112,9 +113,9 @@ const subtitles: Record<Page, string> = {
   controls: "통제 증빙표 상태, 복구 훈련·접근 검토 기록, 스트레스 시험 범위를 확인합니다. 읽기 전용입니다.",
   ownership: "기업 지분과 의결권 관계를 넓은 화면에서 확인합니다.",
 };
-const number = formatMoney;
-const date = (value: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "medium" }).format(value * 1000);
-const message = (cause: unknown, fallback: string) => cause instanceof Error ? cause.message : fallback;
+type Notice = { id: number; text: string; error: boolean };
+const SUCCESS_NOTICE_MS = 4000;
+const SESSION_TRIES = 5;
 
 
 // Each page (and each command category) has its own address: #instruments, #commands/거래소.
@@ -124,8 +125,7 @@ function readRoute(): { page: Page; sub: string } {
   return { page: pages.some((item) => item.id === id) ? id as Page : "home", sub: rest.join("/") };
 }
 const NATIONAL = "국가 명의", HELP = "도움말";
-// Redesign D (grid guideline) was approved for these tabs only; the rest keep the bento look.
-const THEME_D_PAGES = new Set<Page>();  // the grid-guideline theme was dropped with the rebrand
+const categoryOf = (name: string) => COMMAND_FORMS[name]?.group ?? "기타";
 const scopeOf = (section: string) => section === NATIONAL ? "national" : section === HELP ? "help" : "admin";
 const initialRoute = readRoute();
 
@@ -133,9 +133,13 @@ export default function App() {
   const [user, setUser] = useState<ApiUser | null>(null);
   const [checked, setChecked] = useState(false);
   const [page, setPage] = useState<Page>(initialRoute.page);
-  const [, setHealth] = useState("확인 중");
-  const [connected, setConnected] = useState(false);
-  const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
+  const [connection, setConnection] = useState<"checking" | "ok" | "down">("checking");
+  const connected = connection === "ok";
+  const [sessionError, setSessionError] = useState("");
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const noticeSeq = useRef(0);
+  const resultSeq = useRef(0);
+  const navSeq = useRef(0);
   const [busy, setBusy] = useState(false);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [unreadFeedback, setUnreadFeedback] = useState(0);
@@ -166,40 +170,76 @@ export default function App() {
   const [commandArgs, setCommandArgs] = useState("");
   const [commandResults, setCommandResults] = useState<CommandResult[]>([]);
 
-  const say = useCallback((text: string, error = false) => setNotice({ text, error }), []);
+  const say = useCallback((text: string, error = false) => { noticeSeq.current += 1; setNotice({ id: noticeSeq.current, text, error }); }, []);
+  // Every page change goes through here, so a notice raised in the same handler (after the change) survives it.
+  const go = useCallback((next: Page) => { navSeq.current = noticeSeq.current; setPage(next); }, []);
   // ⌘K / Ctrl+K: jump to any page or command category by typing.
   const [jumpOpen, setJumpOpen] = useState(false);
-  const [jumpTerm, setJumpTerm] = useState("");
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setJumpOpen((open) => !open); }
-      if (event.key === "Escape") setJumpOpen(false);
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   }, []);
+  // Successes fade on their own; errors stay until they are dismissed.
+  useEffect(() => {
+    if (!notice || notice.error) return;
+    const timer = window.setTimeout(() => setNotice((current) => current?.id === notice.id ? null : current), SUCCESS_NOTICE_MS);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  const resetSessionState = useCallback(() => {
+    setOverview(null); setInstruments([]); setAudit([]); setEvents([]); setFlows([]);
+    setCommands([]); setNationalCommands([]); setDiscordOnly([]); setHelpPages([]); setJobs([]);
+    setCommand(""); setCommandArgs(""); setCommandResults([]); setNationalCommand(""); setNationalValues([]);
+    setUnreadFeedback(0); setPendingNaturalization(0); unreadSeen.current = 0;
+    setQuery(""); setNotice(null); navSeq.current = noticeSeq.current; setPage("home");
+  }, []);
+  // The server refused our session (expired or signed out elsewhere): drop to the login screen.
+  useEffect(() => onUnauthorized(() => {
+    setUser(null);
+    resetSessionState();
+    noticeSeq.current += 1;
+    setNotice({ id: noticeSeq.current, text: "로그인이 만료되었습니다. 다시 로그인해주세요.", error: true });
+  }), [resetSessionState]);
+
+  const sessionTries = useRef(0);
+  const sessionTimer = useRef<number | undefined>(undefined);
 
   const loadSession = useCallback(async () => {
+    window.clearTimeout(sessionTimer.current);
     try {
       const result = await api<{ user: ApiUser }>("/api/auth/session");
+      sessionTries.current = 0;
+      setSessionError("");
       setUser(result.user);
       setChecked(true);
     } catch (cause) {
-      // Only a refused session signs out; a slow or unreachable server is retried.
-      if (!signedOut(cause)) { window.setTimeout(() => void loadSession(), 3000); return; }
+      // Only a refused session signs out; a slow or unreachable server is retried a few times.
+      if (!signedOut(cause)) {
+        sessionTries.current += 1;
+        if (sessionTries.current >= SESSION_TRIES) { setSessionError(errorText(cause, "서버에 연결하지 못했습니다.")); return; }
+        sessionTimer.current = window.setTimeout(() => void loadSession(), 3000);
+        return;
+      }
       setUser(null);
       setChecked(true);
     }
   }, []);
 
+  // Read through refs so that these counts changing does not recreate refresh (and refetch the page).
+  const commandCount = useRef(0);
+  const helpCount = useRef(0);
+  commandCount.current = commands.length;
+  helpCount.current = helpPages.length;
+
   const refresh = useCallback(async () => {
     try {
       const result = await api<{ status: string; python: string }>("/api/health");
-      setConnected(result.python === "connected");
-      setHealth(result.python === "connected" ? "API · Python 연결됨" : "Python 연결 끊김");
+      setConnection(result.python === "connected" ? "ok" : "down");
     } catch {
-      setConnected(false);
-      setHealth("서버 연결 끊김");
+      setConnection("down");
     }
     if (!user || user.role !== "admin") return;
     try {
@@ -214,7 +254,7 @@ export default function App() {
         setFlows(eventResult.flows ?? []);
         setInstruments(instrumentResult.instruments);
       }
-      if (page === "commands" && !commands.length) {
+      if (page === "commands" && !commandCount.current) {
         const result = await api<{ commands: Command[]; national: NationalCommand[]; discordOnly: string[]; creationHelp: string }>("/api/admin/commands");
         setCommands(result.commands);
         setNationalCommands(result.national);
@@ -222,25 +262,28 @@ export default function App() {
         setCreationHelp(result.creationHelp);
         setNationalCommand((current) => current || result.national[0]?.name || "");
       }
-      if (page === "commands" && commandScope === "help" && !helpPages.length) setHelpPages((await api<{ pages: HelpPage[] }>("/api/admin/help")).pages);
+      if (page === "commands" && commandScope === "help" && !helpCount.current) setHelpPages((await api<{ pages: HelpPage[] }>("/api/admin/help")).pages);
       if (page === "commands" && commandScope === "national") setJobs((await api<{ jobs: BotJob[] }>("/api/admin/bot-jobs")).jobs);
     } catch (cause) {
-      say(message(cause, "요청을 처리하지 못했습니다."), true);
+      say(errorText(cause, "요청을 처리하지 못했습니다."), true);
     }
-  }, [page, user, query, commands.length, commandScope, helpPages.length]);
+  }, [page, user, commandScope, say]);
 
-  useEffect(() => { void loadSession(); }, [loadSession]);
+  useEffect(() => {
+    void loadSession();
+    return () => window.clearTimeout(sessionTimer.current);
+  }, [loadSession]);
   useEffect(() => { if (user && page !== "ownership") void refresh(); }, [user, page, refresh]);
   // Official-site Contact/Report alerts: refresh the unread count every minute.
   const loadUnread = useCallback(async () => {
     try {
       const result = await api<{ unread: number }>("/api/admin/feedback?status=new");
-      if (result.unread > unreadSeen.current) setNotice({ text: `🔔 공식 사이트에서 새 문의·신고가 ${result.unread - unreadSeen.current}건 왔습니다.`, error: false });
+      if (result.unread > unreadSeen.current) say(`공식 사이트에서 새 문의·신고가 ${result.unread - unreadSeen.current}건 왔습니다.`);
       unreadSeen.current = result.unread;
       setUnreadFeedback(result.unread);
       setPendingNaturalization((await api<{ pending: number }>("/api/admin/naturalization")).pending);
     } catch { /* the badge is best effort */ }
-  }, []);
+  }, [say]);
   useEffect(() => {
     if (!user || user.role !== "admin" || page === "ownership") return;
     void loadUnread();
@@ -250,10 +293,10 @@ export default function App() {
     document.addEventListener("visibilitychange", onVisible);
     return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", onVisible); };
   }, [user, page, loadUnread]);
-  useEffect(() => { setQuery(""); setNotice(null); }, [page]);
+  // A page change clears the search box and any notice raised before it; notices raised after it stay.
+  useEffect(() => { setQuery(""); setNotice((current) => current && current.id <= navSeq.current ? null : current); }, [page]);
 
   const selectedCommand = commands.find((item) => item.name === command);
-  const categoryOf = (name: string) => COMMAND_FORMS[name]?.group ?? "기타";
   const commandCategories = Array.from(new Set(commands.map((item) => categoryOf(item.name))));
   const activeCategory = commandCategories.includes(commandCategory) ? commandCategory : commandCategories[0] ?? "";
   const visibleCommands = commands.filter((item) => categoryOf(item.name) === activeCategory);
@@ -268,14 +311,14 @@ export default function App() {
   useEffect(() => {
     const restore = () => {
       const route = readRoute();
-      setPage(route.page);
+      go(route.page);
       if (route.page !== "commands") return;
       setCommandScope(scopeOf(route.sub));
       if (route.sub && scopeOf(route.sub) === "admin") setCommandCategory(route.sub);
     };
     window.addEventListener("popstate", restore);
     return () => window.removeEventListener("popstate", restore);
-  }, []);
+  }, [go]);
   // A command outside the open category (e.g. opened from another page) moves to its category.
   useEffect(() => {
     if (!commands.length) return;
@@ -293,21 +336,23 @@ export default function App() {
   const eventInstrument = instruments.find((item) => item.code === eventAsset.trim());
   useEffect(() => { setNationalValues(selectedNational?.fields.map((field) => field.default) ?? []); }, [selectedNational]);
 
-  async function run<T>(work: () => Promise<T>, fallback: string, done?: (result: T) => void) {
+  const run = useCallback(async <T,>(work: () => Promise<T>, fallback: string, done?: (result: T) => void) => {
     setBusy(true);
     try {
       const result = await work();
       done?.(result);
       await refresh();
+      return true;
     } catch (cause) {
-      say(message(cause, fallback), true);
+      say(errorText(cause, fallback), true);
+      return false;
     } finally {
       setBusy(false);
     }
-  }
+  }, [refresh, say]);
 
-  function openCommand(name: string, args: string, national = false) {
-    setPage("commands");
+  const openCommand = useCallback((name: string, args: string, national = false) => {
+    go("commands");
     if (national) {
       setCommandScope("national");
       setNationalCommand(name);
@@ -316,10 +361,9 @@ export default function App() {
       setCommand(name);
       setCommandArgs(args);
     }
-  }
+  }, [go]);
 
-  const ctx: Ctx = { busy, run, say, query, openCommand };
-
+  const ctx: Ctx = useMemo(() => ({ busy, run, say, query, openCommand }), [busy, run, say, query, openCommand]);
 
   function createEvent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -348,7 +392,7 @@ export default function App() {
     if (!window.confirm(`다음 명령어를 실행할까요?\n\n${text}`)) return;
     void run(() => api<{ message: string; success: boolean }>("/api/admin/commands", { method: "POST", body: JSON.stringify({ command, arguments: args }) }),
       "명령어를 실행하지 못했습니다.", (result) => {
-        setCommandResults((items) => [{ command, arguments: args, message: result.message, success: result.success, time: Date.now() / 1000, national: false }, ...items].slice(0, 20));
+        setCommandResults((items) => [{ id: ++resultSeq.current, command, arguments: args, message: result.message, success: result.success, time: Date.now() / 1000, national: false }, ...items].slice(0, 20));
         if (result.success) setCommandArgs("");
       });
   }
@@ -360,7 +404,7 @@ export default function App() {
     if (!window.confirm(`국가(국고) 명의로 $${nationalCommand}을(를) 실행할까요?\n\n${summary}`)) return;
     void run(() => api<{ message: string; success: boolean }>("/api/admin/commands", { method: "POST", body: JSON.stringify({ national: true, command: nationalCommand, values: nationalValues }) }),
       "명령어를 실행하지 못했습니다.", (result) => {
-        setCommandResults((items) => [{ command: nationalCommand, arguments: nationalValues.filter(Boolean).join(" "), message: result.message, success: result.success, time: Date.now() / 1000, national: true }, ...items].slice(0, 20));
+        setCommandResults((items) => [{ id: ++resultSeq.current, command: nationalCommand, arguments: nationalValues.filter(Boolean).join(" "), message: result.message, success: result.success, time: Date.now() / 1000, national: true }, ...items].slice(0, 20));
       });
   }
 
@@ -371,19 +415,24 @@ export default function App() {
     try {
       result = await api<{ returnedTo?: ApiUser }>("/api/auth/logout", { method: "POST" });
     } catch (cause) {
-      if (delegated) { say(message(cause, "관리자 계정으로 돌아가지 못했습니다. 잠시 후 다시 시도해주세요."), true); return; }
+      // An already-refused session is as good as logged out; any other failure leaves everything as it was.
+      if (!signedOut(cause)) { say(errorText(cause, delegated ? "관리자 계정으로 돌아가지 못했습니다. 잠시 후 다시 시도해주세요." : "로그아웃하지 못했습니다. 잠시 후 다시 시도해주세요."), true); return; }
     }
     clearToken();
-    if (result.returnedTo) { setUser(result.returnedTo); setPage("account"); say(`관리자 ${result.returnedTo.nickname} 계정으로 돌아왔습니다.`); return; }
+    resetSessionState();
+    if (result.returnedTo) { setUser(result.returnedTo); go("account"); say(`관리자 ${result.returnedTo.nickname} 계정으로 돌아왔습니다.`); return; }
     setUser(null);
-    setOverview(null);
-    setInstruments([]);
-    setAudit([]);
   }
 
-  if (!checked) return <Stage><main className="center-shell"><p className="loading">불러오는 중…</p></main></Stage>;
-  if (!user) return <Stage><AuthPanel app="dashboard" onAuthenticated={setUser} /></Stage>;
-  if (page === "ownership") return <Stage><Suspense fallback={<main className="center-shell"><p className="loading">조직도를 여는 중…</p></main>}><OrganizationOwnershipWindow route={initialRoute.sub} /></Suspense></Stage>;
+  const noticeBar = notice && <div className={notice.error ? "notice error" : "notice ok"} role={notice.error ? "alert" : "status"}><span>{notice.text}</span><button type="button" className="ghost" aria-label="알림 닫기" onClick={() => setNotice(null)}>×</button></div>;
+
+  if (!checked) return <Stage><main className="center-shell">
+    {sessionError
+      ? <div className="notice error" role="alert"><span>{sessionError} 서버가 켜져 있는지 확인한 뒤 다시 시도해주세요.</span><button type="button" className="soft" onClick={() => { sessionTries.current = 0; setSessionError(""); void loadSession(); }}>다시 시도</button></div>
+      : <p className="loading">불러오는 중…</p>}
+  </main></Stage>;
+  if (!user) return <Stage>{noticeBar && <div className="center-shell">{noticeBar}</div>}<AuthPanel app="dashboard" onAuthenticated={(next) => { setNotice(null); setUser(next); }} /></Stage>;
+  if (page === "ownership" && user.role === "admin") return <Stage><Suspense fallback={<main className="center-shell"><p className="loading">조직도를 여는 중…</p></main>}><OrganizationOwnershipWindow route={initialRoute.sub} /></Suspense></Stage>;
   // Users, country and company accounts get their own account dashboard, like the HTS.
   if (user.role !== "admin") {
     return <Stage><div className="shell">
@@ -393,7 +442,7 @@ export default function App() {
       </div></header>
       <main className="content user-view">
         {user.delegatedBy && <div className="notice" role="status"><span>관리자 {user.delegatedByName ?? user.delegatedBy}님이 {user.nickname} 계정으로 로그인 중입니다.</span></div>}
-        {notice && <div className={notice.error ? "notice error" : "notice"} role={notice.error ? "alert" : "status"}><span>{notice.text}</span><button type="button" className="ghost" aria-label="알림 닫기" onClick={() => setNotice(null)}>×</button></div>}
+        {noticeBar}
         <Suspense fallback={<p className="loading">계정 화면을 불러오는 중…</p>}><AccountPage ctx={ctx} user={user} onLogout={logout} /></Suspense>
         <footer className="bot"><div className="bot-in"><span className="bot-status"><Logo className="bot-logo" /></span><span>© INAZINA. All rights reserved.</span></div></footer>
       </main>
@@ -404,18 +453,23 @@ export default function App() {
   const searchable = page === "instruments" || page === "finance" || page === "exchanges" || page === "companies" || page === "users" || page === "court" || page === "feedback" || page === "board" || page === "database" || page === "accounting";
   const labels = new Map<string, string>(pages.filter((item) => item.id !== "account" && item.id !== "ownership").map((item) => [item.id, item.label]));
   const badges = { feedback: unreadFeedback, naturalization: pendingNaturalization };
+  const jumpTargets: JumpTarget[] = !jumpOpen ? [] : [
+    ...pages.map((item) => ({ key: item.id, label: item.label, hint: subtitles[item.id], go: () => go(item.id) })),
+    ...commandCategories.map((category) => ({ key: `commands/${category}`, label: `관리자 명령어 · ${category}`, hint: `${commands.filter((item) => categoryOf(item.name) === category).length}개 명령어`, go: () => { go("commands"); openCategory(category); } })),
+    ...commands.map((item) => ({ key: `$${item.name}`, label: `$${item.name}`, hint: item.usage || categoryOf(item.name), go: () => openCommand(item.name, "") })),
+  ];
 
   return <Stage>
     <div className="shell">
       <TopBar user={user} page={page} pages={pages.filter((item) => item.id !== "account" && item.id !== "ownership")}
-        badges={badges} connected={connected} onPage={(next) => setPage(next as Page)} onLogout={logout} />
-      <main className={THEME_D_PAGES.has(page) ? "content theme-d" : "content"}>
+        badges={badges} connection={connection} onPage={(next) => go(next as Page)} onLogout={logout} />
+      <main className="content">
         <PageHead page={page} title={current.label} labels={labels} badges={badges} searchable={searchable} query={query}
-          placeholder={page === "users" ? "이름 또는 ID" : page === "database" ? "모든 열에서 검색" : "이름 또는 코드"} onQuery={setQuery} onPage={(next) => setPage(next as Page)} />
-        {notice && <div className={notice.error ? "notice error" : "notice"} role={notice.error ? "alert" : "status"}><span>{notice.text}</span><button type="button" className="ghost" aria-label="알림 닫기" onClick={() => setNotice(null)}>×</button></div>}
+          placeholder={page === "users" ? "이름 또는 ID" : page === "database" ? "모든 열에서 검색" : "이름 또는 코드"} onQuery={setQuery} onPage={(next) => go(next as Page)} />
+        {noticeBar}
 
         <Suspense fallback={<p className="loading">화면을 불러오는 중…</p>}>
-        {page === "home" && <HomePage market={overview?.market} bankDeficits={overview?.bankDeficits ?? []} labels={labels} badges={badges} onPage={(next) => setPage(next as Page)} />}
+        {page === "home" && <HomePage market={overview?.market} bankDeficits={overview?.bankDeficits ?? []} labels={labels} badges={badges} onPage={(next) => go(next as Page)} />}
         {page === "overview" && <>
           <section className="spec-strip" aria-label="주요 지표">
             <Metric label="활성 사용자" value={overview ? number(overview.activeUsers) : "—"} />
@@ -478,7 +532,7 @@ export default function App() {
             <div className="command-list">{visibleCommands.map((item) => <button key={item.name} type="button" className={item.name === command ? "command-chip active" : "command-chip"} aria-pressed={item.name === command} onClick={() => { setCommand(item.name); setCommandArgs(""); }}><b>${item.name}</b><small>{item.usage || "인자 없음"}</small></button>)}</div>
           </section>}
           {commandScope === "admin" && command && <section className="glass card mb rise"><div className="card-head"><div><h2>${command}</h2><p className="cap">아래 미리보기는 Discord에 입력하는 `$명령어 인자`와 같습니다.</p></div></div>
-            <CommandForm key={`${command}-${commandArgs}`} command={command} usage={selectedCommand?.usage ?? ""} prefill={commandArgs} busy={busy} onRun={runCommand} openProducts={(group) => setPage(group === "market" ? "instruments" : "finance")} />
+            <CommandForm key={command} command={command} usage={selectedCommand?.usage ?? ""} prefill={commandArgs} busy={busy} onRun={runCommand} openProducts={(group) => go(group === "market" ? "instruments" : "finance")} />
             {(command === "상품생성" || command === "상품수정") && <details className="help"><summary>상품 종류별 순서형 인자</summary><pre>{creationHelp}</pre></details>}
           </section>}
           {commandScope === "help" && <section className="glass card mb rise"><div className="card-head"><div><h2>{helpPages[helpPage]?.label ?? "도움말"}</h2><p className="cap">Discord $도움말과 같은 내용입니다.</p></div><div className="actions"><select aria-label="도움말 페이지" value={helpPage} onChange={(event) => setHelpPage(Number(event.target.value))}>{helpPages.map((item, index) => <option key={item.label} value={index}>{item.label}</option>)}</select></div></div>
@@ -500,7 +554,7 @@ export default function App() {
             row={(job) => <><td className="mono">#{job.job_id}</td><td>{job.kind === "shareholder_meeting" ? "$주총" : job.kind}</td><td><span className={job.status === "done" ? "tag ok" : job.status === "failed" ? "tag warn" : "tag"}>{{ pending: "대기", running: "처리 중", done: "완료", failed: "실패" }[job.status]}</span></td><td className="mono audit-payload">{job.payload}</td><td className="audit-payload">{job.result ? plain(job.result) : "—"}</td><td>{date(job.updated_epoch)}</td></>} />}
           {commandScope === "national" && <section className="glass card mb rise"><div className="card-head"><div><h2>국가 명의 명령어</h2><p className="cap">{nationalCommands.length}개 · 선택하면 위 입력에 적용됩니다.</p></div></div><div className="command-list">{nationalCommands.map((item) => <button key={item.name} type="button" className={item.name === nationalCommand ? "command-chip active" : "command-chip"} onClick={() => setNationalCommand(item.name)}><b>${item.name}</b><small>{item.fields.map((field) => field.label).join(" · ") || "조회"}</small></button>)}</div></section>}
           {commandScope !== "help" && <section className="glass card mb rise"><div className="card-head"><div><h2>실행 결과</h2><p className="cap">이 화면에서 실행한 최근 20건 · 전체 기록은 작업 기록에서 확인합니다.</p></div></div>
-            {commandResults.map((item) => <div key={item.time} className={item.success ? "result" : "result failed"}><div className="result-head"><span className="mono">{item.national && <span className="tag inline-start">국가</span>}${item.command} {item.arguments}</span><span>{date(item.time)}</span></div><pre>{plain(item.message)}</pre></div>)}
+            {commandResults.map((item) => <div key={item.id} className={item.success ? "result" : "result failed"}><div className="result-head"><span className="mono">{item.national && <span className="tag inline-start">국가</span>}${item.command} {item.arguments}</span><span>{date(item.time)}</span></div><pre>{plain(item.message)}</pre></div>)}
             {!commandResults.length && <p className="empty">아직 실행한 명령어가 없습니다.</p>}
           </section>}
           </div>
@@ -521,22 +575,7 @@ export default function App() {
         <Footer connected={connected} />
       </main>
     </div>
-    {jumpOpen && (() => {
-      const term = jumpTerm.trim().toLocaleLowerCase();
-      const targets = [
-        ...pages.map((item) => ({ key: item.id, label: item.label, hint: subtitles[item.id], go: () => setPage(item.id) })),
-        ...commandCategories.map((category) => ({ key: `commands/${category}`, label: `관리자 명령어 · ${category}`, hint: `${commands.filter((item) => categoryOf(item.name) === category).length}개 명령어`, go: () => { setPage("commands"); openCategory(category); } })),
-        ...commands.map((item) => ({ key: `$${item.name}`, label: `$${item.name}`, hint: item.usage || categoryOf(item.name), go: () => openCommand(item.name, "") })),
-      ].filter((item) => !term || `${item.label} ${item.hint}`.toLocaleLowerCase().includes(term)).slice(0, 12);
-      const pick = (target: (typeof targets)[number]) => { target.go(); setJumpOpen(false); setJumpTerm(""); };
-      return <div className="jump-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setJumpOpen(false); }}>
-        <section className="jump" role="dialog" aria-modal="true" aria-label="바로가기">
-          <input autoFocus value={jumpTerm} onChange={(event) => setJumpTerm(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && targets[0]) pick(targets[0]); }} placeholder="페이지, 명령어 카테고리, $명령어 검색" aria-label="바로가기 검색" />
-          <ul>{targets.map((item) => <li key={item.key}><button type="button" onClick={() => pick(item)}><b>{item.label}</b><small>{item.hint}</small></button></li>)}</ul>
-          {!targets.length && <p className="empty">일치하는 항목이 없습니다.</p>}
-        </section>
-      </div>;
-    })()}
+    {jumpOpen && <JumpDialog targets={jumpTargets} onClose={() => setJumpOpen(false)} />}
   </Stage>;
 }
 

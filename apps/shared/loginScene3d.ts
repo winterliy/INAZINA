@@ -757,6 +757,7 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void): ()
 
   const pointer = { x: 0, y: 0, tx: 0, ty: 0, active: false };
   const onPointer = (event: PointerEvent) => {
+    if (!visible) return;  // scrolled out of view: the scene is not drawing, so keep the last pointer
     const rect = container.getBoundingClientRect();
     const nx = ((event.clientX - rect.left) / rect.width) * 2 - 1, ny = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
     pointer.active = Math.abs(nx) <= 1 && Math.abs(ny) <= 1;
@@ -889,6 +890,7 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void): ()
     grainAnimation.cancel();
     for (const item of [geometry, material, trailGeometry, trailMaterial, rays.geometry, rays.material, bloom.geometry, bloom.material, walk.geometry, walk.material, stack.geometry, stack.material, wave.geometry, wave.material, shard.geometry, shard.material, cut.geometry, cut.material, kaleido.geometry, kaleido.material, ...(clip ? [clip.geometry, clip.material, clip.texture] : []), strands.geometry, strands.material, ground, groundMaterial, fadeGeometry, fadeMaterial, lensMaterial, picture, ...ghostMaterials]) item.dispose();
     renderer.dispose();
+    renderer.forceContextLoss();
     renderer.domElement.remove(); grain.remove(); vignette.remove(); hud.remove(); panel.remove(); callouts.forEach((el) => el.remove());
   };
 }

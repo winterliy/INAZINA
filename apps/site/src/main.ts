@@ -73,7 +73,10 @@ async function fetchText(path: string): Promise<string> {
   return response.text();
 }
 
+let documentRequest = 0;  // the latest requested document wins; older responses are dropped
+
 async function openDocument(name: string) {
+  const request = ++documentRequest;
   const dialog = $<HTMLDialogElement>("#doc-dialog");
   const body = $<HTMLDivElement>("#doc-body");
   $("#doc-title").textContent = DOCS[name] ?? "문서";
@@ -86,6 +89,7 @@ async function openDocument(name: string) {
         .then((response): Promise<Pending> | Pending => response.ok ? response.json() as Promise<Pending> : {})
         .catch((): Pending => ({})),
     ]);
+    if (request !== documentRequest) return;
     const announced = pending[name] && pending[name].effectiveEpoch * 1000 > Date.now() ? pending[name] : null;
     const show = (text: string, revision: boolean) => {
       const parts: Node[] = [];
@@ -100,8 +104,8 @@ async function openDocument(name: string) {
         toggle.className = "btn linkout";
         toggle.addEventListener("click", () => {
           if (revision) { show(current, false); return; }
-          fetchText(`/links/${name}.next.txt`).then((next) => show(next, true))
-            .catch(() => body.replaceChildren(element("p", "개정안을 불러오지 못했습니다.")));
+          fetchText(`/links/${name}.next.txt`).then((next) => { if (request === documentRequest) show(next, true); })
+            .catch(() => request === documentRequest && body.replaceChildren(element("p", "개정안을 불러오지 못했습니다.")));
         });
         notice.append(toggle);
         parts.push(notice);
@@ -111,6 +115,7 @@ async function openDocument(name: string) {
     };
     show(current, false);
   } catch {
+    if (request !== documentRequest) return;
     body.replaceChildren(element("p", "문서를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요."));
   }
 }
@@ -119,6 +124,7 @@ const ERRORS: Record<string, string> = {
   invalid_title: "제목을 입력해 주세요 (120자 이하).",
   invalid_body: "내용을 입력해 주세요 (4,000자 이하).",
   invalid_discordId: "디스코드 아이디를 입력해 주세요.",
+  invalid_kind: "알 수 없는 양식입니다. 페이지를 새로고침한 뒤 다시 시도해 주세요.",
   invalid_email: "올바른 이메일을 입력해 주세요.",
   consent_required: "개인정보 수집·이용에 동의해 주세요.",
   feedback_rate_limited: "잠시 후 다시 보내 주세요. 10분에 5건까지 보낼 수 있어요.",
@@ -127,7 +133,8 @@ const ERRORS: Record<string, string> = {
 function openForm(kind: string) {
   const dialog = $<HTMLDialogElement>("#form-dialog");
   const form = $<HTMLFormElement>("#feedback-form");
-  const spec = FORMS[kind];
+  const spec = Object.hasOwn(FORMS, kind) ? FORMS[kind] : undefined;
+  if (!spec) return;
   form.reset();
   (form.elements.namedItem("kind") as HTMLInputElement).value = kind;
   $("#form-title").textContent = spec.title;
@@ -147,6 +154,7 @@ async function submitForm(event: SubmitEvent) {
   const form = event.currentTarget as HTMLFormElement;
   if (!form.reportValidity()) return;
   const data = Object.fromEntries(new FormData(form)) as Record<string, string>;
+  if (!Object.hasOwn(FORMS, data.kind)) { setStatus(ERRORS.invalid_kind, "error"); return; }
   const button = form.querySelector("button[type=submit]") as HTMLButtonElement;
   button.disabled = true;
   setStatus("보내는 중…");
@@ -158,7 +166,9 @@ async function submitForm(event: SubmitEvent) {
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.error ?? "send_failed");
-    setStatus(`✅ ${FORMS[data.kind].who}이 운영진에게 전달되었습니다. 접수 번호 #${result.feedback.id}`, "ok");
+    const id = result?.feedback?.id;
+    const ticket = typeof id === "number" && Number.isSafeInteger(id) && id > 0 || typeof id === "string" && /^[0-9A-Za-z_-]{1,40}$/.test(id) ? ` 접수 번호 #${id}` : "";
+    setStatus(`✅ ${FORMS[data.kind].who}이 운영진에게 전달되었습니다.${ticket}`, "ok");
     form.reset();
     (form.elements.namedItem("kind") as HTMLInputElement).value = data.kind;
   } catch (error) {

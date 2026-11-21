@@ -1,7 +1,7 @@
 import { Logo } from "./Logo";
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { api, type ApiUser } from "./api";
+import { api, ApiError, type ApiUser } from "./api";
 import "./typography.css";
 import "./auth.css";
 import sceneSvg from "./scene.svg?raw";
@@ -32,7 +32,8 @@ export function AuthPanel({ app, onAuthenticated, extra }: { app: "dashboard" | 
 
   useEffect(() => {
     void api<{ discordOAuthConfigured: boolean }>("/api/auth/config")
-      .then((result) => setDiscordConfigured(result.discordOAuthConfigured));
+      .then((result) => setDiscordConfigured(result.discordOAuthConfigured))
+      .catch(() => undefined); // stays "not configured"; the Discord buttons then explain it on click
     void api<{ countries: Country[] }>("/api/auth/countries")
       .then((result) => {
         setCountries(result.countries);
@@ -73,7 +74,6 @@ export function AuthPanel({ app, onAuthenticated, extra }: { app: "dashboard" | 
     setMessage("");
     setPassword("");
     setConfirmation("");
-    if (next !== "register" && next !== "reset-password" && next !== "find-id") setVerifiedId("");
   }
 
   function verifyWithDiscord(purpose: "register" | "find-id" | "reset-password") {
@@ -113,11 +113,12 @@ export function AuthPanel({ app, onAuthenticated, extra }: { app: "dashboard" | 
       }
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : "요청을 처리하지 못했습니다.";
-      if (mode === "login" && reason === "account_not_found") {
+      const code = cause instanceof ApiError ? cause.code : undefined;
+      if (mode === "login" && code === "account_not_found") {
         setError("입력한 아이디로 계정을 찾지 못했습니다. 아이디를 확인해주세요.");
-      } else if (mode === "login" && reason === "invalid_credentials") {
+      } else if (mode === "login" && code === "invalid_credentials") {
         setError("아이디 또는 비밀번호가 일치하지 않습니다. 입력한 정보를 확인해주세요.");
-      } else if (reason === "account_exists") {
+      } else if (code === "account_exists") {
         setMode("login");
         setError("이미 연결된 계정입니다. 로그인하거나 비밀번호를 재설정해주세요.");
       } else {

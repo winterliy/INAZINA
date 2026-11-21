@@ -15,7 +15,8 @@ export function plain(text: string) {
     .replace(/`/g, "");
 }
 
-export type Run = <T>(work: () => Promise<T>, fallback: string, done?: (result: T) => void) => Promise<void>;
+/** Resolves true when the work (and its done callback) succeeded, false when it failed and a notice was shown. */
+export type Run = <T>(work: () => Promise<T>, fallback: string, done?: (result: T) => void) => Promise<boolean>;
 
 /** What every page needs from the shell: request runner, notices and busy state. */
 export type Ctx = {
@@ -39,8 +40,9 @@ export function Tabs<T extends string>({ value, options, onChange, label }: { va
   </div>;
 }
 
-export function Field({ label, hint, wide, children }: { label: string; hint?: string; wide?: boolean; children: ReactNode }) {
-  return <label className={wide ? "span-wide" : undefined}>{label}{hint && <small>{hint}</small>}{children}</label>;
+export function Field({ label, hint, wide, error, children }: { label: string; hint?: string; wide?: boolean; error?: string; children: ReactNode }) {
+  const className = [wide ? "span-wide" : "", error ? "invalid" : ""].filter(Boolean).join(" ") || undefined;
+  return <label className={className}>{label}{hint && <small>{hint}</small>}{children}{error && <small className="field-error" role="alert">{error}</small>}</label>;
 }
 
 /** Only fields whose text differs from the loaded value are sent. */

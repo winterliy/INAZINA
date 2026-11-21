@@ -1,7 +1,7 @@
 import { formatMoney, formatMoneyNumeric, exactMoney, moneyAdd, moneyMultiply, moneyCompare, moneyDivide, minorMoney, validMoney, type Money } from "../../shared/money";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { api, apiError, clearToken, signedOut, type ApiUser } from "../../shared/api";
+import { api, apiError, clearToken, onUnauthorized, signedOut, ApiError, type ApiUser } from "../../shared/api";
 import { Logo } from "../../shared/Logo";
 import { navigate } from "./nav";
 import { AuthPanel } from "../../shared/AuthPanel";
@@ -21,6 +21,10 @@ import { NotificationBell } from "./NotificationBell";
 import { PayoutPage } from "./PayoutPage";
 import { PendingPayouts } from "./PendingPayouts";
 import { RefreshRateButton } from "./RefreshRateButton";
+import { OrderReviewModal } from "./OrderReviewModal";
+import { usePolling } from "./usePolling";
+import { tabListKeys } from "./tabKeys";
+import type { Instrument, KycProfile, Order, Portfolio, Warning } from "./types";
 import "./pages.css";
 import "./notifications.css";
 import type { OwnershipGraphData } from "../../shared/OwnershipGraph";
@@ -29,29 +33,19 @@ import type { OwnershipGraphData } from "../../shared/OwnershipGraph";
 const ServicesApp = lazy(() => import("./services/ServicesApp").then((m) => ({ default: m.ServicesApp })));
 const OwnershipGraph = lazy(() => import("../../shared/OwnershipGraph").then((m) => ({ default: m.OwnershipGraph })));
 
-type Warning = { level: "caution" | "warning" | "danger"; label: string; reason: string; expiresEpoch: number | null };
 type DrMovement = { movement_id: number; dr_code: string; underlying_code: string; underlying_currency: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; underlying_average_cost: number; underlying_average_cost_text: string; decimal_places: number; recorded_epoch: number };
 type DrCustodyInstruction = { reference_key: string; dr_code: string; underlying_code: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; status: "requested" | "verified" | "settled" | "rejected" | "cancelled"; requested_epoch: number; settle_after_epoch: number | null };
 type DrVotingDelegation = { delegation_id: number; dr_code: string; underlying_code: string; proxy_user_id: string; dr_quantity: number; status: "active" | "revoked"; created_epoch: number; revoked_epoch: number | null; events: { event_type: string; recorded_epoch: number }[] };
 type ReceivedDrVotingDelegation = { delegation_id: number; dr_code: string; underlying_code: string; owner_user_id: string; dr_quantity: number; created_epoch: number };
 type DrVotingAgenda = { meetingId: number; agendaItemId: number; underlyingCode: string; meetingTitle: string; agendaTitle: string; choices: string[]; recordEpoch: number; opensEpoch: number | null; closesEpoch: number | null; quorumPercent: number; votingPower: number; totalEligible: number; myChoice: string | null; state: "unscheduled" | "upcoming" | "open" | "closed" };
-type Instrument = { code: string; name: string; type: string; price: Money; status: string; currency_code?: string; exchange_id?: string; quote_currency?: string; fund_category?: string | null; bondRisk?: { faceValue: Money; macaulay_duration: number; modified_duration: number; convexity: number; dv01: Money } | null; drProgram?: { underlyingCode: string; underlyingPerReceipt: number; receiptType: string; programStatus: string; depositaryBank?: string | null; custodian?: string | null; homeExchangeId?: string | null; referenceValue?: Money; referencePremiumPercent?: number; referenceDeviationAlert?: boolean }; warning?: Warning; change24h?: number | null; tradeValue24h?: Money; trades24h?: number; volume24h?: number };
 
 // Administrator trading warnings (투자주의·경고·위험).
 const WarningBadge = ({ warning }: { warning?: Warning }) => warning ? <span className={`warn-badge ${warning.level}`} title={warning.reason || warning.label}>{warning.label}</span> : null;
-type Wallet = { currency_code: string; balance_units: Money; decimal_places?: number; is_foreign: boolean };
-type AccountRateReset = { old_rate: number; new_rate: number; scheduled_epoch: number; applied_epoch: number; benchmark_key: string; benchmark_tenor_days: number };
-type AccountDetail = { managed_by?: string | null; number: string; account_type: string; product_name: string; balance: Money; currency_code: string; decimal_places: number; resolution_status: string; rate_type: string; contract_rate: number | null; next_repricing_epoch: number | null; benchmark_key: string | null; benchmark_tenor_days: number; repricing_lag_seconds: number; rate_resets: AccountRateReset[]; insurance_paid: Money; uninsured_claim: Money };
-type DepositInsuranceClaim = { claim_id: number; issuer: string; currency_code: string; decimal_places: number; covered_amount: Money; uninsured_amount: Money; payout_currency?: string | null; payout_amount?: Money | null; payout_decimal_places?: number | null; resolved_epoch: number };
-type KycProfile = { status: "pending" | "verified" | "rejected" | "expired"; risk_tier: "standard" | "enhanced" | "restricted"; expires_epoch: number | null };
 type LoanSchedule = { schedule_id: number; installment_number: number; due_epoch: number; principal_due: Money; interest_due: Money; fee_due: Money; principal_paid: Money; interest_paid: Money; fee_paid: Money; amount_paid: Money; status: string };
 type LoanRateReset = { old_rate: number; new_rate: number; scheduled_epoch: number; applied_epoch: number; benchmark_key: string; benchmark_tenor_days: number };
 const RATE_BENCHMARK_LABELS: Record<string, string> = { policy: "정책금리", funding: "조달금리", bank_bond: "은행채 수익률", treasury: "국채 수익률" };
 type LoanScheduleView = { loan_id: number; product_code: string; quote_currency: string; decimal_places: number; outstanding_balance: Money; status: string; rate_type: string; contract_rate: number | null; next_repricing_epoch: number | null; benchmark_key: string | null; benchmark_tenor_days: number; repricing_lag_seconds: number; collection_status: string; maturity_epoch: number | null; stage_cure_since_epoch: number | null; underwriting_dsr: number | null; underwriting_stress_dsr: number | null; underwriting_stress_shock_bps: number; underwriting_fx_stress_shock_percent: number; origination_pd_12m: number | null; current_ecl_stage: number | null; current_ecl_pd_12m: number | null; installments: LoanSchedule[]; rate_resets: LoanRateReset[] };
 type TaxResidency = { nationality: string | null; taxResidency: string | null; countries: string[] };
-type Holding = { code: string; name: string; qty: number; price: Money; value: Money; type: string | null; quote_currency?: string; sell_reserved_qty?: number; is_collateral?: boolean };
-type Portfolio = { cash: Money; grand_total: Money; net_worth: Money; loan_total: Money; order_reserved_total: Money; stock_total: Money; account_total: Money; bond_total?: Money; national_currency?: string; nationality?: string; home_rate_nwx?: Money; home_decimal_places?: number; wallets?: Wallet[]; stocks: Holding[]; accounts?: AccountDetail[]; deposit_insurance_claims?: DepositInsuranceClaim[]; kyc_profile?: KycProfile | null };
-type Order = { order_id: number; asset_code: string; side: string; limit_price: Money; quantity: number; remaining_quantity: number; filled_quantity: number; status: string; quote_currency?: string };
 type Book = { bids: { limit_price: Money; quantity: number; order_count: number }[]; asks: { limit_price: Money; quantity: number; order_count: number }[] };
 
 const ranges = ["1h", "1d", "1w", "1m", "all"] as const;
@@ -95,15 +89,28 @@ const recommended = (items: Instrument[], sort: RecommendSort) => {
 /** The board is its own page (/board); "종목 토론" opens it filtered to one instrument. */
 const boardUrl = (asset = "") => asset ? `/board?asset=${encodeURIComponent(asset)}` : "/board";
 const errorText = (cause: unknown, fallback: string) => cause instanceof Error ? cause.message : fallback;
+/** 32 hex characters. getRandomValues also works on plain-http LAN addresses, where crypto.randomUUID does not. */
+const requestKey = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
 
 const ROLE_LABEL: Record<string, string> = { user: "개인 계정", admin: "관리자", nation: "국가 계정", company: "법인 계정" };
 const INDICATOR_KEY = "inazina.hts.chart-indicators.v2";
 
 const WATCH_KEY = "inazina.hts.watchlist";
 const USER_KEY = "inazina.hts.user";
+const USER_ROLES = ["admin", "user", "nation", "company"];
+/** The cached user is only trusted when it has the shape the pages rely on; the session check still confirms it. */
 function cachedUser(): ApiUser | null {
-  try { return JSON.parse(sessionStorage.getItem(USER_KEY) ?? "null"); } catch { return null; }
+  try {
+    const value = JSON.parse(sessionStorage.getItem(USER_KEY) ?? "null");
+    if (value && typeof value === "object" && typeof value.userId === "string" && value.userId && typeof value.nickname === "string"
+      && typeof value.nationality === "string" && USER_ROLES.includes(value.role) && ["string", "number"].includes(typeof value.cash)) return value as ApiUser;
+  } catch { /* unreadable cache */ }
+  return null;
 }
+type Notice = { text: string; kind: "error" | "success"; expired?: boolean };
+/** A definitive refusal (the server read the request and said no); network errors and 5xx may have succeeded. */
+const definitiveRefusal = (cause: unknown) => cause instanceof ApiError && cause.status >= 400 && cause.status < 500 && cause.status !== 408 && cause.status !== 429;
+const wholeNumber = (value: string) => /^\d+$/.test(value) && Number.isSafeInteger(Number(value));
 
 export default function App() {
   // The last signed-in user of this tab draws the page at once; the session check confirms it.
@@ -113,8 +120,34 @@ export default function App() {
     setUserState(next);
     try { if (next) sessionStorage.setItem(USER_KEY, JSON.stringify(next)); else sessionStorage.removeItem(USER_KEY); } catch { /* not cached */ }
   }, []);
-  const [notice, setNotice] = useState("");
+  const [notice, setNoticeState] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(false);
+  const submitLock = useRef(false);
+  // Idempotency key of the order being confirmed. The same order content keeps the key, so a retry after a timeout
+  // is replayed by the server instead of placed twice; changed content (a new price) gets a new key.
+  const orderRequest = useRef<{ signature: string; key: string } | null>(null);
+  const userRef = useRef(user);
+  userRef.current = user;
+  // An error stays until dismissed; the same error twice in a row is not announced again.
+  const setNotice = useCallback((text: string) => {
+    if (!text) { setNoticeState(null); return; }
+    setNoticeState((current) => current?.kind === "error" && current.text === text && !current.expired ? current : { text, kind: "error" });
+  }, []);
+  const notify = useCallback((text: string) => setNoticeState({ text, kind: "success" }), []);
+  const lastPollError = useRef(new Map<string, string>());
+  const expireSession = useCallback(() => {
+    if (!userRef.current) return;
+    setUser(null);
+    setNoticeState({ text: "세션이 만료되었습니다. 다시 로그인해 주세요.", kind: "error", expired: true });
+  }, [setUser]);
+  // A background refresh failing again with the same message stays quiet; success re-arms it.
+  const reportPollError = useCallback((key: string, cause: unknown, fallback: string) => {
+    if ((cause as { status?: number })?.status === 401) { expireSession(); return; }
+    const text = errorText(cause, fallback);
+    if (lastPollError.current.get(key) === text) return;
+    lastPollError.current.set(key, text);
+    setNotice(text);
+  }, [expireSession, setNotice]);
   const [health, setHealth] = useState("확인 중");
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [selectedCode, setSelectedCode] = useState("");
@@ -162,7 +195,10 @@ export default function App() {
     try { localStorage.setItem(INDICATOR_KEY, JSON.stringify(next)); } catch { /* not remembered */ }
   }
   const [points, setPoints] = useState<Point[]>([]);
-  const [quote, setQuote] = useState<{ code: string; price: Money } | null>(null);
+  const [quote, setQuote] = useState<{ code: string; price: Money; at: number } | null>(null);
+  const [pricedAt, setPricedAt] = useState(0);
+  const marketSeq = useRef(0);
+  const pathname = location.pathname;
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [drMovements, setDrMovements] = useState<DrMovement[]>([]);
@@ -211,14 +247,32 @@ export default function App() {
     return counts;
   }, [instruments]);
 
+  // Search combobox: the arrow keys move through the results, Enter picks the highlighted one.
+  const [activeIndex, setActiveIndex] = useState(0);
+  const visibleResults = filtered.slice(0, 200);
+  const activeResult = visibleResults[Math.min(activeIndex, visibleResults.length - 1)];
+  useEffect(() => { setActiveIndex(0); }, [search, searchTabValue, recommendSort]);
+  useEffect(() => {
+    if (searchOpen && activeResult) document.getElementById(`search-opt-${activeResult.code}`)?.scrollIntoView({ block: "nearest" });
+  }, [activeResult?.code, searchOpen]);
+
+  // The old /commands/<name> links forward to the matching page.
+  const legacyTarget = user && pathname.startsWith("/commands") ? legacyCommandPath(decodeURIComponent(pathname.split("/").filter(Boolean)[1] ?? "")) : null;
+  useEffect(() => { if (legacyTarget) navigate(legacyTarget, true); }, [legacyTarget]);
+
   // Only a refused session signs out; a slow or unreachable server keeps the user and tries again.
+  const authTimer = useRef<number | undefined>(undefined);
+  const authAlive = useRef(true);
   const authenticate = useCallback(async (): Promise<void> => {
     try {
-      setUser((await api<{ user: ApiUser }>("/api/auth/session")).user);
+      const { user: next } = await api<{ user: ApiUser }>("/api/auth/session");
+      if (!authAlive.current) return;
+      setUser(next);
       setChecked(true);
     } catch (cause) {
+      if (!authAlive.current) return;
       if (signedOut(cause)) { setUser(null); setChecked(true); return; }
-      window.setTimeout(() => void authenticate(), 3000);
+      authTimer.current = window.setTimeout(() => void authenticate(), 3000);
     }
   }, [setUser]);
 
@@ -251,8 +305,12 @@ export default function App() {
   const [ratesBusy, setRatesBusy] = useState(false);
   const refreshRates = useCallback(async () => {
     setRatesBusy(true);
-    try { await refreshAccount(); } catch { /* the figures simply stay as they were */ } finally { setRatesBusy(false); }
-  }, [refreshAccount]);
+    try { await refreshAccount(); lastPollError.current.delete("account"); } catch (cause) { reportPollError("account", cause, "계좌 정보를 불러오지 못했습니다."); } finally { setRatesBusy(false); }
+  }, [refreshAccount, reportPollError]);
+  /** Background and after-action refresh of the account: auth errors end the session, other errors show once. */
+  const refreshAccountQuiet = useCallback(async () => {
+    try { await refreshAccount(); lastPollError.current.delete("account"); } catch (cause) { reportPollError("account", cause, "계좌 정보를 불러오지 못했습니다."); }
+  }, [refreshAccount, reportPollError]);
 
   async function saveTaxResidency(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -273,34 +331,54 @@ export default function App() {
   }
 
   useEffect(() => {
-    void fetch("/api/health").then((response) => response.json()).then((result) => setHealth(result.python === "connected" ? "연결됨" : "Python 연결 끊김")).catch(() => setHealth("연결 끊김"));
+    authAlive.current = true;
+    let live = true;
+    void fetch("/api/health")
+      .then((response) => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); })
+      .then((result) => { if (live) setHealth(result.python === "connected" ? "연결됨" : "Python 연결 끊김"); })
+      .catch(() => { if (live) setHealth("연결 끊김"); });
     void authenticate();
+    return () => { live = false; authAlive.current = false; window.clearTimeout(authTimer.current); };
   }, [authenticate]);
+
+  // Any 401 after sign-in means the session is gone: drop to the login screen and stop polling (polls need `user`).
+  useEffect(() => onUnauthorized(expireSession), [expireSession]);
+
+  // A success notice clears itself after 4 seconds; an error stays until dismissed.
+  useEffect(() => {
+    if (notice?.kind !== "success") return;
+    const timer = window.setTimeout(() => setNoticeState(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  // The instrument list (prices) refreshes every 5s while the tab is visible; the first answer also picks the instrument.
+  const loadInstruments = useCallback(async () => {
+    try {
+      const market = await api<{ instruments: Instrument[] }>("/api/market/instruments");
+      lastPollError.current.delete("instruments");
+      setInstruments(market.instruments);
+      setPricedAt(Date.now());
+      const linked = new URLSearchParams(location.search).get("code");
+      setSelectedCode((current) => current || market.instruments.find((item) => item.code === linked)?.code || market.instruments[0]?.code || "");
+    } catch (cause) { reportPollError("instruments", cause, "종목 목록을 불러오지 못했습니다."); }
+  }, [reportPollError]);
+  usePolling(loadInstruments, 5000, Boolean(user));
+  usePolling(refreshAccountQuiet, 15000, Boolean(user));
 
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
-    // The market list and the account load independently: an account error must not empty 종목검색.
-    api<{ instruments: Instrument[] }>("/api/market/instruments")
-      .then((market) => {
-        if (cancelled) return;
-        setInstruments(market.instruments);
-        const linked = new URLSearchParams(location.search).get("code");
-        setSelectedCode((current) => current || market.instruments.find((item) => item.code === linked)?.code || market.instruments[0]?.code || "");
-      })
-      .catch((cause) => { if (!cancelled) setNotice(errorText(cause, "종목 목록을 불러오지 못했습니다.")); });
-    refreshAccount().catch((cause) => { if (!cancelled) setNotice(errorText(cause, "계좌 정보를 불러오지 못했습니다.")); });
-    const timer = window.setInterval(() => void refreshAccount().catch(() => undefined), 15000);
+    // DR extras load once; a failure here only leaves those panels empty.
     void api<{ movements: DrMovement[] }>("/api/me/dr/movements")
-      .then(({ movements }) => setDrMovements(movements)).catch(() => undefined);
+      .then(({ movements }) => { if (!cancelled) setDrMovements(movements); }).catch(() => undefined);
     void api<{ delegations: DrVotingDelegation[] }>("/api/me/dr/voting-delegations")
-      .then(({ delegations }) => setDrDelegations(delegations)).catch(() => undefined);
+      .then(({ delegations }) => { if (!cancelled) setDrDelegations(delegations); }).catch(() => undefined);
     void api<{ delegations: ReceivedDrVotingDelegation[] }>("/api/me/dr/proxy-voting-delegations")
-      .then(({ delegations }) => setReceivedDrDelegations(delegations)).catch(() => undefined);
+      .then(({ delegations }) => { if (!cancelled) setReceivedDrDelegations(delegations); }).catch(() => undefined);
     void api<{ agenda: DrVotingAgenda[] }>("/api/me/dr/voting-agenda")
-      .then(({ agenda }) => setDrVotingAgenda(agenda)).catch(() => undefined);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [user, refreshAccount]);
+      .then(({ agenda }) => { if (!cancelled) setDrVotingAgenda(agenda); }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [user]);
 
   useEffect(() => {
     if (!user) return;
@@ -310,7 +388,7 @@ export default function App() {
   }, [user]);
 
   useEffect(() => {
-    if (!user || !["/account", "/account/", "/ownership", "/ownership/"].includes(location.pathname)) return;
+    if (!user || !["/account", "/account/", "/ownership", "/ownership/"].includes(pathname)) return;
     let active = true;
     setOwnershipLoading(true);
     void api<{ graph: OwnershipGraphData }>("/api/me/ownership-graph")
@@ -318,7 +396,7 @@ export default function App() {
       .catch(() => { if (active) setOwnershipGraph(undefined); })
       .finally(() => { if (active) setOwnershipLoading(false); });
     return () => { active = false; };
-  }, [user]);
+  }, [user, pathname]);
 
   // The search drops down under the top-bar field, like a portal's: Escape or a click elsewhere closes it.
   const searchBoxRef = useRef<HTMLDivElement>(null);
@@ -333,6 +411,8 @@ export default function App() {
 
   const refreshMarket = useCallback(async (code: string, timeframe: string, candleSeconds: number | null) => {
     if (!code) return;
+    // Only the newest request may write: a slower answer for the previous instrument or range is dropped.
+    const seq = ++marketSeq.current;
     try {
       const query = new URLSearchParams({ range: timeframe });
       if (candleSeconds) query.set("interval", String(candleSeconds));
@@ -343,24 +423,23 @@ export default function App() {
         api<{ points: Point[]; candles?: Candle[]; interval?: number; indicators?: IndicatorData; catalog?: IndicatorCatalog }>(`/api/market/chart/${encodeURIComponent(code)}?${query}`),
         api<Book>(`/api/market/book/${encodeURIComponent(code)}`),
       ]);
-      setQuote(chart.points.length ? { code, price: chart.points.at(-1)!.price } : null);
-      setPoints(chart.points.map((point) => ({ ...point, price: Number(point.price) })));
+      if (seq !== marketSeq.current) return;
+      lastPollError.current.delete("market");
+      const nextPoints = chart.points.map((point) => ({ ...point, price: Number(point.price) }));
+      setQuote(chart.points.length ? { code, price: chart.points.at(-1)!.price, at: Date.now() } : null);
+      setPoints(nextPoints);
       setCandles((chart.candles ?? []).map((candle) => ({ ...candle, open: Number(candle.open), high: Number(candle.high), low: Number(candle.low), close: Number(candle.close) })));
       if (chart.interval) setCandleInterval(chart.interval);
       setIndicatorData(chart.indicators ?? { upper: {}, lower: {} });
       if (chart.catalog) { setIndicatorCatalog(chart.catalog); catalogLoaded.current = true; }
       setBook(orderBook);
     } catch (cause) {
-      setNotice(errorText(cause, "시세를 불러오지 못했습니다."));
+      if (seq === marketSeq.current) reportPollError("market", cause, "시세를 불러오지 못했습니다.");
     }
-  }, []);
+  }, [reportPollError]);
 
-  useEffect(() => { void refreshMarket(selectedCode, range, interval); }, [selectedCode, range, interval, indicatorQuery, refreshMarket]);
-  useEffect(() => {
-    if (!selectedCode) return;
-    const timer = window.setInterval(() => void refreshMarket(selectedCode, range, interval), 5000);
-    return () => window.clearInterval(timer);
-  }, [selectedCode, range, interval, refreshMarket]);
+  // Runs now and every 5s while the tab is visible; a new instrument, range or indicator choice restarts it.
+  usePolling(() => refreshMarket(selectedCode, range, interval), 5000, Boolean(user) && Boolean(selectedCode), [selectedCode, range, interval, indicatorQuery, refreshMarket]);
   useEffect(() => { if (selected) setPrice(String(selected.price)); }, [selected?.code]);
 
   useEffect(() => {
@@ -393,19 +472,26 @@ export default function App() {
   }, [drawings, selectedCode]);
 
   async function submitOrder() {
-    if (!orderReady) return;
+    // A double click is stopped here, before the request; the clientOrderId covers a retry after a lost response.
+    if (submitLock.current || !orderReady) return;
+    submitLock.current = true;
     setBusy(true);
     try {
+      const order = { assetCode: selectedCode, side, quantity: Number(quantity), orderType: orderType === "market" ? "market" : "limit", limitPrice: exactMoney(orderPrice) };
+      const signature = JSON.stringify(order);
+      if (orderRequest.current?.signature !== signature) orderRequest.current = { signature, key: requestKey() };
       const result = await api<{ message: string }>("/api/market/orders", {
-        method: "POST", body: JSON.stringify({ assetCode: selectedCode, side, quantity: Number(quantity), orderType: orderType === "market" ? "market" : "limit", limitPrice: exactMoney(orderPrice) }),
+        method: "POST", body: JSON.stringify({ ...order, clientOrderId: orderRequest.current.key }),
       });
+      orderRequest.current = null;
       setReview(false);
-      setNotice(result.message);
+      notify(result.message);
       setOrderFilter("open");
-      await Promise.all([refreshAccount(), refreshMarket(selectedCode, range, interval)]);
+      await Promise.all([refreshAccountQuiet(), refreshMarket(selectedCode, range, interval), loadInstruments()]);
     } catch (cause) {
-      setNotice(errorText(cause, "주문을 제출하지 못했습니다."));
+      if ((cause as { status?: number })?.status !== 401) setNotice(errorText(cause, "주문을 제출하지 못했습니다."));
     } finally {
+      submitLock.current = false;
       setBusy(false);
     }
   }
@@ -416,6 +502,7 @@ export default function App() {
     if (!Number.isSafeInteger(qty) || qty < 1) { setNotice("DR 수량은 1 이상의 정수여야 합니다."); return; }
     const verb = action === "issue" ? "원주를 예탁해 DR을 발행" : "보유 DR을 원주로 상환";
     if (!window.confirm(`${selected.code} ${qty} DR을 ${verb}할까요?`)) return;
+    if (submitLock.current) return;
     const requestKey = `${user?.userId ?? "session"}:${selected.code}:${action}:${qty}`;
     const storageKey = `inazina.dr.request.${requestKey}`;
     let referenceKey = drRequestKeys.current.get(requestKey);
@@ -427,13 +514,14 @@ export default function App() {
       drRequestKeys.current.set(requestKey, referenceKey);
       try { window.sessionStorage.setItem(storageKey, referenceKey); } catch { /* in-memory retry still works */ }
     }
+    submitLock.current = true;
     setBusy(true);
     try {
       const result = await api<{ success: boolean; result: { status: string; message: string } }>("/api/dr/convert", { method: "POST", body: JSON.stringify({
         drCode: selected.code, action, quantity: qty,
         referenceKey,
       }) });
-      setNotice(result.result.message);
+      notify(result.result.message);
       drRequestKeys.current.delete(requestKey);
       try { window.sessionStorage.removeItem(storageKey); } catch { /* ignore unavailable session storage */ }
       try {
@@ -446,8 +534,13 @@ export default function App() {
         setNotice(`${result.result.message} 화면 새로고침에 실패했습니다. 다시 불러와 잔액과 이력을 확인해주세요.`);
       }
     } catch (cause) {
-      setNotice(`${errorText(cause, "DR 전환 요청 결과를 확인하지 못했습니다.")} 같은 수량과 방향으로 재시도하면 중복 전환되지 않습니다.`);
-    } finally { setBusy(false); }
+      if (definitiveRefusal(cause)) {
+        // The server refused this request outright, so the next attempt must be a new one.
+        drRequestKeys.current.delete(requestKey);
+        try { window.sessionStorage.removeItem(storageKey); } catch { /* ignore unavailable session storage */ }
+        if ((cause as ApiError).status !== 401) setNotice(errorText(cause, "DR 전환 요청이 거절되었습니다."));
+      } else setNotice(`${errorText(cause, "DR 전환 요청 결과를 확인하지 못했습니다.")} 같은 수량과 방향으로 재시도하면 중복 전환되지 않습니다.`);
+    } finally { submitLock.current = false; setBusy(false); }
   }
 
   async function cancelDrConversion(item: DrCustodyInstruction) {
@@ -457,8 +550,8 @@ export default function App() {
       const result = await api<{ success: boolean; result: { status: string } }>(
         "/api/dr/convert/cancel", { method: "POST", body: JSON.stringify({ referenceKey: item.reference_key }) },
       );
-      setNotice(result.result.status === "cancelled" ? "DR 전환 요청을 취소하고 예약 수량을 해제했습니다." : "취소 처리했습니다.");
-      await refreshAccount();
+      notify(result.result.status === "cancelled" ? "DR 전환 요청을 취소하고 예약 수량을 해제했습니다." : "취소 처리했습니다.");
+      await refreshAccountQuiet();
     } catch (cause) {
       setNotice(errorText(cause, "DR 전환 요청을 취소하지 못했습니다."));
     } finally { setBusy(false); }
@@ -480,7 +573,7 @@ export default function App() {
       const { delegations } = await api<{ delegations: DrVotingDelegation[] }>(
         "/api/me/dr/voting-delegations");
       setDrDelegations(delegations);
-      setNotice(`${selected.code} 의결권 ${quantityValue} DR을 ${proxyUserId}에게 위임했습니다.`);
+      notify(`${selected.code} 의결권 ${quantityValue} DR을 ${proxyUserId}에게 위임했습니다.`);
     } catch (cause) {
       setNotice(errorText(cause, "의결권 위임을 처리하지 못했습니다."));
     } finally { setBusy(false); }
@@ -496,7 +589,7 @@ export default function App() {
       const { delegations } = await api<{ delegations: DrVotingDelegation[] }>(
         "/api/me/dr/voting-delegations");
       setDrDelegations(delegations);
-      setNotice("의결권 위임을 철회했습니다.");
+      notify("의결권 위임을 철회했습니다.");
     } catch (cause) {
       setNotice(errorText(cause, "의결권 위임을 철회하지 못했습니다."));
     } finally { setBusy(false); }
@@ -510,7 +603,7 @@ export default function App() {
       }) });
       const { agenda } = await api<{ agenda: DrVotingAgenda[] }>("/api/me/dr/voting-agenda");
       setDrVotingAgenda(agenda);
-      setNotice(`${item.agendaTitle}: ${choice}로 투표했습니다. 기준일 의결권 ${money(item.votingPower)}표가 반영됩니다.`);
+      notify(`${item.agendaTitle}: ${choice}로 투표했습니다. 기준일 의결권 ${money(item.votingPower)}표가 반영됩니다.`);
     } catch (cause) {
       setNotice(errorText(cause, "의결권 투표를 처리하지 못했습니다."));
     } finally { setBusy(false); }
@@ -521,8 +614,8 @@ export default function App() {
     setBusy(true);
     try {
       const result = await api<{ message: string }>(`/api/market/orders/${order.order_id}/cancel`, { method: "POST", body: "{}" });
-      setNotice(result.message);
-      await Promise.all([refreshAccount(), refreshMarket(selectedCode, range, interval)]);
+      notify(result.message);
+      await Promise.all([refreshAccountQuiet(), refreshMarket(selectedCode, range, interval)]);
     } catch (cause) {
       setNotice(errorText(cause, "주문을 취소하지 못했습니다."));
     } finally {
@@ -560,9 +653,15 @@ export default function App() {
   }
 
   if (!user && !checked) return <div className="stage"><Backdrop /><p className="page-loading" role="status">불러오는 중…</p></div>;
-  if (!user) return <div className="stage"><Backdrop /><AuthPanel app="hts" onAuthenticated={(next) => { const back = new URLSearchParams(location.search).get("return"); if (back?.startsWith("/board")) location.assign(back); else setUser(next); }} extra={<a className="board-guest-button" href={boardUrl()}>로그인 없이 게시판 보기</a>} /></div>;
+  // After the session expires the login screen carries the notice; "다시 로그인" dismisses it and focuses the form.
+  const relogin = () => { setNoticeState(null); window.setTimeout(() => document.querySelector<HTMLElement>(".stage input")?.focus(), 0); };
+  const toast = notice && <div className={`toast ${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}><span>{notice.text}</span>{notice.expired && <button type="button" onClick={relogin}>다시 로그인</button>}<button type="button" onClick={() => setNoticeState(null)}>닫기</button></div>;
+  if (!user) return <div className="stage"><Backdrop />{toast}<AuthPanel app="hts" onAuthenticated={(next) => { const back = new URLSearchParams(location.search).get("return"); if (back?.startsWith("/board")) location.assign(back); else { setNoticeState(null); setUser(next); } }} extra={<a className="board-guest-button" href={boardUrl()}>로그인 없이 게시판 보기</a>} /></div>;
 
-  const current = quote?.code === selectedCode ? quote.price : selected?.price ?? 0;
+  // The latest known price is whichever of the chart's last trade and the refreshed instrument list was read last.
+  const quoteFresh = quote?.code === selectedCode && (!selected || quote.at >= pricedAt);
+  const current = quoteFresh ? quote!.price : selected?.price ?? quote?.price ?? 0;
+  const currentAt = quoteFresh ? quote!.at : selected ? pricedAt || null : null;
   // Market orders are priced by the server against the live book; this estimate uses the visible levels.
   const marketEstimate = (() => {
     const levels = (side === "buy" ? book.asks : book.bids) ?? [];
@@ -570,8 +669,8 @@ export default function App() {
     for (const level of levels) { needed -= Number(level.quantity); if (needed <= 0) return { price: String(level.limit_price), enough: true }; }
     return { price: levels.length ? String(levels[levels.length - 1].limit_price) : "", enough: false };
   })();
-  const orderPrice = orderType === "market" ? marketEstimate.price : orderType === "current" ? String(selected?.price ?? "") : price;
-  const orderReady = Boolean(selected) && validMoney(orderPrice, true) && Number.isFinite(Number(quantity)) && Number(quantity) > 0 && (orderType !== "market" || marketEstimate.enough);
+  const orderPrice = orderType === "market" ? marketEstimate.price : orderType === "current" ? String(current || "") : price;
+  const orderReady = Boolean(selected) && validMoney(orderPrice, true) && wholeNumber(quantity) && Number(quantity) > 0 && (orderType !== "market" || marketEstimate.enough);
   const orderAmount = validMoney(orderPrice) && validMoney(quantity) ? moneyMultiply(orderPrice, quantity) : "0";
   // Amounts follow the account's nationality; instrument prices keep their trading currency.
   const homeCurrency = portfolio?.national_currency || user.currency || "";
@@ -606,20 +705,26 @@ export default function App() {
     if (result.returnedTo) {
       setPortfolio(null); setOrders([]); setCredit(null);
       setUser(result.returnedTo);
-      setNotice(`관리자 ${result.returnedTo.nickname} 계정으로 돌아왔습니다.`);
+      notify(`관리자 ${result.returnedTo.nickname} 계정으로 돌아왔습니다.`);
       return;
     }
     setUser(null);
     if (location.pathname !== "/") navigate("/");
   };
-  const topbar = (here: "home" | "account" | "services") => <header className="hts-topbar">
+  const topbar = (here: "home" | "account" | "services") => <><header className="hts-topbar">
     <a className="brand" href="/" aria-label="나루 홈"><Logo className="brand-logo" /></a>
     <div className="top-search" ref={searchBoxRef}>
       <label className="top-search-field"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M20 20l-4-4" /></svg>
-        <input ref={searchInputRef} value={search} aria-label="종목·상품코드·금리·지수 검색" aria-expanded={searchOpen} aria-controls="top-search-pop" placeholder="종목명·상품코드·국가·거래소 검색" onFocus={() => setSearchOpen(true)} onChange={(event) => { setSearch(event.target.value); setSearchOpen(true); }} onKeyDown={(event) => { if (event.key === "Enter" && filtered[0]) chooseInstrument(filtered[0].code); }} />
+        <input ref={searchInputRef} value={search} role="combobox" aria-autocomplete="list" aria-label="종목·상품코드·금리·지수 검색" aria-expanded={searchOpen} aria-controls="top-search-list" aria-activedescendant={searchOpen && activeResult ? `search-opt-${activeResult.code}` : undefined} placeholder="종목명·상품코드·국가·거래소 검색" onFocus={() => setSearchOpen(true)} onChange={(event) => { setSearch(event.target.value); setSearchOpen(true); }} onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            if (!searchOpen) { setSearchOpen(true); return; }
+            if (visibleResults.length) setActiveIndex((index) => (Math.min(index, visibleResults.length - 1) + (event.key === "ArrowDown" ? 1 : -1) + visibleResults.length) % visibleResults.length);
+          } else if (event.key === "Enter" && searchOpen && activeResult) { event.preventDefault(); chooseInstrument(activeResult.code); }
+        }} />
         {search && <button type="button" className="top-search-clear" aria-label="검색어 지우기" onClick={() => { setSearch(""); searchInputRef.current?.focus(); }}>×</button>}
       </label>
-      {searchOpen && <section id="top-search-pop" className="search-pop" aria-label="종목 검색 결과">{!search.trim() && <div className="search-tabs" role="tablist" aria-label="상품 종류">{SEARCH_TABS.filter(([id]) => id === "recommended" || tabCounts[id]).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={searchTabValue === id} className={searchTabValue === id ? "active" : ""} onClick={() => setSearchTabValue(id)}>{label}<span>{tabCounts[id] ?? 0}</span></button>)}</div>}{!search.trim() && searchTabValue === "recommended" && <><div className="recommend-sorts" role="group" aria-label="추천 기준">{RECOMMEND_SORTS.map(([id, label]) => <button key={id} type="button" aria-pressed={recommendSort === id} className={recommendSort === id ? "active" : ""} onClick={() => setRecommendSort(id)}>{label}</button>)}</div><p className="search-caption">{RECOMMEND_SORTS.find(([id]) => id === recommendSort)![2]}</p></>}<div className="search-results">{fxRates.map((fx) => <div key={`fx-${fx.code}`} className="search-result fx-rate" aria-label={`${homeCurrency}:${fx.code} 환율`}><span><span className="search-name"><b>{homeCurrency}:{fx.code}</b><small>{fx.name} · 환율</small></span></span><span className="search-price"><strong>1 : {money(fx.rate, 6)}</strong><small>1 {fx.code} = {money(fx.inverse, 4)} {homeCurrency}</small></span></div>)}{filtered.slice(0, 200).map((item, index) => <button type="button" key={item.code} className={selectedCode === item.code ? "search-result active" : "search-result"} onClick={() => chooseInstrument(item.code)}><span>{!search.trim() && searchTabValue === "recommended" && <em className="search-rank">{index + 1}</em>}<span className="search-name"><b>{item.name} <WarningBadge warning={item.warning} /></b><small>{item.code} · {instrumentType(item)}{!search.trim() && searchTabValue === "recommended" && recommendSort === "volume" ? (item.volume24h ? ` · 24시간 ${money(item.volume24h, 2)}주` : "") : item.trades24h ? ` · 24시간 ${money(item.trades24h)}건` : ""}</small></span></span><span className="search-price"><strong>{money(item.price, 2)} {item.quote_currency || homeCurrency}</strong>{item.change24h !== null && item.change24h !== undefined && <small className={item.change24h > 0 ? "up" : item.change24h < 0 ? "down" : undefined}>{item.change24h > 0 ? "+" : ""}{Number(item.change24h).toFixed(2)}%</small>}</span></button>)}{!filtered.length && !fxRates.length && <p className="empty">{search.trim() ? "거래 종목 결과가 없습니다. 상품 코드·금리·지수는 아래 관련 결과를 확인하세요." : searchTabValue === "recommended" ? "최근 24시간 동안 해당하는 종목이 없습니다." : "이 종류의 상품이 없습니다."}</p>}</div>{search.trim() && <SearchIndicators query={search} onExchangeSelect={setHeatmapExchangeOverride} />}</section>}
+      {searchOpen && <section id="top-search-pop" className="search-pop" aria-label="종목 검색 결과">{!search.trim() && <div className="search-tabs" role="tablist" aria-label="상품 종류" onKeyDown={tabListKeys}>{SEARCH_TABS.filter(([id]) => id === "recommended" || tabCounts[id]).map(([id, label]) => <button key={id} type="button" role="tab" tabIndex={searchTabValue === id ? 0 : -1} aria-selected={searchTabValue === id} className={searchTabValue === id ? "active" : ""} onClick={() => setSearchTabValue(id)}>{label}<span>{tabCounts[id] ?? 0}</span></button>)}</div>}{!search.trim() && searchTabValue === "recommended" && <><div className="recommend-sorts" role="group" aria-label="추천 기준">{RECOMMEND_SORTS.map(([id, label]) => <button key={id} type="button" aria-pressed={recommendSort === id} className={recommendSort === id ? "active" : ""} onClick={() => setRecommendSort(id)}>{label}</button>)}</div><p className="search-caption">{RECOMMEND_SORTS.find(([id]) => id === recommendSort)![2]}</p></>}<div className="search-results" id="top-search-list" role="listbox" aria-label="종목 검색 결과">{fxRates.map((fx) => <div key={`fx-${fx.code}`} role="group" className="search-result fx-rate" aria-label={`${homeCurrency}:${fx.code} 환율`}><span><span className="search-name"><b>{homeCurrency}:{fx.code}</b><small>{fx.name} · 환율</small></span></span><span className="search-price"><strong>1 : {money(fx.rate, 6)}</strong><small>1 {fx.code} = {money(fx.inverse, 4)} {homeCurrency}</small></span></div>)}{visibleResults.map((item, index) => <button type="button" role="option" id={`search-opt-${item.code}`} aria-selected={activeResult?.code === item.code} tabIndex={-1} key={item.code} className={`search-result${selectedCode === item.code ? " active" : ""}${activeResult?.code === item.code ? " kbd" : ""}`} onClick={() => chooseInstrument(item.code)}><span>{!search.trim() && searchTabValue === "recommended" && <em className="search-rank">{index + 1}</em>}<span className="search-name"><b>{item.name} <WarningBadge warning={item.warning} /></b><small>{item.code} · {instrumentType(item)}{!search.trim() && searchTabValue === "recommended" && recommendSort === "volume" ? (item.volume24h ? ` · 24시간 ${money(item.volume24h, 2)}주` : "") : item.trades24h ? ` · 24시간 ${money(item.trades24h)}건` : ""}</small></span></span><span className="search-price"><strong>{money(item.price, 2)} {item.quote_currency || homeCurrency}</strong>{item.change24h !== null && item.change24h !== undefined && <small className={item.change24h > 0 ? "up" : item.change24h < 0 ? "down" : undefined}>{item.change24h > 0 ? "+" : ""}{Number(item.change24h).toFixed(2)}%</small>}</span></button>)}{!filtered.length && !fxRates.length && <p className="empty">{search.trim() ? "거래 종목 결과가 없습니다. 상품 코드·금리·지수는 아래 관련 결과를 확인하세요." : searchTabValue === "recommended" ? "최근 24시간 동안 해당하는 종목이 없습니다." : "이 종류의 상품이 없습니다."}</p>}</div>{search.trim() && <SearchIndicators query={search} onExchangeSelect={setHeatmapExchangeOverride} />}</section>}
     </div>
     <nav className="top-nav" aria-label="서비스">{SERVICES.slice(0, 4).map((item) => <a key={item.path} href={item.path} aria-current={here === "services" && location.pathname.startsWith(item.path) ? "page" : undefined}>{item.label}</a>)}<a href={boardUrl()}>게시판</a></nav>
     <div className="top-actions">
@@ -629,13 +734,9 @@ export default function App() {
       <button className="icon-button" title={user.delegatedBy ? "관리자 계정으로 돌아갑니다" : "로그아웃"} onClick={() => void logout()}>{user.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button>
     </div>
     {user.delegatedBy && <p className="delegation-bar" role="status">관리자 {user.delegatedByName ?? user.delegatedBy}님이 <b>{ROLE_LABEL[user.role]} {user.nickname}</b>(으)로 로그인 중 · 모든 거래는 이 계정 명의로 처리됩니다.</p>}
-  </header>;
+  </header>{toast}</>;
 
-  if (location.pathname.startsWith("/commands")) {
-    const target = legacyCommandPath(decodeURIComponent(location.pathname.split("/").filter(Boolean)[1] ?? ""));
-    queueMicrotask(() => navigate(target, true));
-    return null;
-  }
+  if (legacyTarget) return null;
   const service = servicePath(location.pathname);
   const payoutRoute = location.pathname.match(/^\/payouts\/(\d+)\/?$/);
   if (payoutRoute) return <div className="hts-shell stage payout-shell">
@@ -666,7 +767,7 @@ export default function App() {
     <Backdrop />
     {topbar("services")}
     <Suspense fallback={<p className="svc-empty">불러오는 중…</p>}>
-      <ServicesApp path={service} instruments={instruments} portfolio={portfolio} orders={orders} userId={user.userId} homeCurrency={homeCurrency} homeDigits={homeDigits} cash={portfolio?.cash ?? user.cash} creditScore={credit?.score ?? user.creditScore} accounts={portfolio?.accounts ?? []} onDone={() => void refreshAccount().catch(() => undefined)} />
+      <ServicesApp path={service} instruments={instruments} portfolio={portfolio} orders={orders} userId={user.userId} homeCurrency={homeCurrency} homeDigits={homeDigits} cash={portfolio?.cash ?? user.cash} creditScore={credit?.score ?? user.creditScore} accounts={portfolio?.accounts ?? []} onDone={() => void refreshAccountQuiet()} />
     </Suspense>
     <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
   </div>;
@@ -728,7 +829,6 @@ export default function App() {
   return <div className="hts-shell stage">
     <Backdrop />
     {topbar("home")}
-    {notice && <div className="toast" role="status">{notice}<button onClick={() => setNotice("")}>닫기</button></div>}
     <main className="hts-main">
       {watch.length > 0 && <nav className="watch-strip" aria-label="관심종목">{watch.map((code) => instruments.find((item) => item.code === code)).filter((item): item is Instrument => Boolean(item)).map((item) => <button type="button" key={item.code} className={item.code === selectedCode ? "active" : ""} onClick={() => chooseInstrument(item.code)}>
         <b>{item.name}</b><span>{money(item.price, 2)}</span>{item.change24h != null && <small className={item.change24h > 0 ? "up" : item.change24h < 0 ? "down" : undefined}>{item.change24h > 0 ? "+" : ""}{Number(item.change24h).toFixed(2)}%</small>}
@@ -747,7 +847,7 @@ export default function App() {
               <span className="divider" aria-hidden="true" />
               <button className={chartMode === "candle" ? "selected" : ""} onClick={() => setChartMode("candle")}>캔들</button>
               <button className={chartMode === "line" ? "selected" : ""} onClick={() => setChartMode("line")}>선</button>
-              {chartMode === "candle" && <select className="interval-select" aria-label="봉 주기" value={interval ?? ""} onChange={(event) => setIntervalSeconds(event.target.value ? Number(event.target.value) : null)}><option value="">자동 ({intervals.find(([seconds]) => seconds === candleInterval)?.[1] ?? "봉"})</option>{intervals.map(([seconds, name]) => <option key={seconds} value={seconds}>{name}</option>)}</select>}<button className="chart-refresh" onClick={() => void refreshAccount().catch((cause) => setNotice(errorText(cause, "지갑을 새로 고치지 못했습니다.")))}>새로고침</button></>} />
+              {chartMode === "candle" && <select className="interval-select" aria-label="봉 주기" value={interval ?? ""} onChange={(event) => setIntervalSeconds(event.target.value ? Number(event.target.value) : null)}><option value="">자동 ({intervals.find(([seconds]) => seconds === candleInterval)?.[1] ?? "봉"})</option>{intervals.map(([seconds, name]) => <option key={seconds} value={seconds}>{name}</option>)}</select>}<button className="chart-refresh" onClick={() => { lastPollError.current.delete("account"); void refreshAccountQuiet(); }}>새로고침</button></>} />
           </ErrorBoundary>
           <ExchangeHeatmap instruments={instruments} exchangeId={heatmapExchange} onExchangeChange={setHeatmapExchangeOverride} onSelect={chooseInstrument} />
         </div>
@@ -759,20 +859,20 @@ export default function App() {
             {orderType === "current" && <label>현재가 ({selected?.quote_currency || homeCurrency})<input value={orderPrice ? money(orderPrice, 2) : "—"} readOnly aria-readonly="true" /></label>}
             {orderType === "market" && <label>예상 체결가 ({selected?.quote_currency || homeCurrency})<input value={orderPrice ? money(orderPrice, 2) : "—"} readOnly aria-readonly="true" /></label>}
             {orderType === "market" && Number(quantity) > 0 && !marketEstimate.enough && <p className="risk-note">상대 호가 수량이 부족해 시장가로 모두 체결할 수 없습니다.</p>}
-            <label>주문 수량<input inputMode="numeric" value={quantity} onChange={(event) => setQuantity(event.target.value.replace(/[^\d.]/g, ""))} /></label>
+            <label>주문 수량<input inputMode="numeric" value={quantity} onChange={(event) => setQuantity(event.target.value.replace(/\D/g, ""))} /></label>
             <div className="form-total"><span>주문 금액</span><b>{money(orderAmount, 2)} {selected?.quote_currency || homeCurrency}</b></div>
             <button className={side === "buy" ? "submit buy-submit" : "submit sell-submit"} disabled={!orderReady || busy} onClick={() => setReview(true)}>{side === "buy" ? "매수 주문 검토" : "매도 주문 검토"}</button>
             <p className="risk-note">{orderType === "market" ? "시장가는 상대 호가를 순서대로 체결하며, 실제 체결가는 제출 시점 호가로 정해집니다. " : orderType === "current" ? "현재가는 마지막 체결가로 지정가 주문을 냅니다. " : ""}호가를 누르면 그 가격이 지정가로 들어갑니다. 펀드 가입·환매와 소수점 수량은 명령어의 매수·매도를 사용하세요.</p>
           </section>
           {selected?.type === "depositary_receipt" && <section className="data-panel order-entry dr-conversion"><div className="panel-title"><h2>DR 발행 · 상환</h2><span>{selected.drProgram?.programStatus === "active" && selected.status === "active" ? "기초주식 예탁 방식" : "프로그램 중지"}</span></div>
             <p className="orders-hint">{selected.drProgram?.programStatus === "active" && selected.status === "active" ? "DR 수량을 입력하세요. 발행은 보유 원주를 잠그고 DR을 지급하며, 상환은 보유 DR을 소각하고 보관 원주를 지급합니다." : "중지되거나 종료된 DR 프로그램은 새 전환을 할 수 없습니다."}</p>
-            <label>전환할 DR 수량<input inputMode="numeric" value={drQuantity} onChange={(event) => setDrQuantity(event.target.value.replace(/[^\d.]/g, ""))} /></label>
+            <label>전환할 DR 수량<input inputMode="numeric" value={drQuantity} onChange={(event) => setDrQuantity(event.target.value.replace(/\D/g, ""))} /></label>
             <div className="actions"><button className="submit buy-submit" disabled={busy || !Number(drQuantity) || selected.drProgram?.programStatus !== "active" || selected.status !== "active"} onClick={() => void convertDr("issue")}>원주 예탁 · DR 발행</button><button className="submit sell-submit" disabled={busy || !Number(drQuantity) || selected.drProgram?.programStatus !== "active" || selected.status !== "active"} onClick={() => void convertDr("redeem")}>DR 반납 · 원주 상환</button></div>
             <hr />
             <h3>DR 의결권 위임</h3>
             <p className="orders-hint">시뮬레이터 내부 위임 기록입니다. 위임된 수량은 매도·상환할 수 없으며, 기준일 의결권은 주주총회 투표에서 대리인에게 합산됩니다. 실제 수탁기관 지시는 포함하지 않습니다.</p>
             <label>대리 사용자 ID<input value={drProxyUserId} onChange={(event) => setDrProxyUserId(event.target.value)} placeholder="예: user-123" /></label>
-            <label>위임 수량 (DR)<input inputMode="numeric" value={drVoteQuantity} onChange={(event) => setDrVoteQuantity(event.target.value.replace(/[^\d.]/g, ""))} /></label>
+            <label>위임 수량 (DR)<input inputMode="numeric" value={drVoteQuantity} onChange={(event) => setDrVoteQuantity(event.target.value.replace(/\D/g, ""))} /></label>
             <button className="submit buy-submit" disabled={busy || !drProxyUserId.trim() || !Number(drVoteQuantity)} onClick={() => void delegateDrVotes()}>의결권 위임</button>
             {drDelegations.filter((item) => item.dr_code === selected.code).map((item) => <div className="holding" key={item.delegation_id}>
               <span><b>{item.proxy_user_id} · {item.dr_quantity} DR · {item.status === "active" ? "위임 중" : "철회됨"}</b><small>위임 {date(item.created_epoch)}{item.revoked_epoch ? ` · 철회 ${date(item.revoked_epoch)}` : ""}</small></span>
@@ -788,9 +888,9 @@ export default function App() {
           <div className="book-side bids">{book.bids.map((item, index) => <button type="button" className="book-row" key={`${item.limit_price}-${index}`} title="이 가격으로 주문" onClick={() => { setOrderType("limit"); setPrice(String(item.limit_price)); }}><span>{money(item.quantity, 3)}</span><b>{money(item.limit_price, 2)}</b></button>)}</div>
         </section>
         <section className="data-panel orders-panel">
-          <div className="panel-title"><h2>주문 · 체결</h2><div className="order-tabs" role="tablist" aria-label="주문 필터"><button role="tab" aria-selected={orderFilter === "open"} className={orderFilter === "open" ? "selected" : ""} onClick={() => setOrderFilter("open")}>미체결 {openCount}</button><button role="tab" aria-selected={orderFilter === "all"} className={orderFilter === "all" ? "selected" : ""} onClick={() => setOrderFilter("all")}>전체</button></div></div>
+          <div className="panel-title"><h2>주문 · 체결</h2><div className="order-tabs" role="tablist" aria-label="주문 필터" onKeyDown={tabListKeys}><button type="button" role="tab" id="order-tab-open" aria-controls="orders-panel" tabIndex={orderFilter === "open" ? 0 : -1} aria-selected={orderFilter === "open"} className={orderFilter === "open" ? "selected" : ""} onClick={() => setOrderFilter("open")}>미체결 {openCount}</button><button type="button" role="tab" id="order-tab-all" aria-controls="orders-panel" tabIndex={orderFilter === "all" ? 0 : -1} aria-selected={orderFilter === "all"} className={orderFilter === "all" ? "selected" : ""} onClick={() => setOrderFilter("all")}>전체</button></div></div>
           <p className="orders-hint">미체결·부분 체결·예약 주문은 오른쪽 <b>취소</b> 버튼으로 바로 취소할 수 있어요. 남은 예치금과 수량은 즉시 돌려받습니다.</p>
-          <div className="table-scroll"><table><thead><tr><th>주문</th><th>종목</th><th>구분</th><th className="r">가격</th><th className="r">수량</th><th className="r">체결</th><th className="r">잔량</th><th>상태</th><th /></tr></thead><tbody>{visibleOrders.map((order) => <tr key={order.order_id}>
+          <div className="table-scroll" id="orders-panel" role="tabpanel" aria-labelledby={`order-tab-${orderFilter}`}><table><thead><tr><th>주문</th><th>종목</th><th>구분</th><th className="r">가격</th><th className="r">수량</th><th className="r">체결</th><th className="r">잔량</th><th>상태</th><th /></tr></thead><tbody>{visibleOrders.map((order) => <tr key={order.order_id}>
             <td className="mono">#{order.order_id}</td><td><button className="link" onClick={() => chooseInstrument(order.asset_code)}>{order.asset_code}</button></td>
             <td className={order.side === "buy" ? "buy-text" : "sell-text"}>{order.side === "buy" ? "매수" : "매도"}</td><td className="r">{money(order.limit_price, 2)}</td><td className="r">{money(order.quantity, 3)}</td><td className="r">{money(order.filled_quantity, 3)}</td><td className="r">{money(order.remaining_quantity, 3)}</td>
             <td><span className={OPEN.has(order.status) ? "status open" : "status"}>{STATUS[order.status] ?? order.status}</span></td>
@@ -891,7 +991,10 @@ export default function App() {
       </div>
     </main>
     <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
-    {review && <div className="modal-backdrop"><section className="review-modal" role="dialog" aria-modal="true" aria-labelledby="review-title"><p className="eyebrow">ORDER REVIEW</p><h2 id="review-title">주문을 확인하세요</h2><dl><div><dt>종목</dt><dd>{selected?.name} ({selectedCode}) <WarningBadge warning={selected?.warning} /></dd></div><div><dt>유형</dt><dd className={side === "buy" ? "buy-text" : "sell-text"}>{ORDER_TYPES.find(([id]) => id === orderType)![1]} {side === "buy" ? "매수" : "매도"}</dd></div><div><dt>{orderType === "market" ? "예상 체결가" : orderType === "current" ? "현재가" : "지정가"}</dt><dd>{money(orderPrice || "0", 2)} {selected?.quote_currency || homeCurrency}</dd></div><div><dt>수량</dt><dd>{money(Number(quantity), 3)}</dd></div><div><dt>예상 금액</dt><dd>{money(orderAmount, 2)} {selected?.quote_currency || homeCurrency}</dd></div></dl><div className="modal-actions"><button disabled={busy} onClick={() => setReview(false)}>돌아가기</button><button className={side === "buy" ? "buy-confirm" : "sell-confirm"} disabled={busy} onClick={() => void submitOrder()}>{busy ? "제출 중" : "주문 확정"}</button></div></section></div>}
+    {review && selected && <OrderReviewModal side={side} kind={orderType} kindLabel={ORDER_TYPES.find(([id]) => id === orderType)![1]} priceLabel={orderType === "market" ? "예상 체결가" : orderType === "current" ? "현재가" : "지정가"}
+      price={orderPrice || "0"} priceAt={orderType === "limit" ? null : orderType === "current" ? currentAt : quote?.at ?? null} currency={selected.quote_currency || homeCurrency}
+      nameLine={<>{selected.name} ({selectedCode}) <WarningBadge warning={selected.warning} /></>} quantity={quantity} amount={orderAmount} busy={busy} format={money}
+      onClose={() => setReview(false)} onConfirm={() => void submitOrder()} />}
   </div>;
 }
 

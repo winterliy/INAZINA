@@ -85,8 +85,8 @@ export async function showEntry(onEnter: () => void): Promise<void> {
         <p class="entry-status" role="status"></p>
         <div class="entry-prompt" hidden>
           <form class="entry-prompt-box" role="dialog" aria-label="비밀번호">
-            <label><span class="entry-mask"></span><i class="cursor" aria-hidden="true"></i>
-              <input class="entry-secret" type="password" autocomplete="off" spellcheck="false" aria-label="비밀번호"></label>
+            <label><span class="entry-label">비밀번호</span>
+              <input class="entry-secret" type="password" autocomplete="off" spellcheck="false" aria-label="비밀번호" maxlength="128"></label>
           </form>
         </div>
         <div class="entry-log" hidden>
@@ -154,28 +154,23 @@ export async function showEntry(onEnter: () => void): Promise<void> {
   // Wrong (or Esc, or a click outside): the box just closes, nothing else is said.
   const prompt = $<HTMLDivElement>(".entry-prompt");
   const secret = $<HTMLInputElement>(".entry-secret");
-  const mask = $<HTMLSpanElement>(".entry-mask");
   const closePrompt = () => {
     prompt.hidden = true;
     secret.value = "";
-    mask.textContent = "";
     $<HTMLButtonElement>(".entry-start").focus({ preventScroll: true });
   };
   const openPrompt = () => {
     prompt.hidden = false;
     secret.value = "";
-    mask.textContent = "";
     secret.focus({ preventScroll: true });
   };
-  secret.addEventListener("input", () => { mask.textContent = "*".repeat(secret.value.length); });
   secret.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); closePrompt(); } });
-  secret.addEventListener("blur", () => { if (!prompt.hidden) requestAnimationFrame(() => secret.focus({ preventScroll: true })); });
   prompt.addEventListener("mousedown", (event) => { if (event.target === prompt) closePrompt(); else event.preventDefault(); });
   $<HTMLFormElement>(".entry-prompt-box").addEventListener("submit", (event) => {
     event.preventDefault();
     const typed = secret.value;
     // The dev server judges and records the attempt itself (time, address, location, verdict).
-    void fetch("/wl-api/entry-attempt", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ typed }) })
+    void fetch("/wl-api/entry-attempt", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ typed }) })
       .then((reply) => reply.json() as Promise<{ pass?: boolean }>).then(({ pass }) => (pass ? enter() : closePrompt())).catch(closePrompt);
   });
   // While the entry is open, the terminal's own shortcuts wait.
@@ -191,7 +186,7 @@ export async function showEntry(onEnter: () => void): Promise<void> {
     const body = $<HTMLDivElement>(".entry-log-body");
     try {
       // The server checks the digits typed last against the log code; a wrong one gets nothing.
-      const reply = await fetch("/wl-api/entry-log", { method: "POST", cache: "no-store", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: opened }) });
+      const reply = await fetch("/wl-api/entry-log", { method: "POST", cache: "no-store", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: opened }) });
       if (!reply.ok) return;  // a wrong code does nothing at all, so the log view stays unannounced
       const { entries } = await reply.json() as { entries: LogEntry[] };
       logView.hidden = false;
@@ -257,7 +252,7 @@ async function startScene(host: HTMLDivElement, state: typeof DEFAULTS, say: (te
     import("three/addons/environments/RoomEnvironment.js"),
   ]);
 
-  const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+  const renderer = new THREE.WebGLRenderer();
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 100);
   camera.position.set(0, 0, 3);
@@ -434,9 +429,15 @@ async function startScene(host: HTMLDivElement, state: typeof DEFAULTS, say: (te
       const mesh = object as import("three").Mesh;
       mesh.geometry?.dispose();
       const materials = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : [];
-      materials.forEach((material) => material.dispose());
+      materials.forEach((material) => {
+        const textured = material as unknown as Record<string, { dispose?: () => void } | null | undefined>;
+        for (const slot of ["map", "normalMap", "roughnessMap", "metalnessMap", "emissiveMap", "aoMap"]) textured[slot]?.dispose?.();
+        material.dispose();
+      });
     });
     renderer.dispose();
+    renderer.domElement.remove();
+    renderer.forceContextLoss();
   };
 
   try {

@@ -4,7 +4,6 @@ import App from "./App";
 import "./style.css";
 import "../../shared/typography.css";
 import "../../shared/backdrop.css";
-import "./ux-fixes.css";
 import "./rebrand.css";
 import { fitTiles } from "./fitTiles";
 

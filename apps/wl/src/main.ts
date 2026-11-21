@@ -197,15 +197,18 @@ const TITLE = document.title;
 let unseen = 0;
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { unseen = 0; document.title = TITLE; } });
 let loading = false;
+// The docs are fetched only after the entry password was accepted (the server also refuses without its cookie).
+let entered = false;
+const authorised = (response: Response) => { if (!response.ok) throw new Error(String(response.status)); return response; };
 async function refresh(force = false) {
-  if (loading) return;
+  if (loading || !entered) return;
   loading = true;
   const button = document.getElementById("reload") as HTMLButtonElement;
   button.disabled = true;
   try {
     const [data, checks] = await Promise.all([
-      fetch("/wl-api/files", { cache: "no-store" }).then((response) => response.json() as Promise<{ files: Files }>),
-      fetch("/wl-api/check", { cache: "no-store" }).then((response) => response.json() as Promise<{ claude: string; codex: string }>),
+      fetch("/wl-api/files", { cache: "no-store", credentials: "same-origin" }).then(authorised).then((response) => response.json() as Promise<{ files: Files }>),
+      fetch("/wl-api/check", { cache: "no-store", credentials: "same-origin" }).then(authorised).then((response) => response.json() as Promise<{ claude: string; codex: string }>),
     ]);
     const next = JSON.stringify([data.files, checks]);
     const stamp = () => { document.getElementById("sync")!.textContent = `${threadEntries().length} records · 확인 ${new Date().toLocaleTimeString("ko-KR")}${settings.autoRefresh ? " · live" : ""}`; };
@@ -300,7 +303,7 @@ securityForm.addEventListener("submit", async (event) => {
   const field = (name: string) => (securityForm.elements.namedItem(name) as HTMLInputElement).value;
   securityMessage.textContent = "";
   try {
-    const reply = await fetch("/wl-api/security", { method: "POST", headers: { "content-type": "application/json" },
+    const reply = await fetch("/wl-api/security", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" },
       body: JSON.stringify({ current: field("current"), entryPassword: field("entry"), logCode: field("code") }) });
     const result = await reply.json() as { ok: boolean; message?: string };
     securityMessage.textContent = result.ok ? "바꿨습니다. 바로 적용됩니다." : result.message ?? "바꾸지 못했습니다.";
@@ -316,8 +319,11 @@ window.addEventListener("hashchange", render);
 document.getElementById("reload")!.addEventListener("click", () => void refresh(true));
 // The dev server announces saved files at once; a slow poll is the fallback.
 import.meta.hot?.on("wl:changed", () => { if (settings.autoRefresh) void refresh(); });
-void refresh();
 window.setInterval(() => { if (settings.autoRefresh) void refresh(); }, 30_000);
 // The ASCII entry screen comes first; the docs load behind it.
-function enterTerminal() { document.getElementById("view")?.focus({ preventScroll: true }); }
+function enterTerminal() {
+  entered = true;
+  void refresh(true);
+  document.getElementById("view")?.focus({ preventScroll: true });
+}
 void showEntry(enterTerminal);

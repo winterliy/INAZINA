@@ -1,4 +1,5 @@
 import { moneyCompare, type Money } from "../../../shared/money";
+import { tabListKeys } from "../tabKeys";
 import { useEffect, useState } from "react";
 import { api } from "../../../shared/api";
 import { VALUES } from "../commandKit";
@@ -18,9 +19,9 @@ export function HistoryPage({ orders }: ServiceProps) {
   const income = (events ?? []).filter((item) => moneyCompare(item.amount, 0) > 0).length, spend = (events ?? []).length - income;
 
   return <div className="svc-history">
-    <div className="svc-tabs" role="tablist" aria-label="거래내역">
-      <button type="button" role="tab" aria-selected={tab === "money"} className={tab === "money" ? "active" : ""} onClick={() => setTab("money")}>입출금 {events ? events.length : ""}</button>
-      <button type="button" role="tab" aria-selected={tab === "orders"} className={tab === "orders" ? "active" : ""} onClick={() => setTab("orders")}>주문 {orders.length}</button>
+    <div className="svc-tabs" role="tablist" aria-label="거래내역" onKeyDown={tabListKeys}>
+      <button type="button" role="tab" tabIndex={tab === "money" ? 0 : -1} aria-selected={tab === "money"} className={tab === "money" ? "active" : ""} onClick={() => setTab("money")}>입출금 {events ? events.length : ""}</button>
+      <button type="button" role="tab" tabIndex={tab === "orders" ? 0 : -1} aria-selected={tab === "orders"} className={tab === "orders" ? "active" : ""} onClick={() => setTab("orders")}>주문 {orders.length}</button>
     </div>
     {tab === "money" && <section className="svc-card">
       {events && <p className="svc-hint">최근 {events.length}건 · 입금 {income}건 · 출금 {spend}건</p>}

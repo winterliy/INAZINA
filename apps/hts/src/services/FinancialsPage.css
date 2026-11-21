@@ -20,7 +20,6 @@
 .fin-page .fin-notes { line-height: 1.7; max-width: 85ch; }
 .fin-page .fin-notes li + li { margin-top: 6px; }
 .fin-page .fin-empty { margin: 0; padding: 32px 16px; color: var(--ink2); text-align: center; line-height: 1.6; }
-.fin-page :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .fin-page ::selection { background: var(--select); }
 @media (max-width: 600px) {
   .fin-page .fin-head h2 { font-size: 22px; }
