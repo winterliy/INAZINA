@@ -5048,6 +5048,21 @@ class Handler(BaseHTTPRequestHandler):
                     audit_admin_access(user["userId"], "funding.read", {
                         "bank_id": bank_id, "draws": len(report["draws"]), "overdue": report["overdue_count"]})
                     self.send_json(200, report)
+            elif path == "/internal/admin/rate-rules":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    from functions.jurisdiction_rules import list_rules
+                    country = parse_qs(parsed.query).get("nationality", [""])[0].strip()
+                    if len(country) > 100:
+                        raise ValueError("invalid_rate_rules_filter")
+                    with connect_readonly() as plain:
+                        rules = list_rules(LegacyNames(plain), country or None)
+                        countries = [dict(row) for row in LegacyNames(plain).execute(
+                            "SELECT nationality, legal_max_rate FROM country_currencies ORDER BY nationality").fetchall()]
+                    audit_admin_access(user["userId"], "rate_rules.read", {"nationality": country, "result_count": len(rules)})
+                    self.send_json(200, {"rules": rules, "countries": countries})
             elif path == "/internal/admin/alm":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -5771,6 +5786,27 @@ class Handler(BaseHTTPRequestHandler):
                         audit_payload = {"bank_id": payload["bankId"], "repaid": len(result["repaid"]), "failed": len(result["failed"])}
                 audit_admin_access(actor, audit_name, audit_payload)
                 self.send_json(200, {"success": True, "result": result})
+                return
+            if path == "/internal/admin/rate-rules":
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                    return
+                from functions.jurisdiction_rules import add_rule
+                shape = {"action", "nationality", "customerType", "productType", "effectiveEpoch", "maxRateBps", "aprDisplay", "taxBps", "note"}
+                if payload.get("action") != "add_rule" or set(payload) != shape:
+                    raise ValueError("invalid_rate_rules_payload")
+                now = int(time.time())
+                with domain().db.atomic() as connection:
+                    rule_id = add_rule(
+                        connection, nationality=payload["nationality"], customer_type=payload["customerType"],
+                        product_type=payload["productType"], effective_epoch=payload["effectiveEpoch"],
+                        max_rate_bps=payload["maxRateBps"], apr_display=payload["aprDisplay"], tax_bps=payload["taxBps"],
+                        note=payload["note"], actor=user["userId"], now=now)
+                audit_admin_access(user["userId"], "rate_rules.add", {
+                    "rule_id": rule_id, "nationality": payload["nationality"], "customer_type": payload["customerType"],
+                    "product_type": payload["productType"], "effective_epoch": payload["effectiveEpoch"],
+                    "max_rate_bps": payload["maxRateBps"], "apr_display": payload["aprDisplay"], "tax_bps": payload["taxBps"]})
+                self.send_json(200, {"success": True, "ruleId": rule_id})
                 return
             if path == "/internal/admin/compliance":
                 if user["role"] != "admin":

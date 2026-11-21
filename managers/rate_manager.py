@@ -1762,7 +1762,7 @@ class RateManager:
 
     @staticmethod
     def floating_rate(conn, nationality, spread=0, floor=0, cap=None, *, epoch=None,
-                      benchmark_key="policy", tenor_days=0, apply_legal_max=True):
+                      benchmark_key="policy", tenor_days=0, apply_legal_max=True, legal_max_override=None):
         """Price a floating contract from its named benchmark and reset terms."""
         country = str(nationality or "").strip()
         if not country:
@@ -1778,7 +1778,7 @@ class RateManager:
         floor = -100.0 if floor is None else float(floor)
         ceiling = 100.0 if cap is None else float(cap)
         if apply_legal_max:
-            ceiling = min(legal, ceiling)
+            ceiling = min(legal if legal_max_override is None else float(legal_max_override), ceiling)
         values = (base, legal, spread, floor, ceiling)
         if not all(math.isfinite(value) for value in values):
             raise ValueError("금리 산정값은 유한한 숫자여야 합니다.")

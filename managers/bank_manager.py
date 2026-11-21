@@ -1082,6 +1082,8 @@ class BankManager:
                 contract_country = (proposed_country if proposed_country and conn.execute(
                     "SELECT 1 FROM country_currencies WHERE nationality=?", (proposed_country,)
                 ).fetchone() else None)
+                from functions.jurisdiction_rules import max_rate_percent as _rule_max_rate
+                rule_legal_max = _rule_max_rate(conn, contract_country, epoch=opened_epoch)  # dated rule; None keeps legal_max_rate
                 stress_country = user["nationality"]
                 if not stress_country or not conn.execute(
                     "SELECT 1 FROM country_currencies WHERE nationality=?",
@@ -1164,7 +1166,7 @@ class BankManager:
                         product['rate_floor'], product['rate_cap'],
                         benchmark_key=product['benchmark_key'],
                         tenor_days=(product['benchmark_tenor_days'] or product['maturity_days']),
-                        apply_legal_max=True,
+                        apply_legal_max=True, legal_max_override=rule_legal_max,
                     )
                 else:
                     contract_spread = float(product['base_rate_spread'] or 0)
@@ -1173,6 +1175,7 @@ class BankManager:
                     legal = (RateManager.from_connection(
                         conn, 'legal_max_rate', contract_country, require_country=True
                     ) if contract_country else RateManager.legal_max_for_currency(conn, home)[0])
+                    legal = rule_legal_max if rule_legal_max is not None else legal
                     contract_rate = min(contract_rate, legal)
                 # Recheck affordability against the signed price after bank and
                 # borrower spreads have been applied to the initial scorecard.
@@ -1260,6 +1263,7 @@ class BankManager:
                 legal_cost_cap = (RateManager.from_connection(
                     conn, 'legal_max_rate', contract_country, require_country=True
                 ) if contract_country else RateManager.legal_max_for_currency(conn, home)[0])
+                legal_cost_cap = rule_legal_max if rule_legal_max is not None else legal_cost_cap
                 legal_cost_rate = (contract_rate + (total_finance_fee/max(
                                    10**(-currency_precision(conn, home)), net_payout))
                                    * 365/max(1, int(product['maturity_days'] or 365))*100)

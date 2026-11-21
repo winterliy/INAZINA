@@ -139,6 +139,8 @@ M6 진행: 도매조달 원장을 추가했다(`managers/funding_manager.py`). �
 
 M7 진행: 혼합·단계 금리 일정(`functions/rate_schedule.py`)을 추가했다. 고정/변동 구간, 전체 하한·상한, 1회 변동폭 제한, 반올림 단위를 지원한다. 아직 대출·예금 계약에 연결하지 않았다. 채권 듀레이션·DV01·컨벡서티는 `RateManager.bond_quote`에 이미 있다.
 
+M7 진행(2026-11-21): 국가·고객 유형·상품 유형·적용일별 금리 규칙(`jurisdiction_rate_rules`, `functions/jurisdiction_rules.py`)과 관리자 화면 '금리 · 한도 · 정리 > 국가별 규칙'을 추가했다. 규칙은 추가 전용이며 신규 대출 체결 때 계약일 기준 최고금리(금리 상한과 산입비용 상한)로만 실제 반영된다. 규칙이 없으면 기존 `legal_max_rate` 동작 그대로다. APR 표시·세율은 기록만 하며 계산에 연결하지 않았다. 연체이자 상한·대출 연장은 아직 현재 국가 법정최고이자를 쓴다.
+
 ### M8 — 보안·준법·완료 검증
 
 M8 진행: 통제-증빙 추적표([controls_laplace.md](controls_laplace.md))를 만들고 각 행의 구현 파일과 증빙 테스트가 실제로 있는지 `tests/test_control_evidence_matrix.py`로 검증한다. 테스트 실행 중 기본 DB 경로를 임시 폴더로 격리해 운영 DB를 열지 않게 했다.

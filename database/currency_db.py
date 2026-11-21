@@ -1628,6 +1628,7 @@ class CurrencyDB(DBManager):
         ensure_business_cash_links(self.execute)
         ensure_institution_funding(self.execute)
         ensure_prudential_parameters(self.execute)
+        ensure_jurisdiction_rate_rules(self.execute)
         ensure_accounting_line_repairs(self.execute)
         ensure_wallet_baseline_adjustments(self.execute)
         ensure_primary_recipient_overrides(self.execute)
@@ -3755,6 +3756,26 @@ def ensure_prudential_parameters(execute):
         value_bps INTEGER NOT NULL CHECK(typeof(value_bps)='integer' AND value_bps BETWEEN 0 AND 100000),
         updated_by TEXT NOT NULL, updated_epoch INTEGER NOT NULL,
         PRIMARY KEY(nationality,param_key))""")
+
+
+def ensure_jurisdiction_rate_rules(execute):
+    """Dated lending rules per country, customer type and product type (M7). A rule is a new row from its effective epoch on; rows are append-only so a contract date always finds the rule that applied.
+    NULL value columns mean "this rule has no opinion"; with no matching rule the country's legal_max_rate applies as before."""
+    execute("""CREATE TABLE IF NOT EXISTS jurisdiction_rate_rules (
+        rule_id INTEGER PRIMARY KEY AUTOINCREMENT, nationality TEXT NOT NULL,
+        customer_type TEXT NOT NULL DEFAULT '*' CHECK(customer_type IN ('*','individual','corporate')),
+        product_type TEXT NOT NULL DEFAULT '*' CHECK(product_type IN ('*','loan','deposit')),
+        effective_epoch INTEGER NOT NULL CHECK(effective_epoch>=0),
+        max_rate_bps INTEGER CHECK(max_rate_bps IS NULL OR (typeof(max_rate_bps)='integer' AND max_rate_bps BETWEEN 0 AND 10000)),
+        apr_display TEXT CHECK(apr_display IS NULL OR apr_display IN ('required','optional')),
+        tax_bps INTEGER CHECK(tax_bps IS NULL OR (typeof(tax_bps)='integer' AND tax_bps BETWEEN 0 AND 10000)),
+        note TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL, created_epoch INTEGER NOT NULL,
+        UNIQUE(nationality,customer_type,product_type,effective_epoch))""")
+    execute("CREATE INDEX IF NOT EXISTS idx_jurisdiction_rate_rules_lookup ON jurisdiction_rate_rules(nationality,effective_epoch)")
+    for operation in ("UPDATE", "DELETE"):
+        execute(f"""CREATE TRIGGER IF NOT EXISTS trg_jurisdiction_rate_rules_{operation.lower()}
+            BEFORE {operation} ON jurisdiction_rate_rules
+            BEGIN SELECT RAISE(ABORT,'jurisdiction rate rules are append-only'); END""")
 
 
 def ensure_accounting_line_repairs(execute):
