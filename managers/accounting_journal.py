@@ -2515,6 +2515,23 @@ class AccountingJournal:
         return int(wallet.rowcount) + int(fund.rowcount)
 
     @staticmethod
+    def payout_findings(conn, now=None):
+        """Held payouts (amounts waiting for the receiver) that the close must not carry: overdue ones not yet returned to
+        the payer, decided ones without a decision time, and non-positive amounts."""
+        import time
+        now = int(now if now is not None else time.time())
+        findings = []
+        for row in conn.execute("SELECT payout_id,status,minor_units,expires_epoch,decided_epoch FROM payout_requests"):
+            payout_id, status, minor, expires, decided = row[0], row[1], int(row[2]), int(row[3]), row[4]
+            if minor <= 0:
+                findings.append({"payout_id": int(payout_id), "status": "invalid_amount"})
+            elif status in ("pending", "temp_open") and expires <= now:
+                findings.append({"payout_id": int(payout_id), "status": "overdue_not_returned"})
+            elif status not in ("pending",) and decided is None:
+                findings.append({"payout_id": int(payout_id), "status": "decision_missing"})
+        return findings
+
+    @staticmethod
     def _futures_held(conn):
         """Cash sitting inside the futures product: position collateral plus open-order margin."""
         from decimal import Decimal
@@ -3269,6 +3286,7 @@ class AccountingJournal:
                               "close_check": FxPosition.close_check(conn)}
         except (ValueError, ArithmeticError) as exc:
             fx_revaluation = {"status": "unavailable", "reason": str(exc), "positions": []}
+        payout_findings = cls.payout_findings(conn)
         common_trial_balance = cls.consolidated_trial_balance(conn)
         consumer_coverage = cls.consumer_coverage(conn)
         issuers = [str(row[0]) for row in conn.execute(
@@ -3301,6 +3319,7 @@ class AccountingJournal:
                     + ([{"scope": "fx_revaluation", **finding}
                         for finding in fx_revaluation["close_check"]["findings"]]
                        if fx_revaluation["status"] == "preview" else [])
+                    + [{"scope": "payout_requests", **finding} for finding in payout_findings]
                     + [{"scope": "common_trial_balance", **finding}
                        for finding in common_trial_balance["findings"]]
                     + [{"scope": "consumer_coverage", "source_table": table, "status": "unclassified"}
@@ -3317,6 +3336,7 @@ class AccountingJournal:
             "common_trial_balance",
             "treasury_bond_cash",
             "fx_revaluation",
+            "payout_requests",
             "consumer_coverage",
             "institution_subledgers",
             "institution",
