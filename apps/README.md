@@ -45,6 +45,12 @@ Dependency versions are pinned exactly in each `apps/*/package.json` and in
 `package-lock.json`. Upgrade deliberately (`npm install <pkg>@<version>
 --workspace <app>`), then run `npm run typecheck` and `npm run build`.
 
+## Single sign-on
+
+With `INAZINA_OIDC_ISSUER` set, the apps sign in through the identity provider at `id.<domain>` (OIDC, authorization code +
+PKCE) behind the Caddy front door in `infra/Caddyfile`. Without it, everything works as described below. See
+[`docs/sso.md`](../docs/sso.md) for hosts, environment, local setup and what is verified.
+
 ## Accounts and security
 
 Both frontends share one account. Registration and password reset require

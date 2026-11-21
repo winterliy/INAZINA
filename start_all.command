@@ -86,6 +86,16 @@ pids+=("$!")
 npm run dev:wl &
 pids+=("$!")
 
+# Single sign-on front door (docs/sso.md): only when INAZINA_OIDC_ISSUER is set and Caddy is installed.
+if [[ -n "${INAZINA_OIDC_ISSUER:-}" ]]; then
+  if command -v caddy >/dev/null 2>&1; then
+    INAZINA_TLS="${INAZINA_TLS-internal}" caddy run --config "$ROOT/infra/Caddyfile" --adapter caddyfile &
+    pids+=("$!")
+  else
+    print -u2 "주의: INAZINA_OIDC_ISSUER 가 설정됐지만 caddy 가 설치돼 있지 않아 도메인 서버(infra/Caddyfile)를 시작하지 않습니다."
+  fi
+fi
+
 # The API owns the Python data service, which initializes and migrates the
 # shared SQLite database. Start the Discord bot only after that initialization
 # is complete so both processes do not contend for startup DDL/writes.
