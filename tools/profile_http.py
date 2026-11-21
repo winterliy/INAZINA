@@ -19,7 +19,7 @@ assert 5460 <= port <= 5469, "use a port in 5460-5469"
 REPEAT = int(os.environ.get("REPEAT", "7"))
 TOKEN = "profile-http-token"
 USER, ADMIN = os.environ.get("BUYER", "20230216"), os.environ.get("ADMIN", "1076861147560542278")
-PASSWORD = "Profile-Pass-1234!"
+PASSWORD = os.environ.get("PROFILE_PASSWORD") or __import__("secrets").token_urlsafe(12)   # clone-only, generated per run
 VOLATILE = re.compile(r"\b1[78]\d{8}(?:\.\d+)?\b|\"(?:serverTime|now|elapsed\w*|token|sessionId)\":\s*\"?[^,}\"]*\"?")
 
 HOOK = r'''
