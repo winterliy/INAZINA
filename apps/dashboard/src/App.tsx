@@ -4,6 +4,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import type { FormEvent, ReactNode } from "react";
 import { api, appUrl, clearToken, onUnauthorized, signedOut, type ApiUser } from "../../shared/api";
 import { AuthPanel } from "../../shared/AuthPanel";
+import { logoutRedirect } from "../../shared/sso";
 import { Card, date, errorText, number, plain, type Ctx } from "./common";
 import { JumpDialog, type JumpTarget } from "./JumpDialog";
 import { TopBar } from "./TopBar";
@@ -422,6 +423,8 @@ export default function App() {
     resetSessionState();
     if (result.returnedTo) { setUser(result.returnedTo); go("account"); say(`관리자 ${result.returnedTo.nickname} 계정으로 돌아왔습니다.`); return; }
     setUser(null);
+    const singleSignOut = logoutRedirect(result); // also ends the single sign-on session
+    if (singleSignOut) window.location.assign(singleSignOut);
   }
 
   const noticeBar = notice && <div className={notice.error ? "notice error" : "notice ok"} role={notice.error ? "alert" : "status"}><span>{notice.text}</span><button type="button" className="ghost" aria-label="알림 닫기" onClick={() => setNotice(null)}>×</button></div>;

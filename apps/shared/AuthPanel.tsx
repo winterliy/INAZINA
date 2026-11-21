@@ -5,6 +5,7 @@ import { api, ApiError, type ApiUser } from "./api";
 import "./typography.css";
 import "./auth.css";
 import sceneSvg from "./scene.svg?raw";
+import { currentReturnTo, ssoAction, ssoLoginUrl } from "./sso";
 
 type Mode = "login" | "register" | "find-id" | "reset-password";
 type Country = { countryId: string; currencyName: string; currencyCode: string };
@@ -16,13 +17,16 @@ const titles: Record<Mode, string> = {
   "reset-password": "비밀번호 재설정",
 };
 
-export function AuthPanel({ app, onAuthenticated, extra }: { app: "dashboard" | "hts"; onAuthenticated: (user: ApiUser) => void; extra?: ReactNode }) {
+// `autoSso`: with single sign-on on, a signed-out visitor is sent straight to the identity provider (the admin console);
+// the HTS passes false and only shows this panel when asked (register, reset, a sign-in error, local development).
+export function AuthPanel({ app, onAuthenticated, extra, autoSso = true }: { app: "dashboard" | "hts"; onAuthenticated: (user: ApiUser) => void; extra?: ReactNode; autoSso?: boolean }) {
   const [mode, setMode] = useState<Mode>("login");
   const [userId, setUserId] = useState("");
   const [verifiedId, setVerifiedId] = useState("");
   const [countryId, setCountryId] = useState("");
   const [countries, setCountries] = useState<Country[]>([]);
   const [discordConfigured, setDiscordConfigured] = useState(false);
+  const [sso, setSso] = useState<boolean | null>(null); // null until /api/auth/config answers
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [message, setMessage] = useState("");
@@ -31,9 +35,18 @@ export function AuthPanel({ app, onAuthenticated, extra }: { app: "dashboard" | 
   const [show, setShow] = useState(false);
 
   useEffect(() => {
-    void api<{ discordOAuthConfigured: boolean }>("/api/auth/config")
-      .then((result) => setDiscordConfigured(result.discordOAuthConfigured))
-      .catch(() => undefined); // stays "not configured"; the Discord buttons then explain it on click
+    // The address as it was on arrival: the Discord handling below cleans it up before the config answer comes back.
+    const arrival = { pathname: window.location.pathname, search: window.location.search };
+    void api<{ discordOAuthConfigured: boolean; oidc?: boolean }>("/api/auth/config")
+      .then((result) => {
+        setDiscordConfigured(result.discordOAuthConfigured);
+        setSso(Boolean(result.oidc));
+        const action = ssoAction(Boolean(result.oidc), arrival, { autoRedirect: autoSso });
+        if (action.kind === "redirect") window.location.replace(action.url);
+        else if (action.kind === "register" || action.kind === "reset-password") { setMode(action.kind); window.history.replaceState({}, "", window.location.pathname); }
+        else if (action.kind === "error") { setError(action.message); window.history.replaceState({}, "", currentReturnTo(arrival)); }
+      })
+      .catch(() => setSso(false)); // stays "not configured" and password login; the Discord buttons then explain it on click
     void api<{ countries: Country[] }>("/api/auth/countries")
       .then((result) => {
         setCountries(result.countries);
@@ -138,7 +151,13 @@ export function AuthPanel({ app, onAuthenticated, extra }: { app: "dashboard" | 
         <h1 id="auth-title">{mode === "login" ? "다시 만나서 반갑습니다" : titles[mode]}</h1>
         {mode !== "login" && <p className="auth-subtitle">Discord 본인확인으로 계정을 보호합니다.</p>}
 
-        {mode === "login" && <form className="auth-form" onSubmit={submit}>
+        {mode === "login" && sso === true && <div className="auth-step">
+          <p>통합 로그인으로 나루와 Dashboard에 함께 로그인합니다.</p>
+          <div className="auth-row"><span /><button type="button" className="auth-link" onClick={() => switchMode("reset-password")}>비밀번호를 잊으셨나요?</button></div>
+          <button type="button" className="auth-primary" onClick={() => window.location.assign(ssoLoginUrl(currentReturnTo(window.location)))}>로그인</button>
+        </div>}
+
+        {mode === "login" && sso === false && <form className="auth-form" onSubmit={submit}>
           <label><span>아이디</span><input autoComplete="username" value={userId} onChange={(event) => setUserId(event.target.value)} placeholder="아이디" required /></label>
           <label><span>비밀번호</span>
             <span className="auth-secret"><input type={show ? "text" : "password"} autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="비밀번호" required />
