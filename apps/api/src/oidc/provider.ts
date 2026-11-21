@@ -51,11 +51,24 @@ export function createProvider(deps: ProviderDeps): Provider {
     scopes: ["openid"],
     claims: { openid: ["sub"], profile: ["name", "role", "auth_version"] },
     responseTypes: ["code"],
+    // The apps read name, role and auth_version from the verified ID token itself (no userinfo round trip).
+    conformIdTokenClaims: false,
     pkce: { required: () => true }, // S256 is the library default; the discovery test pins it
     issueRefreshToken: async () => false,
     ttl: { AuthorizationCode: 60, AccessToken: 300, IdToken: 300, Interaction: 600, Session: 43_200, Grant: 43_200 },
     interactions: { url: (_ctx, interaction) => `${mountPath}/interaction/${interaction.uid}` },
-    features: { devInteractions: { enabled: false } },
+    features: {
+      devInteractions: { enabled: false },
+      // Signing out is confirmed automatically: the page submits its own form, so a sign-out request ends the session at once.
+      rpInitiatedLogout: {
+        logoutSource: (ctx, form) => {
+          ctx.body = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="robots" content="noindex"><title>로그아웃 · inazina</title></head><body>${form}<p>로그아웃하는 중입니다…</p><button autofocus type="submit" form="op.logoutForm" value="yes" name="logout">로그아웃</button><script>document.querySelector("button").click()</script></body></html>`;
+        },
+        postLogoutSuccessSource: (ctx) => {
+          ctx.body = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="robots" content="noindex"><title>로그아웃 · inazina</title></head><body><p>로그아웃되었습니다.</p></body></html>`;
+        },
+      },
+    },
     findAccount: providerFindAccount(deps.findAccount),
   };
   const provider = new Provider(deps.issuer, configuration);

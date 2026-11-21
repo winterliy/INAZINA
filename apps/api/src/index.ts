@@ -8,6 +8,7 @@ import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FAVICON_PNG, landingPage, type LandingReason } from "./landing.js";
 import { browserAccess } from "./browserAccess.js";
+import { setupOidc } from "./oidc/setup.js";
 
 const projectRoot = findProjectRoot();
 const access = browserAccess(projectRoot);
@@ -1376,9 +1377,15 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
   send(response, 404, { error: "not_found" });
 }
 
+// Single sign-on (docs/sso.md): with INAZINA_OIDC_ISSUER set, the identity provider answers its own host first.
+const oidc = await setupOidc({ env: process.env, jwksFile: join(projectRoot, "database", "oidc_jwks.json"), authSecret, internalRequest, clientIp });
+
 const server = createServer((request, response) => {
   const by = principalFor(request)?.by;
-  void (by ? delegation.run(by, () => handle(request, response)) : handle(request, response)).catch((error: unknown) => {
+  void (async () => {
+    if (oidc.idp && await oidc.idp(request, response)) return;
+    await (by ? delegation.run(by, () => handle(request, response)) : handle(request, response));
+  })().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : "internal_error";
     if (message === "invalid_json" || message === "application_json_required") {
       send(response, 400, { error: message });

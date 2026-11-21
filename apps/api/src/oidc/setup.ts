@@ -1,0 +1,35 @@
+// Turns the identity provider on when INAZINA_OIDC_ISSUER is set (e.g. https://id.inazina.kr/oidc); without it the API
+// behaves exactly as before, with its own password login.
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { loadClients } from "./clients.js";
+import { createIdp, type InternalRequest } from "./idp.js";
+import { createProvider, loadJwks } from "./provider.js";
+
+export type OidcSetup = { idp?: (request: IncomingMessage, response: ServerResponse) => Promise<boolean> };
+
+export type SetupDeps = {
+  env: NodeJS.ProcessEnv;
+  jwksFile: string;
+  authSecret: string;
+  internalRequest: InternalRequest;
+  clientIp: (request: IncomingMessage) => string;
+};
+
+export async function setupOidc(deps: SetupDeps): Promise<OidcSetup> {
+  const { env, internalRequest } = deps;
+  if (!env.INAZINA_OIDC_ISSUER) return {};
+  const issuer = new URL(env.INAZINA_OIDC_ISSUER);
+  if (issuer.pathname !== "/oidc") throw new Error("INAZINA_OIDC_ISSUER must end in /oidc (the provider is mounted there), e.g. https://id.inazina.kr/oidc");
+  const domain = env.INAZINA_DOMAIN || "inazina.localhost";
+  const app = `https://naru.${domain}/`;
+  const provider = createProvider({
+    issuer: issuer.href, clients: loadClients(env), call: async (operation, body) => (await internalRequest("POST", `/internal/oidc/store/${operation}`, undefined, body)).body,
+    cookieKeys: [deps.authSecret], jwks: await loadJwks(env, deps.jwksFile),
+    findAccount: async (userId) => {
+      const result = await internalRequest("GET", "/internal/me", userId);
+      const user = result.body?.user;
+      return result.status === 200 && user ? { userId: user.userId, nickname: user.nickname, role: user.role, authVersion: user.authVersion } : undefined;
+    },
+  });
+  return { idp: createIdp({ provider, issuerHost: issuer.host, internalRequest, clientIp: deps.clientIp, appUrls: { home: app, register: `${app}?register=1`, reset: `${app}?reset=1` } }) };
+}

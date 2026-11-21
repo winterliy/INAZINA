@@ -17,6 +17,7 @@ coverage/
 .pytest_cache/
 database/backups/
 database/board_files/
+database/oidc_jwks.json
 database/geoip/
 database/document_history/
 
