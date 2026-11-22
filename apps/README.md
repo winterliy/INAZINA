@@ -36,7 +36,7 @@ Requires Node.js 24 or newer and the project's Python virtual environment.
 
 Start everything, including the Discord bot, with `./start_all.command`
 (Ctrl+C stops all services). To run pieces separately use
-`npm run dev:api`, `npm run dev:dashboard`, and `npm run dev:hts` in separate
+`npm run dev:api` (watches the sources; `start_all` instead builds the API and runs `apps/api/dist`), `npm run dev:dashboard`, and `npm run dev:hts` in separate
 terminals. OAuth login requires network access to Discord; registration and
 password reset stay unavailable until OAuth credentials are configured.
 

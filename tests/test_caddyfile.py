@@ -77,12 +77,12 @@ def test_apex_redirects_permanently_to_www():
     assert "reverse_proxy" not in SITES[D]
 
 
-def test_id_host_exposes_only_oidc_paths():
+def test_id_host_exposes_only_oidc_paths_and_sends_everything_else_to_www():
     body = SITES[f"id.{D}"]
     assert "@idpaths path /oidc/* /login /register /reset" in body
     found = handlers(body)
     assert "reverse_proxy 127.0.0.1:4312" in found["@idpaths"]
-    assert found[""].strip() == "respond 404"
+    assert found[""].strip() == f"redir https://www.{D}/", "the logo (/) and any other address land on the main page, not on an empty 404"
     assert "reverse_proxy" not in body.replace(found["@idpaths"], "")
 
 

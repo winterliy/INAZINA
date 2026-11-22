@@ -114,7 +114,16 @@ if [[ "$FRONTEND" == "static" ]]; then
   fi
 fi
 
-npm run dev:api &
+# The API runs from its build (apps/api/dist), built from the current code at start: built when missing, rebuilt when a source is newer.
+api_built="$ROOT/apps/api/dist/index.js"
+if [[ ! -f "$api_built" ]] || [[ -n "$(find "$ROOT/apps/api/src" "$ROOT/apps/api/package.json" "$ROOT/apps/api/tsconfig.json" -newer "$api_built" -print -quit 2>/dev/null)" ]]; then
+  print "API 를 빌드합니다."
+  npm run build --workspace @inazina/api >/dev/null 2>&1 || {
+    print -u2 "API 빌드에 실패했습니다. 원인을 확인하세요: npm run build --workspace @inazina/api"
+    exit 1
+  }
+fi
+npm run start --workspace @inazina/api &
 pids+=("$!")
 if [[ "$FRONTEND" != "static" ]]; then
   npm run dev:dashboard &

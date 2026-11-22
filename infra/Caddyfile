@@ -76,15 +76,16 @@ corp.{$INAZINA_DOMAIN:inazina.localhost} {
 	}
 }
 
-# Identity provider: only the OIDC and account pages are reachable.
+# Identity provider: only the OIDC and account pages are reachable; everything else goes to www.
 id.{$INAZINA_DOMAIN:inazina.localhost} {
 	import common
 	@idpaths path /oidc/* /login /register /reset
 	handle @idpaths {
 		reverse_proxy 127.0.0.1:4312
 	}
+	# The logo (/) and any other address go to the main page.
 	handle {
-		respond 404
+		redir https://www.{$INAZINA_DOMAIN:inazina.localhost}/
 	}
 }
 

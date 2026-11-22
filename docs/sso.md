@@ -10,7 +10,7 @@
 ## 도메인 (지금 쓰는 전부)
 | 이름 | 가는 곳 | 비고 |
 |---|---|---|
-| `id.inazina.localhost` | 4312 (`/oidc/*`, `/login`, `/register`, `/reset` 만) | 통합 로그인. 나머지 경로는 404 |
+| `id.inazina.localhost` | 4312 (`/oidc/*`, `/login`, `/register`, `/reset` 만) | 통합 로그인. 나머지 경로(로고의 `/` 포함)는 `www.` 로 302 |
 | `naru.inazina.localhost` | 4311 + `/api/*` → 4312 | HTS. 비회원도 둘러볼 수 있다 |
 | `console.inazina.localhost` | 4310 + `/api/*` → 4312 | 관리자 콘솔. 로그인은 최근 15분 이내여야 한다(`max_age`) |
 | `www.inazina.localhost` | 4314 (+ `/api/site/feedback` 만 4312) | 공식 사이트 |
@@ -66,7 +66,7 @@
 기본(`dev`)은 `./start_all.command` 가 화면(나루, 대시보드, 공식 사이트)을 **Vite 개발 서버**로 켜고 Caddy 가 그 앞에서 이름만 연결한다. 개발 서버는 작업용이라 코드를 원본에 가깝게 내보내고 최적화가 없다. `INAZINA_FRONTEND=static` 을 넣으면 시작할 때 빌드가 없거나 소스보다 오래된 `hts`, `dashboard`, `site`, `id` 를 `npm run build` 로 만들고, **Caddy 가 `apps/<앱>/dist` 를 직접 제공한다**(`/api/*` 만 4312 로). 실제 Caddy 로 확인한 것: 클라이언트 경로(`/account` 등)는 앱으로 대체되고, 해시 파일은 1년 캐시·gzip, `index.html` 은 `no-cache`, `/src/main.tsx`·`/@vite/client`·`/.env`·`/package.json`·`../` 는 원본이 나오지 않는다. 위키 뷰어는 서버 기능이 Vite 안에만 있어 정적으로 만들 수 없으므로 항상 Vite 개발 서버를 프록시한다.
 
 ## 남은 결정·한계
-- **운영용 API 실행 방식:** `start_all` 은 API(4312)를 `tsx watch`(개발 실행: 소스가 바뀌면 다시 시작)로 돌린다. 빌드해서 `npm run start --workspace @inazina/api`(`node dist/index.js`)로 돌릴지, 터미널을 닫아도 계속 돌고 죽으면 다시 켜지게 `launchd` 등으로 관리할지 정해야 한다. 운영 DB 를 쓰는 서버라 여기서는 시험하지 않았다.
+- **API 실행 방식(결정 2026-11-22): 빌드 방식.** `start_all` 이 시작할 때 현재 작업 폴더의 코드로 API 를 빌드(`apps/api/dist`, 없거나 소스가 더 새로우면)해서 `node dist/index.js` 로 돌린다. 소스를 고쳐도 자동으로 다시 시작되지 않으니 `start_all` 을 다시 시작해야 반영된다. 별도 운영용 폴더 없이 **지금 작업 폴더의 코드를 그대로 실행**한다. (빌드본을 실제로 띄우면 데이터 서비스가 운영 DB 에 붙으므로 여기서는 빌드와 구문 검사까지만 했다.) 터미널을 닫아도 계속 돌게 할지(`launchd`)는 아직 정하지 않았다.
 - `work.`(신규 업무 플랫폼), `mc.`(마인크래프트 TCP 25565: Caddy 기본 기능 밖, `caddy-l4` 가 필요)는 보류.
 - 비밀번호 변경·로그아웃은 모든 앱 세션을 끊지만, 다른 곳에 남은 id 서버 세션(최대 12시간, 브라우저를 닫으면 사라짐)은 조용히 다시 로그인시킬 수 있다. 콘솔은 15분 규칙으로 보완된다.
 
