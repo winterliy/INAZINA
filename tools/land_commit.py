@@ -9,6 +9,8 @@ yours. This tool builds the commit from HEAD plus only what you name, tests it i
 
   --files   whole files (new files included). Use only for files nobody else is editing right now.
   --hunks   path=kw1,kw2: for a shared file, take only the diff hunks (3 lines of context) whose changed lines mention a keyword.
+  --blob    path=file: the candidate gets `file` as the content of `path`. For a shared file whose working copy mixes your change with
+            someone else's unfinished one in the same hunks: prepare HEAD's version of the file plus only your edit, and land that.
   --verify  a shell command run in a clean checkout of the candidate commit (cwd = that checkout; `.venv` and `node_modules` are linked in).
 Changed .py files are always compiled first. One landing at a time (a lock), and if master moved meanwhile the candidate is rebuilt on top.
 Never run `git stash`, `git checkout -- <file>` or `git reset --hard` in the shared tree: that destroys other sessions' work.
@@ -44,7 +46,7 @@ def take_lock(wait_seconds=1800):
             time.sleep(3)
 
 
-def build_candidate(message, files, hunks):
+def build_candidate(message, files, hunks, blobs=None):
     old = git("rev-parse", "HEAD").strip()
     index = tempfile.mktemp(prefix="land-idx.")
     env = {**os.environ, "GIT_INDEX_FILE": index}
@@ -52,6 +54,13 @@ def build_candidate(message, files, hunks):
         git("read-tree", "HEAD", env=env)
         if files:
             git("add", "--", *files, env=env)
+        for path, source in (blobs or {}).items():
+            if not Path(source).is_file():
+                raise SystemExit(f"{path}: no such file to land: {source}")
+            listed = git("ls-tree", "HEAD", "--", path).split()
+            mode = listed[0] if listed else "100644"
+            blob = git("hash-object", "-w", source).strip()
+            git("update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}", env=env)
         for path, keywords in hunks.items():
             diff = git("diff", "-U3", "--", path)
             if not diff:
@@ -110,23 +119,25 @@ def main():
     parser.add_argument("message")
     parser.add_argument("--files", nargs="*", default=[])
     parser.add_argument("--hunks", nargs="*", default=[], metavar="PATH=KW,KW")
+    parser.add_argument("--blob", nargs="*", default=[], metavar="PATH=FILE")
     parser.add_argument("--verify", default="")
     parser.add_argument("--no-push", action="store_true")
     args = parser.parse_args()
     hunks = {item.partition("=")[0]: item.partition("=")[2].split(",") for item in args.hunks}
-    if not args.files and not hunks:
-        raise SystemExit("name something to land (--files and/or --hunks)")
+    blobs = {item.partition("=")[0]: item.partition("=")[2] for item in args.blob}
+    if not args.files and not hunks and not blobs:
+        raise SystemExit("name something to land (--files, --hunks and/or --blob)")
     take_lock()
     try:
         for attempt in range(3):
-            old, commit, _ = build_candidate(args.message, args.files, hunks)
+            old, commit, _ = build_candidate(args.message, args.files, hunks, blobs)
             if commit is None:
                 print("nothing to commit"); return
             verify(commit, args.verify)
             if git("rev-parse", "HEAD").strip() != old:
                 print("master moved while verifying; rebuilding on top"); continue
             git("update-ref", "refs/heads/master", commit, old)
-            git("reset", "-q", "--", *args.files, *hunks, check=False)     # the index follows HEAD for the paths just landed
+            git("reset", "-q", "--", *args.files, *hunks, *blobs, check=False)     # the index follows HEAD for the paths just landed
             print(git("show", "--stat", "--format=%h %s", commit))
             if not args.no_push:
                 git("push", "-q", "origin", "master")
