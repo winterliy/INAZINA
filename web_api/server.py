@@ -802,10 +802,10 @@ def ensure_auth_table(connection):
 
 
 def normalize_hts_id(value):
-    # Digits only is refused: that shape is a Discord id, and login tries web ids first, so a web id equal to a
-    # Discord id nobody has registered yet would later shadow that person's own login.
+    # Digits only at a Discord id's length (17-20) is refused: login tries web ids first, so a web id equal to a
+    # Discord id nobody has registered yet would later shadow that person's own login. Shorter numbers cannot collide.
     text = value.strip() if isinstance(value, str) else ""
-    if not re.fullmatch(r"[A-Za-z0-9_.-]{3,32}", text) or text.isdecimal():
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{3,32}", text) or re.fullmatch(r"\d{17,20}", text):
         raise ValueError("hts_id_policy")
     return text.lower()
 
