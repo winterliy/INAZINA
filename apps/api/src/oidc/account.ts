@@ -12,13 +12,17 @@ export type AccountDeps = { provider: Provider; internalRequest: InternalRequest
 const modes = new Set(["register", "reset-password", "find-id"]);
 const stateCookie = "idp_discord_state";
 const verifiedCookie = "idp_discord";
-const prefix = "/oidc/account/";
+const prefix = "/oidc/account/"; // calls that need no login interaction: countries, the Discord callback and the verification it leaves
+// Calls that belong to one login interaction live under its address: the browser sends the interaction cookie only there.
+const scoped = /^\/oidc\/interaction\/([\w-]+)\/(config|discord\/start|register|password-reset)$/;
+const statePath = prefix; // the OAuth state is only read by the Discord callback
+const verifiedPath = "/oidc/"; // the Discord verification is read by the screen's calls on both kinds of address
 
 export function createAccountHandler(deps: AccountDeps): (request: IncomingMessage, response: ServerResponse, url: URL) => Promise<boolean> {
   const { provider, discord, signer } = deps;
   const used = new Map<string, number>(); // verification nonces already spent, until they would have expired anyway
   const secure = deps.secureCookies ? "; Secure" : "";
-  const cookie = (name: string, value: string, maxAge: number) => `${name}=${encodeURIComponent(value)}; Path=${prefix}; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
+  const cookie = (name: string, value: string, maxAge: number, path: string) => `${name}=${encodeURIComponent(value)}; Path=${path}; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
   const redirect = (response: ServerResponse, location: string, cookies: string[] = []) => {
     response.writeHead(302, { location, "cache-control": "no-store", "content-length": "0", ...(cookies.length ? { "set-cookie": cookies } : {}) });
     response.end();
@@ -28,18 +32,17 @@ export function createAccountHandler(deps: AccountDeps): (request: IncomingMessa
     return value && typeof value.userId === "string" && /^\d{1,25}$/.test(value.userId) && typeof value.nonce === "string" && modes.has(value.purpose) ? value : undefined;
   };
 
-  async function start(request: IncomingMessage, response: ServerResponse, url: URL) {
+  async function start(request: IncomingMessage, response: ServerResponse, url: URL, uid: string) {
     if (!discord.configured) return sendJson(response, 503, { error: "discord_oauth_not_configured" });
     const purpose = url.searchParams.get("purpose") ?? "";
-    const uid = url.searchParams.get("uid") ?? "";
     if (!modes.has(purpose) || !(await interactionFor(provider, request, response, uid))) return sendJson(response, 400, { error: "invalid_oauth_request" });
     const state = randomBytes(32).toString("hex");
-    redirect(response, discord.authorizeUrl(state), [cookie(stateCookie, signer.sign({ state, purpose, uid }, 300), 300)]);
+    redirect(response, discord.authorizeUrl(state), [cookie(stateCookie, signer.sign({ state, purpose, uid }, 300), 300, statePath)]);
   }
 
   async function callback(request: IncomingMessage, response: ServerResponse, url: URL) {
     const pending = signer.unsign(readCookie(request, stateCookie));
-    const clear = cookie(stateCookie, "", 0);
+    const clear = cookie(stateCookie, "", 0, statePath);
     if (!pending || pending.state !== url.searchParams.get("state") || !modes.has(pending.purpose) || !/^[\w-]+$/.test(String(pending.uid))) {
       return redirect(response, `${deps.appUrls.home}?authError=oauth_state_invalid`, [clear]);
     }
@@ -49,7 +52,7 @@ export function createAccountHandler(deps: AccountDeps): (request: IncomingMessa
     try {
       const person = await discord.identify(code);
       const proof = signer.sign({ userId: person.id, nickname: person.nickname, purpose: pending.purpose, nonce: randomBytes(16).toString("hex") }, 300);
-      redirect(response, `${destination}?discordAuth=verified&purpose=${pending.purpose}`, [cookie(verifiedCookie, proof, 300), clear]);
+      redirect(response, `${destination}?discordAuth=verified&purpose=${pending.purpose}`, [cookie(verifiedCookie, proof, 300, verifiedPath), clear]);
     } catch (error) {
       console.warn(`Discord verification failed: ${error instanceof Error ? error.message : "unknown"}`);
       redirect(response, `${destination}?authError=discord_verification_failed`, [clear]);
@@ -57,11 +60,10 @@ export function createAccountHandler(deps: AccountDeps): (request: IncomingMessa
   }
 
   // Register or reset a password for the Discord-verified person, then sign them in to the interaction.
-  async function changeAccount(request: IncomingMessage, response: ServerResponse, purpose: "register" | "reset-password") {
-    let body: Record<string, unknown>;
-    try { body = await readJson(request); } catch { return sendJson(response, 400, { error: "invalid_request" }); }
-    const { uid, ...fields } = body;
-    if (!(await interactionFor(provider, request, response, String(uid ?? "")))) return sendJson(response, 400, { error: "login_expired" });
+  async function changeAccount(request: IncomingMessage, response: ServerResponse, uid: string, purpose: "register" | "reset-password") {
+    if (!(await interactionFor(provider, request, response, uid))) return sendJson(response, 400, { error: "login_expired" });
+    let fields: Record<string, unknown>;
+    try { fields = await readJson(request); } catch { return sendJson(response, 400, { error: "invalid_request" }); }
     const proof = verification(request);
     const now = Math.floor(Date.now() / 1000);
     for (const [nonce, expires] of used) if (expires <= now) used.delete(nonce);
@@ -72,23 +74,31 @@ export function createAccountHandler(deps: AccountDeps): (request: IncomingMessa
     used.set(proof.nonce, proof.exp);
     // The new (or recovered) account is signed in right away, as it always was; the session lasts as long as the browser stays open.
     const redirectTo = await provider.interactionResult(request, response, { login: { accountId: String(user.userId), remember: false } }, { mergeWithLastSubmission: false });
-    response.setHeader("set-cookie", cookie(verifiedCookie, "", 0));
+    response.setHeader("set-cookie", cookie(verifiedCookie, "", 0, verifiedPath));
     sendJson(response, 200, { redirectTo });
   }
 
   return async (request, response, url) => {
-    if (!url.pathname.startsWith(prefix)) return false;
-    const route = url.pathname.slice(prefix.length);
-    if (request.method === "GET") {
-      if (route === "config") {
-        const details = await interactionFor(provider, request, response, url.searchParams.get("uid") ?? "");
+    const inside = scoped.exec(url.pathname);
+    if (inside) {
+      const [, uid, route] = inside;
+      if (request.method === "GET" && route === "config") {
+        const details = await interactionFor(provider, request, response, uid);
         if (!details) { sendJson(response, 400, { error: "login_expired" }); return true; }
         const mode = String(details.params.ui_mode ?? "");
         sendJson(response, 200, { discordOAuthConfigured: discord.configured, clientId: String(details.params.client_id ?? ""), startMode: modes.has(mode) ? mode : "login" });
         return true;
       }
+      if (request.method === "GET" && route === "discord/start") { await start(request, response, url, uid); return true; }
+      if (request.method === "POST" && route === "register") { await changeAccount(request, response, uid, "register"); return true; }
+      if (request.method === "POST" && route === "password-reset") { await changeAccount(request, response, uid, "reset-password"); return true; }
+      sendJson(response, 404, { error: "not_found" });
+      return true;
+    }
+    if (!url.pathname.startsWith(prefix)) return false;
+    const route = url.pathname.slice(prefix.length);
+    if (request.method === "GET") {
       if (route === "countries") { const result = await deps.internalRequest("GET", "/internal/auth/countries", undefined); sendJson(response, result.status, result.body); return true; }
-      if (route === "discord/start") { await start(request, response, url); return true; }
       if (route === "discord/callback") { await callback(request, response, url); return true; }
       if (route === "discord/verification") {
         const proof = verification(request);
@@ -96,8 +106,6 @@ export function createAccountHandler(deps: AccountDeps): (request: IncomingMessa
         return true;
       }
     }
-    if (request.method === "POST" && route === "register") { await changeAccount(request, response, "register"); return true; }
-    if (request.method === "POST" && route === "password-reset") { await changeAccount(request, response, "reset-password"); return true; }
     sendJson(response, 404, { error: "not_found" });
     return true;
   };

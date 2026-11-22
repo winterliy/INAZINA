@@ -11,7 +11,7 @@ const get = (base: string, path: string, jar: Jar) => send(`${base}${path}`, jar
 
 // Signs the Discord way: start from the screen, "come back" from Discord, return the cookie jar holding the verification.
 async function verifyWithDiscord(base: string, jar: Jar, uid: string, purpose: string, code = "good") {
-  const start = await get(base, `/oidc/account/discord/start?purpose=${purpose}&uid=${uid}`, jar);
+  const start = await get(base, `/oidc/interaction/${uid}/discord/start?purpose=${purpose}`, jar);
   const state = new URL(start.headers.get("location")!).searchParams.get("state")!;
   return get(base, `/oidc/account/discord/callback?code=${code}&state=${state}`, jar);
 }
@@ -22,7 +22,7 @@ test("config says whether Discord is usable, which app asked and which screen to
     for (const [extra, expected] of [[{}, "login"], [{ ui_mode: "register" }, "register"], [{ ui_mode: "reset-password" }, "reset-password"], [{ ui_mode: "find-id" }, "find-id"], [{ ui_mode: "evil" }, "login"]] as const) {
       const jar = new Jar();
       const uid = await beginInteraction(base, jar, newVerifier(), extra);
-      const response = await get(base, `/oidc/account/config?uid=${uid}`, jar);
+      const response = await get(base, `/oidc/interaction/${uid}/config`, jar);
       assert.equal(response.status, 200);
       assert.deepEqual(await json(response), { discordOAuthConfigured: true, clientId: "naru", startMode: expected });
     }
@@ -33,11 +33,11 @@ test("account calls are tied to the caller's own login interaction", async () =>
   const { base, close } = await startIdp();
   try {
     const uid = await beginInteraction(base, new Jar());
-    assert.equal((await get(base, `/oidc/account/config?uid=${uid}`, new Jar())).status, 400, "no interaction cookie");
-    assert.equal((await get(base, `/oidc/account/config?uid=other`, new Jar())).status, 400);
+    assert.equal((await get(base, `/oidc/interaction/${uid}/config`, new Jar())).status, 400, "no interaction cookie");
+    assert.equal((await get(base, `/oidc/interaction/other/config`, new Jar())).status, 400);
     const jar = new Jar();
     await beginInteraction(base, jar);
-    assert.equal((await get(base, `/oidc/account/config?uid=${uid}`, jar)).status, 400, "another interaction's uid");
+    assert.equal((await get(base, `/oidc/interaction/${uid}/config`, jar)).status, 400, "another interaction's uid");
   } finally { await close(); }
 });
 
@@ -101,12 +101,12 @@ test("Discord start sends the browser to Discord with a state, for the three pur
     const jar = new Jar();
     const uid = await beginInteraction(base, jar);
     for (const purpose of ["register", "find-id", "reset-password"]) {
-      const response = await get(base, `/oidc/account/discord/start?purpose=${purpose}&uid=${uid}`, jar);
+      const response = await get(base, `/oidc/interaction/${uid}/discord/start?purpose=${purpose}`, jar);
       assert.equal(response.status, 302);
       assert.match(response.headers.get("location")!, /^https:\/\/discord\.test\/authorize\?state=[\w-]+$/);
     }
-    assert.equal((await get(base, `/oidc/account/discord/start?purpose=login&uid=${uid}`, jar)).status, 400);
-    assert.equal((await get(base, `/oidc/account/discord/start?purpose=register&uid=nope`, jar)).status, 400);
+    assert.equal((await get(base, `/oidc/interaction/${uid}/discord/start?purpose=login`, jar)).status, 400);
+    assert.equal((await get(base, `/oidc/interaction/nope/discord/start?purpose=register`, jar)).status, 400);
   } finally { await close(); }
 });
 
@@ -115,7 +115,7 @@ test("Discord start reports 503 when Discord is not configured", async () => {
   try {
     const jar = new Jar();
     const uid = await beginInteraction(base, jar);
-    const response = await get(base, `/oidc/account/discord/start?purpose=register&uid=${uid}`, jar);
+    const response = await get(base, `/oidc/interaction/${uid}/discord/start?purpose=register`, jar);
     assert.equal(response.status, 503);
     assert.deepEqual(await json(response), { error: "discord_oauth_not_configured" });
   } finally { await close(); }
@@ -142,7 +142,7 @@ test("a forged state, a refused authorization and a failed lookup each come back
     const uid = await beginInteraction(base, jar);
     const forged = await get(base, "/oidc/account/discord/callback?code=good&state=forged", jar);
     assert.equal(forged.headers.get("location"), `${home}?authError=oauth_state_invalid`);
-    const start = async () => new URL((await get(base, `/oidc/account/discord/start?purpose=register&uid=${uid}`, jar)).headers.get("location")!).searchParams.get("state")!;
+    const start = async () => new URL((await get(base, `/oidc/interaction/${uid}/discord/start?purpose=register`, jar)).headers.get("location")!).searchParams.get("state")!;
     assert.equal((await get(base, `/oidc/account/discord/callback?error=access_denied&state=${await start()}`, jar)).headers.get("location"), `/oidc/interaction/${uid}?authError=discord_authorization_failed`);
     assert.equal((await get(base, `/oidc/account/discord/callback?code=bad&state=${await start()}`, jar)).headers.get("location"), `/oidc/interaction/${uid}?authError=discord_verification_failed`);
     assert.equal((await get(base, "/oidc/account/discord/verification", jar)).status, 401, "no verification was granted");
@@ -155,7 +155,7 @@ test("register needs the Discord verification, uses the verified name and id, an
     const jar = new Jar();
     const codeVerifier = newVerifier();
     const uid = await beginInteraction(base, jar, codeVerifier, { ui_mode: "register" });
-    const register = (body: object = {}) => postJson(`${base}/oidc/account/register`, jar, { uid, countryId: "KR", password: "a-long-password-1", ...body });
+    const register = (body: object = {}) => postJson(`${base}/oidc/interaction/${uid}/register`, jar, { countryId: "KR", password: "a-long-password-1", ...body });
     const refused = await register();
     assert.equal(refused.status, 403);
     assert.deepEqual(await json(refused), { error: "discord_verification_required" });
@@ -169,7 +169,7 @@ test("register needs the Discord verification, uses the verified name and id, an
     const target = await followUntil(base, jar, await send((await json(created)).redirectTo, jar), callbackUri);
     const tokens = await json(await exchangeCode(base, target.searchParams.get("code")!, codeVerifier));
     assert.equal(JSON.parse(Buffer.from(tokens.id_token.split(".")[1], "base64url").toString()).sub, bob.userId);
-    const replay = await send(`${base}/oidc/account/register`, new Jar(), { method: "POST", headers: { "content-type": "application/json", cookie: savedCookies }, body: JSON.stringify({ uid, countryId: "KR", password: "x" }) });
+    const replay = await send(`${base}/oidc/interaction/${uid}/register`, new Jar(), { method: "POST", headers: { "content-type": "application/json", cookie: savedCookies }, body: JSON.stringify({ countryId: "KR", password: "x" }) });
     assert.ok(replay.status === 403 || replay.status === 400, "the verification cannot be used twice");
   } finally { await close(); }
 });
@@ -180,7 +180,7 @@ test("a rejected registration passes the data service's answer through and keeps
     const jar = new Jar();
     const uid = await beginInteraction(base, jar);
     await verifyWithDiscord(base, jar, uid, "register");
-    const response = await postJson(`${base}/oidc/account/register`, jar, { uid, countryId: "KR", password: "dup" });
+    const response = await postJson(`${base}/oidc/interaction/${uid}/register`, jar, { countryId: "KR", password: "dup" });
     assert.equal(response.status, 409);
     assert.deepEqual(await json(response), { error: "account_exists" });
     assert.equal((await get(base, "/oidc/account/discord/verification", jar)).status, 200, "the person can try again");
@@ -193,9 +193,9 @@ test("a password reset works the same way, and a verification made for another p
     const jar = new Jar();
     const uid = await beginInteraction(base, jar);
     await verifyWithDiscord(base, jar, uid, "register");
-    assert.equal((await postJson(`${base}/oidc/account/password-reset`, jar, { uid, password: "new-long-password-1" })).status, 403, "a register verification cannot reset a password");
+    assert.equal((await postJson(`${base}/oidc/interaction/${uid}/password-reset`, jar, { password: "new-long-password-1" })).status, 403, "a register verification cannot reset a password");
     await verifyWithDiscord(base, jar, uid, "reset-password");
-    const response = await postJson(`${base}/oidc/account/password-reset`, jar, { uid, password: "new-long-password-1" });
+    const response = await postJson(`${base}/oidc/interaction/${uid}/password-reset`, jar, { password: "new-long-password-1" });
     assert.equal(response.status, 200);
     assert.ok(typeof (await json(response)).redirectTo === "string");
     const sent = calls.find((call) => call.path === "/internal/auth/password/reset")!;
@@ -208,7 +208,7 @@ test("account posts without the login interaction's cookie are refused", async (
   const { base, close } = await startIdp();
   try {
     const uid = await beginInteraction(base, new Jar());
-    const response = await postJson(`${base}/oidc/account/register`, new Jar(), { uid, countryId: "KR", password: "x" });
+    const response = await postJson(`${base}/oidc/interaction/${uid}/register`, new Jar(), { countryId: "KR", password: "x" });
     assert.equal(response.status, 400);
   } finally { await close(); }
 });
@@ -251,3 +251,15 @@ test("direct visits to /login, /register and /reset start a login at the app, on
   } finally { await close(); }
 });
 
+
+test("the screen's calls only need the cookies a browser sends them (the interaction cookie is scoped to its own address)", async () => {
+  const { base, close } = await startIdp();
+  try {
+    const jar = new Jar();
+    const uid = await beginInteraction(base, jar);
+    assert.match(jar.header(`/oidc/interaction/${uid}/config`), /_interaction=/);
+    assert.doesNotMatch(jar.header("/oidc/account/countries"), /_interaction=/, "the cookie must not be assumed outside its path");
+    assert.equal((await get(base, `/oidc/interaction/${uid}/config`, jar)).status, 200);
+    assert.equal((await get(base, "/oidc/account/countries", jar)).status, 200, "countries need no interaction");
+  } finally { await close(); }
+});

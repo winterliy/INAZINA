@@ -1,21 +1,29 @@
 // Helpers for tests that drive the identity provider the way a browser does: a cookie jar, manual redirects, PKCE values.
 import { createHash, randomBytes } from "node:crypto";
 
+// A browser's cookie jar, including the Path rule: a cookie is only sent to addresses under its path (this is what the
+// interaction cookies depend on, so tests must not ignore it).
 export class Jar {
-  cookies = new Map<string, string>();
+  cookies = new Map<string, { value: string; path: string }>();
   absorb(response: Response): void {
     for (const line of response.headers.getSetCookie()) {
-      const [pair] = line.split(";");
+      const [pair, ...attributes] = line.split(";");
       const index = pair.indexOf("=");
+      const name = pair.slice(0, index);
       const value = pair.slice(index + 1);
-      if (value === "" || /;\s*max-age=0/i.test(line)) this.cookies.delete(pair.slice(0, index)); else this.cookies.set(pair.slice(0, index), value);
+      const path = attributes.map((part) => part.trim()).find((part) => /^path=/i.test(part))?.slice(5) ?? "/";
+      if (value === "" || /;\s*max-age=0/i.test(line)) this.cookies.delete(name); else this.cookies.set(name, { value, path });
     }
   }
-  header(): string { return [...this.cookies].map(([name, value]) => `${name}=${value}`).join("; "); }
+  // The Cookie header for a request to `path` (every cookie when no path is given).
+  header(path?: string): string {
+    return [...this.cookies].filter(([, cookie]) => path === undefined || path === cookie.path || path.startsWith(cookie.path.endsWith("/") ? cookie.path : `${cookie.path}/`))
+      .map(([name, cookie]) => `${name}=${cookie.value}`).join("; ");
+  }
 }
 
 export async function send(url: string, jar: Jar, init: RequestInit = {}): Promise<Response> {
-  const response = await fetch(url, { redirect: "manual", ...init, headers: { cookie: jar.header(), ...(init.headers as Record<string, string> | undefined) } });
+  const response = await fetch(url, { redirect: "manual", ...init, headers: { cookie: jar.header(new URL(url).pathname), ...(init.headers as Record<string, string> | undefined) } });
   jar.absorb(response);
   return response;
 }

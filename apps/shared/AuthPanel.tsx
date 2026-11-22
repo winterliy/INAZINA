@@ -23,7 +23,7 @@ const titles: Record<Mode, string> = {
 // navigates to the address the server returns, instead of calling the app API and handing back a user.
 export function AuthPanel({ app, onAuthenticated, extra, autoSso = true, idp }: { app: "dashboard" | "hts" | "id"; onAuthenticated: (user: ApiUser) => void; extra?: ReactNode; autoSso?: boolean; idp?: { uid: string } }) {
   const paths = idp
-    ? { config: `/oidc/account/config?uid=${encodeURIComponent(idp.uid)}`, countries: "/oidc/account/countries", verification: "/oidc/account/discord/verification", login: `/oidc/interaction/${encodeURIComponent(idp.uid)}/login`, register: "/oidc/account/register", reset: "/oidc/account/password-reset" }
+    ? { config: `/oidc/interaction/${encodeURIComponent(idp.uid)}/config`, countries: "/oidc/account/countries", verification: "/oidc/account/discord/verification", login: `/oidc/interaction/${encodeURIComponent(idp.uid)}/login`, register: `/oidc/interaction/${encodeURIComponent(idp.uid)}/register`, reset: `/oidc/interaction/${encodeURIComponent(idp.uid)}/password-reset` }
     : { config: "/api/auth/config", countries: "/api/auth/countries", verification: "/api/auth/discord/verification", login: "/api/auth/login", register: "/api/auth/register", reset: "/api/auth/password/reset" };
   type Done = { user?: ApiUser; redirectTo?: string };
   const done = (result: Done) => { if (result.redirectTo) window.location.assign(result.redirectTo); else if (result.user) onAuthenticated(result.user); };
@@ -104,8 +104,8 @@ export function AuthPanel({ app, onAuthenticated, extra, autoSso = true, idp }: 
       setError("Discord OAuth 설정이 필요합니다. 프로젝트 .env의 Discord client ID와 secret을 설정해주세요.");
       return;
     }
-    const query = new URLSearchParams({ purpose, ...(idp ? { uid: idp.uid } : { returnTo: app }) });
-    window.location.assign(`${idp ? "/oidc/account/discord/start" : "/api/auth/discord/start"}?${query.toString()}`);
+    const query = new URLSearchParams({ purpose, ...(idp ? {} : { returnTo: app }) });
+    window.location.assign(`${idp ? `/oidc/interaction/${encodeURIComponent(idp.uid)}/discord/start` : "/api/auth/discord/start"}?${query.toString()}`);
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -121,9 +121,9 @@ export function AuthPanel({ app, onAuthenticated, extra, autoSso = true, idp }: 
       if (mode === "login") {
         done(await api<Done>(paths.login, { method: "POST", body: JSON.stringify({ loginId: userId.trim(), password }) }));
       } else if (mode === "register") {
-        done(await api<Done>(paths.register, { method: "POST", body: JSON.stringify({ ...(idp ? { uid: idp.uid } : {}), countryId, password }) }));
+        done(await api<Done>(paths.register, { method: "POST", body: JSON.stringify({ countryId, password }) }));
       } else if (mode === "reset-password") {
-        done(await api<Done>(paths.reset, { method: "POST", body: JSON.stringify({ ...(idp ? { uid: idp.uid } : {}), password }) }));
+        done(await api<Done>(paths.reset, { method: "POST", body: JSON.stringify({ password }) }));
       }
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : "요청을 처리하지 못했습니다.";
