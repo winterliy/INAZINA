@@ -49,11 +49,23 @@ cleanup() {
 
 trap cleanup INT TERM EXIT
 
+# INAZINA_FRONTEND=static (for the internet, docs/sso.md): the screens are built once and served by Caddy itself, with no Vite
+# development servers for visitors. Default dev: Vite development servers, as always.
+FRONTEND="${INAZINA_FRONTEND:-dev}"
+if [[ "$FRONTEND" != "dev" && "$FRONTEND" != "static" ]]; then
+  print -u2 "INAZINA_FRONTEND 는 dev 또는 static 이어야 합니다(지금 값: $FRONTEND)."
+  exit 1
+fi
+
 print "INAZINA 서비스를 시작합니다. 종료하려면 Ctrl+C를 누르세요."
-print "Dashboard: http://127.0.0.1:4310"
-print "HTS:       http://127.0.0.1:4311"
+if [[ "$FRONTEND" == "static" ]]; then
+  print "화면 모드: static (빌드된 파일을 Caddy 가 직접 제공, Vite 개발 서버 없음)"
+else
+  print "Dashboard: http://127.0.0.1:4310"
+  print "HTS:       http://127.0.0.1:4311"
+  print "Site:      http://127.0.0.1:4314"
+fi
 print "API:       http://127.0.0.1:4312/api/health"
-print "Site:      http://127.0.0.1:4314"
 print "WL:        http://127.0.0.1:4315"
 print "로그는 아래에 서비스별로 표시됩니다."
 
@@ -81,21 +93,46 @@ if [[ -n "${INAZINA_OIDC_ISSUER:-}" && ! -f "$ROOT/apps/id/dist/index.html" ]]; 
   npm run build --workspace @inazina/id >/dev/null 2>&1 || print -u2 "주의: 로그인 화면 빌드에 실패해 간단한 로그인 페이지로 대신합니다. (npm run build --workspace @inazina/id 로 원인을 확인하세요.)"
 fi
 
+# Static mode: build the screens whose build is missing or older than their sources, and refuse to start without Caddy
+# (it is the only thing that serves them).
+if [[ "$FRONTEND" == "static" ]]; then
+  if ! command -v caddy >/dev/null 2>&1; then
+    print -u2 "INAZINA_FRONTEND=static 은 화면을 Caddy 가 제공하므로 caddy 가 필요합니다. (brew install caddy)"
+    exit 1
+  fi
+  rebuild=0
+  for app in hts dashboard site id; do
+    built="$ROOT/apps/$app/dist/index.html"
+    if [[ ! -f "$built" ]] || [[ -n "$(find "$ROOT/apps/$app/src" "$ROOT/apps/$app/index.html" "$ROOT/apps/shared" -newer "$built" -print -quit 2>/dev/null)" ]]; then rebuild=1; fi
+  done
+  if (( rebuild )); then
+    print "화면을 빌드합니다(hts, dashboard, site, id)."
+    npm run build --workspace @inazina/hts --workspace @inazina/dashboard --workspace @inazina/site --workspace @inazina/id >/dev/null 2>&1 || {
+      print -u2 "화면 빌드에 실패했습니다. 원인을 확인하세요: npm run build --workspace @inazina/hts (dashboard, site, id 도 같은 방식)"
+      exit 1
+    }
+  fi
+fi
+
 npm run dev:api &
 pids+=("$!")
-npm run dev:dashboard &
-pids+=("$!")
-npm run dev:hts &
-pids+=("$!")
-npm run dev:site &
-pids+=("$!")
+if [[ "$FRONTEND" != "static" ]]; then
+  npm run dev:dashboard &
+  pids+=("$!")
+  npm run dev:hts &
+  pids+=("$!")
+  npm run dev:site &
+  pids+=("$!")
+fi
+# The wiki viewer's server part exists only in Vite: it stays on loopback and is published (INAZINA_WL=proxy) only when asked.
 npm run dev:wl &
 pids+=("$!")
 
-# Single sign-on front door (docs/sso.md): only when INAZINA_OIDC_ISSUER is set and Caddy is installed.
-if [[ -n "${INAZINA_OIDC_ISSUER:-}" ]]; then
+# The front door (docs/sso.md): Caddy, when single sign-on is on (INAZINA_OIDC_ISSUER) or the screens are static.
+if [[ -n "${INAZINA_OIDC_ISSUER:-}" || "$FRONTEND" == "static" ]]; then
   if command -v caddy >/dev/null 2>&1; then
-    INAZINA_TLS="${INAZINA_TLS-internal}" caddy run --config "$ROOT/infra/Caddyfile" --adapter caddyfile &
+    default_wl=proxy; [[ "$FRONTEND" == "static" ]] && default_wl=off
+    INAZINA_FRONTEND="$FRONTEND" INAZINA_ROOT="$ROOT" INAZINA_WL="${INAZINA_WL:-$default_wl}" INAZINA_TLS="${INAZINA_TLS-internal}" caddy run --config "$ROOT/infra/Caddyfile" --adapter caddyfile &
     pids+=("$!")
   else
     print -u2 "주의: INAZINA_OIDC_ISSUER 가 설정됐지만 caddy 가 설치돼 있지 않아 도메인 서버(infra/Caddyfile)를 시작하지 않습니다."

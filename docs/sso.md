@@ -45,11 +45,18 @@
 5. 브라우저에서 `https://naru.inazina.localhost`. `*.localhost` 는 자동으로 이 컴퓨터를 가리킨다.
 - 4310/4311 에 직접(`127.0.0.1`) 접속하면 이전처럼 비밀번호 로그인이 된다(앱 호스트가 아닌 접속은 SSO 를 강제하지 않는다). 운영자의 비상 경로이기도 하다.
 
+## 인터넷에 열 때: 화면을 빌드해서 제공 (`INAZINA_FRONTEND=static`)
+기본(`dev`)은 `./start_all.command` 가 화면(나루, 대시보드, 공식 사이트)을 **Vite 개발 서버**로 켜고 Caddy 가 그 앞에서 도메인만 연결한다. 개발 서버는 작업용이라 방문자에게 쓰도록 만들어지지 않았다(코드를 원본에 가깝게 내보내고, 최적화·보안 처리가 없고, 요청이 몰리면 느려진다). 인터넷에 열 때는 `.env` 에 `INAZINA_FRONTEND=static` 을 넣는다.
+- 시작할 때 `hts`, `dashboard`, `site`, `id` 중 빌드가 없거나 소스보다 오래된 것을 `npm run build` 로 만들고, **Caddy 가 `apps/<앱>/dist` 를 직접 제공한다**(Vite 개발 서버는 켜지 않는다). `/api/*` 만 4312 로 넘어간다. caddy 가 없으면 시작하지 않는다.
+- 확인한 것(실제 Caddy, 임시 포트): 첫 화면과 `/account` 같은 클라이언트 경로는 앱으로 대체되고, 해시가 붙은 파일은 1년 캐시·gzip, `index.html` 은 `no-cache`. `/src/main.tsx`, `/@vite/client`, `/.env`, `/package.json`, `../` 경로는 앱 첫 화면으로 대체될 뿐 원본이 나오지 않는다. 빌드 결과에 소스맵과 비밀 문자열도 없다.
+- **위키 뷰어(`wl.kr`)는 정적으로 만들 수 없다.** 비밀번호 확인과 파일 읽기 같은 서버 기능이 Vite 개발 서버의 플러그인 안에만 있다. 그래서 정적 모드에서는 기본으로 공개하지 않는다(`Not published.` 404). 정말 열려면 `INAZINA_WL=proxy` 를 넣는다. 그러면 개발 서버가 인터넷에 노출되는 것이니 진입 비밀번호에 의존하게 된다는 점을 감수해야 한다.
+- 남은 한계: API(4312)는 `start_all` 에서 여전히 `tsx watch`(개발 실행)로 돈다. 소스가 바뀌면 다시 시작되므로, 운영에서는 빌드해서 `npm run start --workspace @inazina/api` 로 돌리는 것이 맞다. 운영 DB 를 쓰는 서버라 여기서는 시험하지 않았다.
+
 ## 운영 도메인 인증서 (Caddy 가 자동 발급)
 Caddy 는 `INAZINA_TLS` 를 비우면(또는 지우면) 실제 도메인용 공개 인증서를 스스로 받고 갱신한다(Let's Encrypt/ZeroSSL). 받으려면 아래가 먼저 갖춰져야 한다. 하나라도 빠지면 발급이 실패한다.
 1. **도메인과 DNS:** `inazina.kr` 이 등록·위임되어 있고 `inazina.kr`, `www.`, `corp.`, `id.`, `naru.`, `console.` 과 `wl.kr` 의 A(또는 AAAA) 레코드가 이 서버의 공인 IP 를 가리킨다. (2026-11-22 확인: `inazina.kr`·`wl.kr` 은 NS/SOA 도 조회되지 않았다. 도메인 등록·DNS 설정이 먼저다.)
 2. **80/443 이 인터넷에서 닿는다:** 공유기 포트포워딩과 방화벽. 인증서 발급 때 인증 기관이 이 서버의 80/443 에 접속해 소유를 확인한다. 4310~4315 는 열지 않는다(`127.0.0.1` 에서만 듣는다).
-3. **`.env`:** `INAZINA_DOMAIN=inazina.kr`, `WL_DOMAIN=wl.kr`, `INAZINA_TLS=`(빈 값), `INAZINA_COOKIE_SECURE=true`, `INAZINA_OIDC_ISSUER=https://id.inazina.kr/oidc`. 브라우저가 쓰는 앱 주소가 바뀌므로 `INAZINA_OIDC_CLIENTS` 를 따로 쓰고 있다면 그 안의 주소도 맞춘다.
+3. **`.env`:** `INAZINA_DOMAIN=inazina.kr`, `WL_DOMAIN=wl.kr`, `INAZINA_TLS=`(빈 값), `INAZINA_FRONTEND=static`, `INAZINA_COOKIE_SECURE=true`, `INAZINA_OIDC_ISSUER=https://id.inazina.kr/oidc`. 브라우저가 쓰는 앱 주소가 바뀌므로 `INAZINA_OIDC_CLIENTS` 를 따로 쓰고 있다면 그 안의 주소도 맞춘다.
 4. Caddy 를 시작하고 로그에서 `certificate obtained successfully` 가 호스트마다 나오는지 본다. 실패하면 같은 로그에 이유(DNS 미해결, 80 접속 불가 등)가 나온다. 같은 도메인으로 짧은 시간에 실패를 반복하면 인증 기관의 횟수 제한에 걸리니, 원인을 고친 뒤 다시 시도한다.
 - 설정 파일이 운영 모드에서 올바른지는 `INAZINA_DOMAIN=inazina.kr WL_DOMAIN=wl.kr caddy validate --config infra/Caddyfile --adapter caddyfile` 로 확인한다(시험 `tests/test_caddyfile.py` 가 로컬·운영 모드를 실제 Caddy 로 검증한다).
 

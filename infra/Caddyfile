@@ -1,6 +1,7 @@
 # INAZINA public edge. api.<domain> and port 4313 (internal gateway) are
 # intentionally NOT published here.
-# Env: INAZINA_DOMAIN (default inazina.localhost), WL_DOMAIN (default wl.kr.localhost; production: wl.kr),
+# Env: INAZINA_FRONTEND (dev | static), INAZINA_ROOT (project folder, for static), INAZINA_WL (proxy | off),
+#      INAZINA_DOMAIN (default inazina.localhost), WL_DOMAIN (default wl.kr.localhost; production: wl.kr),
 #      INAZINA_TLS ("internal" locally, empty or unset in production).
 
 # Certificates: INAZINA_TLS=internal uses Caddy's own local certificates (development); empty or unset leaves Caddy's
@@ -16,6 +17,39 @@
 # INAZINA_TLS set but empty (a bare `INAZINA_TLS=` line in .env) means the same as unset.
 (tls_) {
 	import tls_public
+}
+
+# The screens (naru, console, the site). INAZINA_FRONTEND=dev (default) proxies to the Vite development servers; `static`
+# serves the built files (apps/<app>/dist from `npm run build`) from Caddy itself, which is what belongs on the internet:
+# a development server is not made for visitors. The API is reached through /api/* either way.
+(frontend_dev) {
+	reverse_proxy 127.0.0.1:{args[0]}
+}
+(frontend_static) {
+	root * {args[1]}
+	encode zstd gzip
+	@hashed path /assets/*
+	header @hashed Cache-Control "public, max-age=31536000, immutable"
+	@shell not path /assets/*
+	header @shell Cache-Control "no-cache"
+	try_files {path} /index.html
+	file_server
+}
+# INAZINA_FRONTEND set but empty means the same as unset.
+(frontend_) {
+	import frontend_dev {args[0]} {args[1]}
+}
+
+# The wiki viewer (wl.kr): its server part (entry password, file reads) exists only inside Vite, so it cannot be built into
+# static files. INAZINA_WL=proxy (default in development) publishes that dev server; start_all sets `off` in static mode.
+(wl_proxy) {
+	reverse_proxy 127.0.0.1:4315
+}
+(wl_off) {
+	respond "Not published." 404
+}
+(wl_) {
+	import wl_proxy
 }
 
 (common) {
@@ -41,7 +75,7 @@ www.{$INAZINA_DOMAIN:inazina.localhost} {
 		reverse_proxy 127.0.0.1:4312
 	}
 	handle {
-		reverse_proxy 127.0.0.1:4314
+		import frontend_{$INAZINA_FRONTEND:dev} 4314 {$INAZINA_ROOT:.}/apps/site/dist
 	}
 }
 
@@ -53,7 +87,7 @@ corp.{$INAZINA_DOMAIN:inazina.localhost} {
 		reverse_proxy 127.0.0.1:4312
 	}
 	handle {
-		reverse_proxy 127.0.0.1:4314
+		import frontend_{$INAZINA_FRONTEND:dev} 4314 {$INAZINA_ROOT:.}/apps/site/dist
 	}
 }
 
@@ -80,7 +114,7 @@ naru.{$INAZINA_DOMAIN:inazina.localhost} {
 		reverse_proxy 127.0.0.1:4312
 	}
 	handle {
-		reverse_proxy 127.0.0.1:4311
+		import frontend_{$INAZINA_FRONTEND:dev} 4311 {$INAZINA_ROOT:.}/apps/hts/dist
 	}
 }
 
@@ -95,14 +129,14 @@ console.{$INAZINA_DOMAIN:inazina.localhost} {
 		reverse_proxy 127.0.0.1:4312
 	}
 	handle {
-		reverse_proxy 127.0.0.1:4310
+		import frontend_{$INAZINA_FRONTEND:dev} 4310 {$INAZINA_ROOT:.}/apps/dashboard/dist
 	}
 }
 
 # A separate domain with its own entry password; not part of the SSO.
 {$WL_DOMAIN:wl.kr.localhost} {
 	import common
-	reverse_proxy 127.0.0.1:4315
+	import wl_{$INAZINA_WL:proxy}
 }
 
 # Placeholders, not yet active:

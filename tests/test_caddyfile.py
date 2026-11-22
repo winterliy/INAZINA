@@ -51,13 +51,15 @@ def test_no_public_api_or_internal_gateway():
 
 def test_sites_present():
     assert set(SITES) == {
-        "(common)", "(tls_internal)", "(tls_public)", "(tls_)", D, f"www.{D}", f"corp.{D}", f"id.{D}", f"naru.{D}", f"console.{D}", "{$WL_DOMAIN:wl.kr.localhost}",
+        "(common)", "(tls_internal)", "(tls_public)", "(tls_)", "(frontend_dev)", "(frontend_static)", "(frontend_)", "(wl_proxy)", "(wl_off)", "(wl_)", D, f"www.{D}", f"corp.{D}", f"id.{D}", f"naru.{D}", f"console.{D}", "{$WL_DOMAIN:wl.kr.localhost}",
     }
 
 
-def test_simple_hosts_proxy_to_their_port():
-    for label, port in {"{$WL_DOMAIN:wl.kr.localhost}": "4315"}.items():
-        assert re.search(rf"^\treverse_proxy 127\.0\.0\.1:{port}$", SITES[label], re.M), label
+def test_wiki_viewer_site_is_chosen_by_INAZINA_WL():
+    body = SITES["{$WL_DOMAIN:wl.kr.localhost}"]
+    assert "import wl_{$INAZINA_WL:proxy}" in body
+    assert "reverse_proxy 127.0.0.1:4315" in SITES["(wl_proxy)"]
+    assert "respond" in SITES["(wl_off)"] and "4315" not in SITES["(wl_off)"]
 
 
 def test_apex_redirects_permanently_to_www():
@@ -86,7 +88,7 @@ def test_app_hosts_split_api_from_frontend_and_block_internal():
         found = handlers(body)
         assert found["@internal"].strip() == "respond 404"
         assert found["@api"].strip() == "reverse_proxy 127.0.0.1:4312"
-        assert found[""].strip() == f"reverse_proxy 127.0.0.1:{port}"
+        assert found[""].strip() == f"import frontend_{{$INAZINA_FRONTEND:dev}} {port} {{$INAZINA_ROOT:.}}/apps/{'hts' if host == 'naru' else 'dashboard'}/dist"
         # The internal block must come before the generic /api/* handler (first handle wins).
         assert body.index("handle @internal") < body.index("handle @api")
 
@@ -97,7 +99,7 @@ def test_site_hosts_send_only_the_contact_form_to_the_api():
         assert "@feedback path /api/site/feedback" in body
         found = handlers(body)
         assert found["@feedback"].strip() == "reverse_proxy 127.0.0.1:4312"
-        assert found[""].strip() == "reverse_proxy 127.0.0.1:4314"
+        assert found[""].strip() == "import frontend_{$INAZINA_FRONTEND:dev} 4314 {$INAZINA_ROOT:.}/apps/site/dist"
 
 
 # The text checks above cannot see what Caddy makes of the file (an empty tls argument in production once broke it), so
@@ -117,3 +119,80 @@ def test_caddy_accepts_the_file_in_local_and_production_mode(env):
     result = subprocess.run(["caddy", "validate", "--config", str(Path(__file__).resolve().parents[1] / "infra" / "Caddyfile"), "--adapter", "caddyfile"],
                             capture_output=True, text=True, env=merged, timeout=60)
     assert result.returncode == 0, result.stderr[-400:]
+
+
+# ---- What Caddy makes of it: development proxies to the Vite servers, static mode serves the built files itself. ----
+import json
+
+
+def _adapt(**env):
+    merged = {key: value for key, value in os.environ.items() if not key.startswith(("INAZINA_", "WL_"))}
+    merged.update({"INAZINA_DOMAIN": "inazina.kr", "WL_DOMAIN": "wl.kr", "INAZINA_TLS": "", "INAZINA_ROOT": "/srv/inazina", **env})
+    result = subprocess.run(["caddy", "adapt", "--config", str(Path(__file__).resolve().parents[1] / "infra" / "Caddyfile"), "--adapter", "caddyfile"],
+                            capture_output=True, text=True, env=merged, timeout=60)
+    assert result.returncode == 0, result.stderr[-400:]
+    return json.loads(result.stdout)
+
+
+def _walk(node, found):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "dial":
+                found["dials"].add(value)
+            elif key == "root":
+                found["roots"].add(value)
+            elif key == "handler":
+                found["handlers"].add(value)
+            _walk(value, found)
+    elif isinstance(node, list):
+        for item in node:
+            _walk(item, found)
+    return found
+
+
+def _site(config, host):
+    for server in config["apps"]["http"]["servers"].values():
+        for route in server["routes"]:
+            if any(host in match.get("host", []) for match in route.get("match", [])):
+                return _walk(route, {"dials": set(), "roots": set(), "handlers": set()})
+    raise AssertionError(f"no site for {host}")
+
+
+needs_caddy = pytest.mark.skipif(shutil.which("caddy") is None, reason="caddy is not installed")
+
+
+@needs_caddy
+def test_development_mode_proxies_the_screens_to_the_vite_servers():
+    config = _adapt()
+    for host, port in (("naru.inazina.kr", "4311"), ("console.inazina.kr", "4310"), ("www.inazina.kr", "4314"), ("corp.inazina.kr", "4314"), ("wl.kr", "4315")):
+        site = _site(config, host)
+        assert f"127.0.0.1:{port}" in site["dials"], host
+        assert "file_server" not in site["handlers"], host
+
+
+@needs_caddy
+def test_static_mode_serves_the_built_files_and_never_the_vite_servers():
+    config = _adapt(INAZINA_FRONTEND="static")
+    for host, app in (("naru.inazina.kr", "hts"), ("console.inazina.kr", "dashboard"), ("www.inazina.kr", "site"), ("corp.inazina.kr", "site")):
+        site = _site(config, host)
+        assert site["roots"] == {f"/srv/inazina/apps/{app}/dist"}, host
+        assert "file_server" in site["handlers"], host
+        assert not site["dials"] & {"127.0.0.1:4310", "127.0.0.1:4311", "127.0.0.1:4314", "127.0.0.1:4315"}, host
+    assert "127.0.0.1:4312" in _site(config, "naru.inazina.kr")["dials"], "/api still goes to the API"
+    assert "127.0.0.1:4312" in _site(config, "console.inazina.kr")["dials"]
+    assert _site(config, "www.inazina.kr")["dials"] == {"127.0.0.1:4312"}, "the site only asks the API for its contact form"
+
+
+@needs_caddy
+def test_static_mode_does_not_publish_the_wiki_viewer_unless_asked():
+    off = _site(_adapt(INAZINA_FRONTEND="static", INAZINA_WL="off"), "wl.kr")
+    assert "127.0.0.1:4315" not in off["dials"]
+    on = _site(_adapt(INAZINA_FRONTEND="static", INAZINA_WL="proxy"), "wl.kr")
+    assert "127.0.0.1:4315" in on["dials"], "its server part exists only in Vite, so publishing it is an explicit choice"
+
+
+@needs_caddy
+def test_static_mode_falls_back_to_the_app_for_client_side_routes_and_caches_hashed_files():
+    text = json.dumps(_adapt(INAZINA_FRONTEND="static"))
+    assert "try_files" in text or "rewrite" in text
+    assert "immutable" in text
