@@ -5,6 +5,7 @@ import { api, apiError, clearToken, onUnauthorized, signedOut, ApiError, type Ap
 import { Logo } from "../../shared/Logo";
 import { navigate } from "./nav";
 import { SsoGate } from "../../shared/SsoGate";
+import { AccountWithdrawal } from "./AccountWithdrawal";
 import { logoutRedirect, currentReturnTo, ssoLoginUrl } from "../../shared/sso";
 import { guestCanView, loginPanelRequested } from "./guest";
 import "./guest.css";
@@ -863,6 +864,7 @@ export default function App() {
           <header><h2>바로가기</h2></header>
           <nav className="account-links">{SERVICES.map((item) => <a key={item.path} href={item.path}><b>{item.label}</b><small>{item.description}</small></a>)}</nav>
         </section>
+        <AccountWithdrawal user={me} />
       </div>
     </main>
     <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
