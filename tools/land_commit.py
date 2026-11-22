@@ -85,7 +85,8 @@ def verify(commit, command):
                 (folder / name).symlink_to(ROOT / name)
         for app in (ROOT / "apps").glob("*/node_modules"):
             (folder / "apps" / app.parent.name / "node_modules").symlink_to(app)
-        changed = [p for p in git("diff", "--name-only", f"{commit}^", commit).split() if p.endswith(".py")]
+        # A deleted .py file is part of the diff but not of the checkout: only files that exist can be compiled.
+        changed = [p for p in git("diff", "--name-only", f"{commit}^", commit).split() if p.endswith(".py") and (folder / p).exists()]
         if changed:
             compiled = subprocess.run([str(ROOT / ".venv/bin/python"), "-m", "py_compile", *changed], cwd=folder, capture_output=True, text=True)
             if compiled.returncode:
