@@ -24,9 +24,6 @@ from urllib.parse import urlsplit, parse_qs, unquote
 ROOT = Path(__file__).resolve().parents[1]
 DATABASE = Path(os.environ.get("INAZINA_DB_PATH", ROOT / "database" / "inazina.db")).resolve()
 INTERNAL_TOKEN = os.environ.get("INAZINA_INTERNAL_TOKEN", "")
-_browser_login_attempts = {}
-# Typed as the password (any id): opens the browser pages with no database lookup, for when something is broken.
-EMERGENCY_PASSCODE = "0000000"
 PORT = int(os.environ.get("INAZINA_PYTHON_PORT", "4313"))
 MAX_HTTP_THREADS = max(1, min(int(os.environ.get("INAZINA_MAX_HTTP_THREADS", "16")), 64))
 BOOTSTRAP_ADMIN_IDS = {"1076861147560542278"}
@@ -4689,11 +4686,6 @@ def update_admin_user(actor, user_id, changes):
     return domain().admin_control.user(actor, user_id, changes)
 
 
-def security_overview():
-    from web_api import security_store
-    return security_store.overview()
-
-
 def accounting_close_overview(check=False):
     """Residuals and history are quick; the full reconciliation (slow on a big database) only runs when asked."""
     from managers.accounting_journal import AccountingJournal
@@ -4853,37 +4845,13 @@ class Handler(BaseHTTPRequestHandler):
                 )
 
     def do_GET(self):
-        if urlsplit(self.path).path == "/favicon.ico":
-            from web_api.landing import favicon_png
-            body = favicon_png()
-            self.send_response(200)
-            self.send_header("content-type", "image/png")
-            self.send_header("cache-control", "public, max-age=3600")
-            self.send_header("content-length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
         _DELEGATION.by = unquote(self.headers.get("x-inazina-delegated-by", ""))
         if not INTERNAL_TOKEN or not hmac.compare_digest(
             self.headers.get("x-inazina-internal-token", ""), INTERNAL_TOKEN
         ):
-            # The service root is a friendly landing page. API URLs require a
-            # one-shot password; server-to-server requests keep using the token.
-            browser = "text/html" in self.headers.get("accept", "")
-            path = urlsplit(self.path).path
-            if browser and path in {"", "/", "/internal", "/internal/"}:
-                self.send_landing(path, "login" if "login" in parse_qs(urlsplit(self.path).query, keep_blank_values=True) else None)
-                return
-            if browser and not getattr(self, "browser_access_granted", False):
-                if path.startswith("/internal/"):
-                    self.send_browser_access_page(self.path)
-                else:
-                    self.send_landing(path)
-                return
-            if not browser and not getattr(self, "browser_access_granted", False):
-                self.send_json(401, {"error": "internal_authentication_required"})
-                return
-
+            # No pages and no login of its own: a request without the internal token gets the JSON 401, browsers included.
+            self.send_json(401, {"error": "internal_authentication_required"})
+            return
         try:
             parsed = urlsplit(self.path)
             path = parsed.path
@@ -5121,12 +5089,6 @@ class Handler(BaseHTTPRequestHandler):
                         "result_count": len(users),
                     })
                     self.send_json(200, {"users": users})
-            elif path == "/internal/admin/security":
-                user = identity(internal_user_id(self))
-                if not user or user["role"] != "admin":
-                    self.send_json(403, {"error": "admin_required"})
-                else:
-                    self.send_json(200, security_overview())
             elif path == "/internal/admin/accounting-close":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -5583,9 +5545,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         _DELEGATION.by = unquote(self.headers.get("x-inazina-delegated-by", ""))
-        if urlsplit(self.path).path == "/__browser-access":
-            self.browser_access_login()
-            return
         if not INTERNAL_TOKEN or not hmac.compare_digest(
             self.headers.get("x-inazina-internal-token", ""), INTERNAL_TOKEN
         ):
@@ -6512,84 +6471,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", "0")
         self.end_headers()
-
-    def browser_access_login(self):
-        address = self.client_address[0] if self.client_address else "local"
-        now = time.time()
-        count, reset_at = _browser_login_attempts.get(address, (0, now + 600))
-        if reset_at > now and count >= 10:
-            self.redirect_browser_to_main()
-            return
-        try:
-            length = int(self.headers.get("content-length", "0"))
-            if not 0 < length <= 2048:
-                raise ValueError("invalid_request")
-            payload = parse_qs(self.rfile.read(length).decode("utf-8"), keep_blank_values=True)
-            password = payload.get("password", [""])[0]
-            target = payload.get("target", [""])[0]
-            login_id = payload.get("loginId", [""])[0].strip()[:80]
-        except (ValueError, UnicodeDecodeError):
-            self.send_json(400, {"error": "invalid_request"})
-            return
-        from web_api import security_store
-        # The same id and password as the dashboard and 나루, administrators only. The emergency passcode
-        # (typed as the password, any id) opens the page even when the database is down.
-        emergency = hmac.compare_digest(hashlib.sha256(password.encode("utf-8")).digest(),
-                                        hashlib.sha256(EMERGENCY_PASSCODE.encode("utf-8")).digest())
-        passed = emergency
-        if emergency:
-            # The passcode is written in the source, so it only ever opens the up/down answer, whatever was asked for.
-            target = "/internal/health"
-        if not passed and login_id and password:
-            try:
-                user, _exists = authenticate_login_identifier(login_id, password)
-                passed = bool(user) and user.get("role") == "admin"
-                record_admin_login(login_id, passed, {"clientIp": address, "userAgent": self.headers.get("user-agent", "")[:300], "app": "data-gate"},
-                                   None if passed else "invalid_credentials")
-            except Exception:  # the database may be what is broken; the emergency passcode is the way in then
-                passed = False
-        security_store.log_attempt("python", address, passed, login_id, "emergency" if emergency else "login")
-        if not passed:
-            _browser_login_attempts[address] = (count + 1 if reset_at > now else 1,
-                                                reset_at if reset_at > now else now + 600)
-            self.redirect_browser_to_main()
-            return
-        _browser_login_attempts.pop(address, None)
-        target_path = urlsplit(target).path if isinstance(target, str) else ""
-        if (not isinstance(target, str) or not target_path.startswith("/internal/") or
-                target.startswith("//") or "\\" in target):
-            self.send_json(400, {"error": "invalid_target"})
-            return
-        self.path = target
-        self.browser_access_granted = True
-        self.do_GET()
-
-    def send_browser_access_page(self, target):
-        self.send_landing(target, "login_required")
-
-    def send_landing(self, path, reason=None):
-        from web_api.landing import landing_page
-        try:
-            with connect_readonly() as connection:
-                connection.execute("SELECT 1").fetchone()
-            database_ok = True
-        except sqlite3.Error:
-            database_ok = False
-        home = path in {"", "/", "/internal", "/internal/"}
-        reason = reason or ("home" if home else "not_found")
-        body = landing_page(reason, path, database_ok).encode("utf-8")
-        try:
-            self.send_response(200 if reason in ("home", "login") else 401 if reason == "login_required" else 404)
-            self.send_header("content-type", "text/html; charset=utf-8")
-            self.send_header("cache-control", "no-store")
-            self.send_header("content-security-policy",
-                             "default-src 'none'; img-src data:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'")
-            self.send_header("x-content-type-options", "nosniff")
-            self.send_header("content-length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError):
-            return
 
     def send_json(self, status, payload):
         from functions.exact_money import json_amount

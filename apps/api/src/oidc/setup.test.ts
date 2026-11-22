@@ -22,9 +22,18 @@ async function through(handler: (request: any, response: any) => Promise<boolean
   } finally { await new Promise<void>((done) => server.close(() => done())); }
 }
 
-test("without INAZINA_OIDC_ISSUER nothing is set up and the password login stays", async () => {
+test("without INAZINA_OIDC_ISSUER the login server is still on, at id.<INAZINA_DOMAIN>/oidc", async () => {
   const dir = mkdtempSync(join(tmpdir(), "oidc-setup-"));
-  try { assert.deepEqual(await setupOidc(base({}, dir)), {}); } finally { rmSync(dir, { recursive: true, force: true }); }
+  try {
+    const { idp, rp } = await setupOidc(base({}, dir));
+    assert.equal(typeof idp, "function", "the apps have no login of their own, so the login server cannot be off");
+    assert.equal(typeof rp.handle, "function");
+    assert.ok(rp.servesHost("naru.inazina.localhost") && rp.servesHost("console.inazina.localhost"));
+    assert.equal((await through(idp, "id.inazina.localhost", "/oidc/.well-known/openid-configuration")).status, 200);
+    const other = await setupOidc(base({ INAZINA_DOMAIN: "intranet.test" }, dir));
+    assert.ok(other.rp!.servesHost("naru.intranet.test"));
+    assert.equal((await through(other.idp!, "id.intranet.test", "/oidc/.well-known/openid-configuration")).status, 200);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("the issuer must end in /oidc, where the provider is mounted", async () => {
@@ -66,6 +75,5 @@ test("with an issuer the app hosts get the relying party; the API's own host doe
     assert.equal(rp.servesHost("127.0.0.1:4312"), false);
     assert.equal((await through(handleRp, "naru.inazina.localhost", "/api/auth/oidc/callback")).status, 302, "handled: the callback redirects (no transaction cookie)");
     assert.equal((await through(handleRp, "127.0.0.1:4312", "/api/auth/oidc/callback")).status, 418);
-    assert.equal((await setupOidc(base({}, dir))).rp, undefined);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

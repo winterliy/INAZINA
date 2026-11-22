@@ -124,15 +124,14 @@ if [[ "$FRONTEND" != "static" ]]; then
   npm run dev:site &
   pids+=("$!")
 fi
-# The wiki viewer's server part exists only in Vite: it stays on loopback and is published (INAZINA_WL=proxy) only when asked.
+# The wiki viewer's server part exists only in Vite; Caddy serves it as wl.<domain> (INAZINA_WL=off turns that off).
 npm run dev:wl &
 pids+=("$!")
 
 # The front door (docs/sso.md): Caddy, when single sign-on is on (INAZINA_OIDC_ISSUER) or the screens are static.
 if [[ -n "${INAZINA_OIDC_ISSUER:-}" || "$FRONTEND" == "static" ]]; then
   if command -v caddy >/dev/null 2>&1; then
-    default_wl=proxy; [[ "$FRONTEND" == "static" ]] && default_wl=off
-    INAZINA_FRONTEND="$FRONTEND" INAZINA_ROOT="$ROOT" INAZINA_WL="${INAZINA_WL:-$default_wl}" INAZINA_TLS="${INAZINA_TLS-internal}" caddy run --config "$ROOT/infra/Caddyfile" --adapter caddyfile &
+    INAZINA_FRONTEND="$FRONTEND" INAZINA_ROOT="$ROOT" caddy run --config "$ROOT/infra/Caddyfile" --adapter caddyfile &
     pids+=("$!")
   else
     print -u2 "주의: INAZINA_OIDC_ISSUER 가 설정됐지만 caddy 가 설치돼 있지 않아 도메인 서버(infra/Caddyfile)를 시작하지 않습니다."

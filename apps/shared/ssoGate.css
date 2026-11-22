@@ -1,0 +1,9 @@
+/* What an app shows while it sends a visitor to the login server, or when that did not work. */
+.sso-gate { min-height: 100vh; display: grid; place-content: center; justify-items: center; gap: 12px; padding: 24px; text-align: center; font-family: var(--font-system, system-ui, sans-serif); color: #141414; background: #f3f3f1; }
+.sso-gate h1 { margin: 0; font-size: 22px; font-weight: 500; }
+.sso-gate p { margin: 0; color: #6c6c68; }
+.sso-gate button { min-height: 44px; padding: 0 28px; border: 0; border-radius: 6px; color: #fff; background: #1f3fff; font: inherit; font-weight: 600; cursor: pointer; }
+.sso-gate button:hover { filter: brightness(1.08); }
+.sso-gate .sso-gate-quiet { background: transparent; color: inherit; box-shadow: inset 0 0 0 1px currentColor; opacity: .75; }
+.sso-gate [role="alert"] { color: #8a2a20; }
+@media (prefers-color-scheme: dark) { .sso-gate { color: #ecece8; background: #121411; } .sso-gate p { color: #9a9c95; } .sso-gate button { background: #7b8dff; color: #101010; } .sso-gate [role="alert"] { color: #ff9a8f; } }

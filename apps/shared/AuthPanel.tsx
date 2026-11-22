@@ -1,11 +1,10 @@
 import { Logo } from "./Logo";
 import { useEffect, useRef, useState } from "react";
-import type { FormEvent, ReactNode } from "react";
-import { api, ApiError, type ApiUser } from "./api";
+import type { FormEvent } from "react";
+import { api, ApiError } from "./api";
 import "./typography.css";
 import "./auth.css";
 import sceneSvg from "./scene.svg?raw";
-import { currentReturnTo, ssoAction, ssoLoginUrl } from "./sso";
 
 type Mode = "login" | "register" | "find-id" | "reset-password";
 type Country = { countryId: string; currencyName: string; currencyCode: string };
@@ -17,23 +16,22 @@ const titles: Record<Mode, string> = {
   "reset-password": "비밀번호 재설정",
 };
 
-// `autoSso`: with single sign-on on, a signed-out visitor is sent straight to the identity provider (the admin console);
-// the HTS passes false and only shows this panel when asked (register, reset, a sign-in error, local development).
-// `idp`: the screen is the login server's (apps/id): it talks to the identity provider's endpoints for this login interaction and
-// navigates to the address the server returns, instead of calling the app API and handing back a user.
-export function AuthPanel({ app, onAuthenticated, extra, autoSso = true, idp }: { app: "dashboard" | "hts" | "id"; onAuthenticated: (user: ApiUser) => void; extra?: ReactNode; autoSso?: boolean; idp?: { uid: string } }) {
-  const paths = idp
-    ? { config: `/oidc/interaction/${encodeURIComponent(idp.uid)}/config`, countries: "/oidc/account/countries", verification: "/oidc/account/discord/verification", login: `/oidc/interaction/${encodeURIComponent(idp.uid)}/login`, register: `/oidc/interaction/${encodeURIComponent(idp.uid)}/register`, reset: `/oidc/interaction/${encodeURIComponent(idp.uid)}/password-reset` }
-    : { config: "/api/auth/config", countries: "/api/auth/countries", verification: "/api/auth/discord/verification", login: "/api/auth/login", register: "/api/auth/register", reset: "/api/auth/password/reset" };
-  type Done = { user?: ApiUser; redirectTo?: string };
-  const done = (result: Done) => { if (result.redirectTo) window.location.assign(result.redirectTo); else if (result.user) onAuthenticated(result.user); };
+// The login screen of the login server (apps/id): every account screen of the single sign-on (login, register, find id, reset
+// password). `idp.uid` ties each call to the login request in progress; the server answers with where to go next.
+export function AuthPanel({ idp }: { idp: { uid: string } }) {
+  const uid = encodeURIComponent(idp.uid);
+  const paths = {
+    config: `/oidc/interaction/${uid}/config`, countries: "/oidc/account/countries", verification: "/oidc/account/discord/verification",
+    login: `/oidc/interaction/${uid}/login`, register: `/oidc/interaction/${uid}/register`, reset: `/oidc/interaction/${uid}/password-reset`,
+    discord: `/oidc/interaction/${uid}/discord/start`,
+  };
+  const done = (result: { redirectTo?: string }) => { if (result.redirectTo) window.location.assign(result.redirectTo); };
   const [mode, setMode] = useState<Mode>("login");
   const [userId, setUserId] = useState("");
   const [verifiedId, setVerifiedId] = useState("");
   const [countryId, setCountryId] = useState("");
   const [countries, setCountries] = useState<Country[]>([]);
   const [discordConfigured, setDiscordConfigured] = useState(false);
-  const [sso, setSso] = useState<boolean | null>(null); // null until /api/auth/config answers
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [message, setMessage] = useState("");
@@ -43,18 +41,14 @@ export function AuthPanel({ app, onAuthenticated, extra, autoSso = true, idp }: 
 
   useEffect(() => {
     // The address as it was on arrival: the Discord handling below cleans it up before the config answer comes back.
-    const arrival = { pathname: window.location.pathname, search: window.location.search };
-    void api<{ discordOAuthConfigured: boolean; oidc?: boolean; startMode?: Mode }>(paths.config)
+    const arrival = window.location.search;
+    // The app that sent the person asked for a screen (register, reset, find id); a return from Discord decides its own.
+    void api<{ discordOAuthConfigured: boolean; startMode?: Mode }>(paths.config)
       .then((result) => {
         setDiscordConfigured(result.discordOAuthConfigured);
-        setSso(Boolean(result.oidc));
-        // On the login server the app that sent the person asked for a screen (register, reset, find id); a return from Discord decides its own.
-        if (idp) { if (result.startMode && !new URLSearchParams(arrival.search).has("discordAuth")) setMode(result.startMode); return; }
-        const action = ssoAction(Boolean(result.oidc), arrival, { autoRedirect: autoSso });
-        if (action.kind === "redirect") window.location.replace(action.url);
-        else if (action.kind === "error") { setError(action.message); window.history.replaceState({}, "", currentReturnTo(arrival)); }
+        if (result.startMode && !new URLSearchParams(arrival).has("discordAuth")) setMode(result.startMode);
       })
-      .catch(() => setSso(false)); // stays "not configured" and password login; the Discord buttons then explain it on click
+      .catch((cause) => setError(cause instanceof ApiError && cause.code === "login_expired" ? "로그인 시간이 지났습니다. 사용하던 앱에서 다시 시작해주세요." : cause instanceof Error ? cause.message : "설정을 불러오지 못했습니다."));
     void api<{ countries: Country[] }>(paths.countries)
       .then((result) => {
         setCountries(result.countries);
@@ -89,8 +83,6 @@ export function AuthPanel({ app, onAuthenticated, extra, autoSso = true, idp }: 
   }, []);
 
   function switchMode(next: Mode) {
-    // With single sign-on the account screens (register, reset, find id) live at the login server.
-    if (sso === true && next !== "login") { window.location.assign(ssoLoginUrl(currentReturnTo(window.location), next)); return; }
     setMode(next);
     setVerifiedId("");
     setError("");
@@ -104,8 +96,7 @@ export function AuthPanel({ app, onAuthenticated, extra, autoSso = true, idp }: 
       setError("Discord OAuth 설정이 필요합니다. 프로젝트 .env의 Discord client ID와 secret을 설정해주세요.");
       return;
     }
-    const query = new URLSearchParams({ purpose, ...(idp ? {} : { returnTo: app }) });
-    window.location.assign(`${idp ? `/oidc/interaction/${encodeURIComponent(idp.uid)}/discord/start` : "/api/auth/discord/start"}?${query.toString()}`);
+    window.location.assign(`${paths.discord}?${new URLSearchParams({ purpose }).toString()}`);
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -119,11 +110,11 @@ export function AuthPanel({ app, onAuthenticated, extra, autoSso = true, idp }: 
     setBusy(true);
     try {
       if (mode === "login") {
-        done(await api<Done>(paths.login, { method: "POST", body: JSON.stringify({ loginId: userId.trim(), password }) }));
+        done(await api<{ redirectTo?: string }>(paths.login, { method: "POST", body: JSON.stringify({ loginId: userId.trim(), password }) }));
       } else if (mode === "register") {
-        done(await api<Done>(paths.register, { method: "POST", body: JSON.stringify({ countryId, password }) }));
+        done(await api<{ redirectTo?: string }>(paths.register, { method: "POST", body: JSON.stringify({ countryId, password }) }));
       } else if (mode === "reset-password") {
-        done(await api<Done>(paths.reset, { method: "POST", body: JSON.stringify({ password }) }));
+        done(await api<{ redirectTo?: string }>(paths.reset, { method: "POST", body: JSON.stringify({ password }) }));
       }
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : "요청을 처리하지 못했습니다.";
@@ -143,22 +134,15 @@ export function AuthPanel({ app, onAuthenticated, extra, autoSso = true, idp }: 
     }
   }
 
-  const logoNote = app === "dashboard" ? "Dashboard" : app === "id" ? "통합 로그인" : "나루";
   return <main className="auth-shell">
     <aside className="auth-visual" aria-hidden="true"><AuthScene /></aside>
     <section className="auth-panel" aria-labelledby="auth-title">
-      <a className="auth-wordmark" href="/" aria-label="INAZINA 홈"><Logo className="auth-logo" /><small>{logoNote}</small></a>
+      <a className="auth-wordmark" href="/" aria-label="INAZINA 홈"><Logo className="auth-logo" /><small>통합 로그인</small></a>
       <div className="auth-body">
         <h1 id="auth-title">{mode === "login" ? "다시 만나서 반갑습니다" : titles[mode]}</h1>
         {mode !== "login" && <p className="auth-subtitle">Discord 본인확인으로 계정을 보호합니다.</p>}
 
-        {mode === "login" && sso === true && <div className="auth-step">
-          <p>통합 로그인으로 나루와 Dashboard에 함께 로그인합니다.</p>
-          <div className="auth-row"><span /><button type="button" className="auth-link" onClick={() => switchMode("reset-password")}>비밀번호를 잊으셨나요?</button></div>
-          <button type="button" className="auth-primary" onClick={() => window.location.assign(ssoLoginUrl(currentReturnTo(window.location)))}>로그인</button>
-        </div>}
-
-        {mode === "login" && sso === false && <form className="auth-form" onSubmit={submit}>
+        {mode === "login" && <form className="auth-form" onSubmit={submit}>
           <label><span>아이디</span><input autoComplete="username" value={userId} onChange={(event) => setUserId(event.target.value)} placeholder="아이디" required /></label>
           <label><span>비밀번호</span>
             <span className="auth-secret"><input type={show ? "text" : "password"} autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="비밀번호" required />
@@ -206,8 +190,7 @@ export function AuthPanel({ app, onAuthenticated, extra, autoSso = true, idp }: 
           <button type="button" onClick={() => switchMode("find-id")}>아이디 찾기</button></>}
       </nav>
       </div>
-      {extra && <div className="auth-extra">{extra}</div>}
-      <footer className="auth-foot"><span>계정은 Dashboard와 나루에서 함께 사용됩니다.</span><span>© INAZINA</span></footer>
+      <footer className="auth-foot"><span /><span>© INAZINA</span></footer>
     </section>
   </main>;
 }

@@ -10,11 +10,10 @@ workspace. The API starts the private Python data service automatically:
 - Wide-Learning viewer: `http://127.0.0.1:4315` — reads `docs/wide-learning` read-only (rules, status, CThread↔GThread chat); `npm run test:wl` tests its parser
 - Private Python data service: `127.0.0.1:4313` (API-managed; not exposed to the browser)
 
-Opening API JSON URLs directly in a browser on ports 4312 or 4313 asks for the same
-entry password as the Wide-Learning viewer (4315). A correct password reveals only
-that URL's one response; refreshes and other ports ask again. No successful access
-state is stored. App-to-API requests continue using their existing auth flows; the
-Python service still requires the private internal token for server-to-server calls.
+Ports 4312 and 4313 have no pages and no login of their own: opened in a browser they show the JSON
+as it is (a response that needs a session or the internal token is a JSON 401). App-to-API requests use the
+session cookie; the Python service requires the private internal token for server-to-server calls.
+(The Wide-Learning viewer on `wl.localhost` keeps its own entry password.)
 
 ```
 Browser ─▶ Dashboard :4310 ─┐
@@ -28,9 +27,9 @@ Requires Node.js 24 or newer and the project's Python virtual environment.
 
 1. Copy the project-root `.env.example` to `.env`.
 2. Create a Discord application and register
-   `http://127.0.0.1:4312/api/auth/discord/callback` as an OAuth2 redirect URI.
-   Set its client ID and secret in `.env`; the app requests only the
-   `identify` scope.
+   `https://id.inazina.localhost/oidc/account/discord/callback` as an OAuth2 redirect URI
+   (the login server's address; see `docs/sso.md`). Set its client ID and secret in
+   `.env`; the app requests only the `identify` scope.
 3. Set `INAZINA_AUTH_SECRET` to a persistent random value from
    `openssl rand -hex 32` so sessions remain valid across API restarts.
 4. Run `npm install` once.
@@ -47,14 +46,15 @@ Dependency versions are pinned exactly in each `apps/*/package.json` and in
 
 ## Single sign-on
 
-With `INAZINA_OIDC_ISSUER` set, the apps sign in through the identity provider at `id.<domain>` (OIDC, authorization code +
-PKCE) behind the Caddy front door in `infra/Caddyfile`. Without it, everything works as described below. See
+The apps (naru, console) have no login of their own. Signing in, registering, finding an id and resetting a password exist
+only at the login server `id.inazina.localhost` (OIDC, authorization code + PKCE), behind the Caddy front door in
+`infra/Caddyfile`. Names are `<service>.inazina.localhost` (the wiki viewer is `wl.localhost`). See
 [`docs/sso.md`](../docs/sso.md) for hosts, environment, local setup and what is verified.
 
 ## Accounts and security
 
-Both frontends share one account. Registration and password reset require
-Discord OAuth verification; login accepts a Discord ID, an HTS ID, or a country
+Both frontends share one account, managed at the login server. Registration and password
+reset require Discord OAuth verification; login accepts a Discord ID, an HTS ID, or a country
 ID plus password. Passwords are stored as salted scrypt hashes in the existing
 SQLite database, never in plain text. New verified users receive the same
 initial balance as the bot registration flow. Country IDs come from active
@@ -157,9 +157,8 @@ Public:
 
 - `GET /` — browsers get a styled page pointing to the dashboard and HTS (also shown for unknown paths and for API paths opened without a login); apps keep receiving JSON
 - `GET /api/health`
-- `GET /api/auth/config`, `/api/auth/countries`
-- `GET /api/auth/discord/start`, `/api/auth/discord/callback`, `/api/auth/discord/verification`
-- `POST /api/auth/login`, `/api/auth/register`, `/api/auth/password/reset`, `/api/auth/logout`
+- `GET /api/auth/oidc/login`, `/api/auth/oidc/callback` (sign-in through the login server); `POST /api/auth/logout`
+- The login server's own routes (`/oidc/...`, not under `/api`): login, register, password reset, Discord verification
 
 Signed-in users:
 

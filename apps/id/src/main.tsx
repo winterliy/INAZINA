@@ -9,7 +9,7 @@ const uid = /^\/oidc\/interaction\/([\w-]+)\/?$/.exec(window.location.pathname)?
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     {uid
-      ? <AuthPanel app="id" idp={{ uid }} onAuthenticated={() => undefined} />
+      ? <AuthPanel idp={{ uid }} />
       : <main className="id-lost"><h1>로그인 요청을 찾지 못했습니다</h1><p>사용하던 앱에서 로그인을 다시 시작해 주세요.</p><a href="/login">로그인 시작</a></main>}
   </React.StrictMode>,
 );

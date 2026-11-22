@@ -6,13 +6,10 @@ import { createReadStream, existsSync } from "node:fs";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { FAVICON_PNG, landingPage, type LandingReason } from "./landing.js";
-import { browserAccess } from "./browserAccess.js";
 import { createRateLimiter, createSharedCache, guestRatePerMinute, publicMarketPath } from "./publicMarket.js";
 import { setupOidc } from "./oidc/setup.js";
 
 const projectRoot = findProjectRoot();
-const access = browserAccess(projectRoot);
 
 try {
   process.loadEnvFile(resolve(projectRoot, ".env"));
@@ -22,8 +19,7 @@ try {
 
 type Principal = { userId: string; authVersion: number; by?: string };
 type User = { userId: string; nickname: string; role: string; nationality: string; cash: number; creditScore: number; authVersion: number };
-type DiscordPurpose = "register" | "find-id" | "reset-password";
-type SignedPayload = { kind: "session" | "discord"; userId: string; exp: number; authVersion?: number; by?: string; purpose?: DiscordPurpose; nickname?: string; nonce?: string };
+type SignedPayload = { kind: "session"; userId: string; exp: number; authVersion?: number; by?: string };
 
 const host = "127.0.0.1";
 const port = Number(process.env.PORT ?? 4312);
@@ -35,19 +31,8 @@ const pythonWorkers = Math.max(1, Math.min(8, Number(process.env.INAZINA_PYTHON_
 const pythonPorts = Array.from({ length: pythonWorkers }, (_, index) => pythonPort + index);
 let nextPythonPort = 0;
 const internalToken = randomBytes(32).toString("hex");
-// Typed as the password with no id (or any id), this opens the API pages even when the database or Python service is down.
-const emergencyPasscode = "0000000";
-const browserLoginAttempts = new Map<string, { count: number; resetAt: number }>();
 const authSecret = process.env.INAZINA_AUTH_SECRET || randomBytes(32).toString("hex");
 const sessionCookie = "inazina_session";
-const discordCookie = "inazina_discord_verification";
-const oauthStateCookie = "inazina_oauth_state";
-const discordClientId = process.env.DISCORD_CLIENT_ID ?? "";
-const discordClientSecret = process.env.DISCORD_CLIENT_SECRET ?? "";
-const discordRedirectUri = process.env.DISCORD_REDIRECT_URI ?? "http://127.0.0.1:4312/api/auth/discord/callback";
-const oauthStates = new Map<string, { purpose: DiscordPurpose; returnTo: string; expiresAt: number }>();
-const consumedVerificationNonces = new Set<string>();
-const failedLogins = new Map<string, { count: number; resetAt: number }>();
 const python = existsSync(join(projectRoot, ".venv", "bin", "python"))
   ? join(projectRoot, ".venv", "bin", "python")
   : process.env.PYTHON ?? "python3";
@@ -121,23 +106,6 @@ function cookieHeader(name: string, value: string, maxAge?: number): string {
   return `${name}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/${maxAge === undefined ? "" : `; Max-Age=${maxAge}`}${secure}`;
 }
 
-async function requestBrowserAccess(request: IncomingMessage): Promise<{ loginId: string; password: string; target: string }> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    size += chunk.length;
-    if (size > 2048) throw new Error("request_too_large");
-    chunks.push(Buffer.from(chunk));
-  }
-  const body = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
-  return { loginId: (body.get("loginId") ?? "").trim().slice(0, 80), password: body.get("password") ?? "", target: body.get("target") ?? "" };
-}
-
-function redirectBrowserToMain(response: ServerResponse): void {
-  response.writeHead(303, { location: "/", "cache-control": "no-store", "content-length": "0" });
-  response.end();
-}
-
 // `by`: the administrator who signed in as this country or company account ($login on the web).
 // `browserSession`: the cookie is dropped when the browser closes (single sign-on); the signed expiry stays 12 hours either way.
 function sessionHeader(userId: string, authVersion: number, by?: string, browserSession = false): string {
@@ -154,106 +122,6 @@ function principalFor(request: IncomingMessage): Principal | undefined {
     return { userId: session.userId, authVersion: session.authVersion, ...(typeof session.by === "string" && session.by ? { by: session.by } : {}) };
   }
   return undefined;
-}
-
-function verifiedDiscord(request: IncomingMessage, purpose: DiscordPurpose): SignedPayload | undefined {
-  const result = verifiedCookie(cookieValue(request, discordCookie));
-  if (result?.kind !== "discord" || result.purpose !== purpose || !/^\d{1,25}$/.test(result.userId) || !result.nonce) return undefined;
-  return result;
-}
-
-function redirectToFrontend(response: ServerResponse, destination: string, params: Record<string, string>, headers: Record<string, string | string[]> = {}): void {
-  const url = new URL(destination);
-  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
-  response.writeHead(302, { location: url.toString(), "cache-control": "no-store", ...headers });
-  response.end();
-}
-
-async function beginDiscordOAuth(_request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
-  if (!discordClientId || !discordClientSecret) {
-    send(response, 503, { error: "discord_oauth_not_configured" });
-    return;
-  }
-  const purpose = url.searchParams.get("purpose") as DiscordPurpose | null;
-  const returnTo = url.searchParams.get("returnTo");
-  const frontends: Record<string, string> = { dashboard: "http://127.0.0.1:4310/", hts: "http://127.0.0.1:4311/" };
-  if (!purpose || !["register", "find-id", "reset-password"].includes(purpose) || !returnTo || !frontends[returnTo]) {
-    send(response, 400, { error: "invalid_oauth_request" });
-    return;
-  }
-  const state = randomBytes(32).toString("hex");
-  oauthStates.set(state, { purpose, returnTo, expiresAt: Date.now() + 5 * 60_000 });
-  const authorize = new URL("https://discord.com/oauth2/authorize");
-  authorize.searchParams.set("response_type", "code");
-  authorize.searchParams.set("client_id", discordClientId);
-  authorize.searchParams.set("scope", "identify");
-  authorize.searchParams.set("redirect_uri", discordRedirectUri);
-  authorize.searchParams.set("state", state);
-  response.writeHead(302, { location: authorize.toString(), "cache-control": "no-store",
-    "set-cookie": cookieHeader(oauthStateCookie, state, 300) });
-  response.end();
-}
-
-async function finishDiscordOAuth(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
-  const state = url.searchParams.get("state") ?? "";
-  const pending = oauthStates.get(state);
-  oauthStates.delete(state);
-  if (!pending || pending.expiresAt < Date.now() || cookieValue(request, oauthStateCookie) !== state) {
-    redirectToFrontend(response, "http://127.0.0.1:4310/", { authError: "oauth_state_invalid" },
-      { "set-cookie": cookieHeader(oauthStateCookie, "", 0) });
-    return;
-  }
-  const destination = pending.returnTo === "hts" ? "http://127.0.0.1:4311/" : "http://127.0.0.1:4310/";
-  const code = url.searchParams.get("code");
-  if (!code || url.searchParams.has("error")) {
-    redirectToFrontend(response, destination, { authError: "discord_authorization_failed" },
-      { "set-cookie": cookieHeader(oauthStateCookie, "", 0) });
-    return;
-  }
-  let failureStage = "token_exchange";
-  try {
-    const tokenResponse = await fetch("https://discord.com/api/v10/oauth2/token", {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ client_id: discordClientId, client_secret: discordClientSecret,
-        grant_type: "authorization_code", code, redirect_uri: discordRedirectUri }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!tokenResponse.ok) {
-      failureStage = `token_exchange_http_${tokenResponse.status}`;
-      throw new Error("discord_token_exchange_failed");
-    }
-    const tokenBody = await tokenResponse.json() as { access_token?: string; token_type?: string };
-    if (!tokenBody.access_token) {
-      failureStage = "token_missing";
-      throw new Error("discord_token_missing");
-    }
-    failureStage = "discord_identity";
-    const userResponse = await fetch("https://discord.com/api/v10/users/@me", {
-      headers: { authorization: `Bearer ${tokenBody.access_token}` }, signal: AbortSignal.timeout(10_000),
-    });
-    if (!userResponse.ok) {
-      failureStage = `discord_identity_http_${userResponse.status}`;
-      throw new Error("discord_identity_failed");
-    }
-    const discordUser = await userResponse.json() as { id?: string; global_name?: string | null; username?: string };
-    if (!discordUser.id || !/^\d{1,25}$/.test(discordUser.id)) {
-      failureStage = "discord_identity_invalid";
-      throw new Error("discord_identity_invalid");
-    }
-    const signedVerification = signed({ kind: "discord", userId: discordUser.id,
-      nickname: discordUser.global_name || discordUser.username || discordUser.id,
-      purpose: pending.purpose, nonce: randomBytes(16).toString("hex"),
-      exp: Math.floor(Date.now() / 1000) + 300 });
-    const verificationCookie = cookieHeader(discordCookie, signedVerification, 300);
-    response.writeHead(302, { location: `${destination}?discordAuth=verified&purpose=${pending.purpose}`,
-      "set-cookie": [verificationCookie, cookieHeader(oauthStateCookie, "", 0)], "cache-control": "no-store" });
-    response.end();
-  } catch {
-    console.warn(`Discord OAuth verification failed at ${failureStage}`);
-    redirectToFrontend(response, destination, { authError: "discord_verification_failed" },
-      { "set-cookie": cookieHeader(oauthStateCookie, "", 0) });
-  }
 }
 
 async function internalRequest(
@@ -313,15 +181,6 @@ function clientIp(request: IncomingMessage): string {
   return (loopback && forwarded.length ? forwarded[forwarded.length - 1] : peer).slice(0, 64);
 }
 
-// Which web app sent a request, from the page's origin: 4310 is the dashboard, 4311 the HTS.
-function loginApp(request: IncomingMessage): string {
-  const source = String(request.headers.origin ?? request.headers.referer ?? "");
-  try {
-    const port = new URL(source).port;
-    return port === "4310" ? "dashboard" : port === "4311" ? "hts" : "";
-  } catch { return ""; }
-}
-
 // Board attachments live on disk; the Python service keeps their records
 // (web_api/board.py). Same directory and limits on both sides.
 const boardFilesDir = resolve(process.env.INAZINA_BOARD_FILES_DIR ?? join(projectRoot, "database", "board_files"));
@@ -365,16 +224,6 @@ const feedbackSubmissions = new Map<string, number[]>();
 const guestMarketAllowed = createRateLimiter(guestRatePerMinute(process.env.INAZINA_GUEST_RATE_PER_MINUTE), 60_000);
 const guestMarketRead = createSharedCache((path) => internalGet(path), 1000);
 
-async function sendLanding(response: ServerResponse, reason: LandingReason, path: string, status?: number): Promise<void> {
-  const health = await internalGet("/internal/health");
-  response.writeHead(status ?? (reason === "not_found" ? 404 : 200), {
-    "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
-    "content-security-policy": "default-src 'none'; img-src data:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'",
-    "x-content-type-options": "nosniff",
-  });
-  response.end(landingPage(reason, path, health.status === 200));
-}
-
 async function requestJson(request: IncomingMessage, limit = 32_768): Promise<unknown> {
   if (!request.headers["content-type"]?.includes("application/json")) {
     throw new Error("application_json_required");
@@ -393,81 +242,10 @@ async function requestJson(request: IncomingMessage, limit = 32_768): Promise<un
   }
 }
 
-/** Constant-time comparison of two secrets (compared as digests so the lengths do not leak). */
-function sameSecret(left: string, right: string): boolean {
-  return timingSafeEqual(createHash("sha256").update(left).digest(), createHash("sha256").update(right).digest());
-}
-
-async function handle(request: IncomingMessage, response: ServerResponse, browserAuthorized = false): Promise<void> {
+async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const url = new URL(request.url ?? "/", `http://${host}:${port}`);
 
-  if (request.method === "GET" && url.pathname === "/favicon.ico") {
-    response.writeHead(200, { "content-type": "image/png", "cache-control": "public, max-age=3600", "content-length": FAVICON_PNG.length });
-    response.end(FAVICON_PNG);
-    return;
-  }
-  if (request.method === "POST" && url.pathname === "/__browser-access") {
-    const key = clientIp(request);  // the real client (loopback peer: last X-Forwarded-For), not the proxy
-    const now = Date.now();
-    const attempt = browserLoginAttempts.get(key);
-    if (attempt && attempt.resetAt > now && attempt.count >= 10) {
-      redirectBrowserToMain(response);
-      return;
-    }
-    try {
-      const form = await requestBrowserAccess(request);
-      const { loginId, password } = form;
-      let target = form.target;
-      if (!target.startsWith("/api/") || target.startsWith("//") || target.includes("\\") || target.includes("#__browser-access")) {
-        send(response, 400, { error: "invalid_target" });
-        return;
-      }
-      // The same id and password as the dashboard and 나루, and only administrators get in.
-      const emergency = sameSecret(password, emergencyPasscode);
-      let passed = emergency;
-      if (!passed && loginId && password) {
-        try {
-          const meta = { clientIp: clientIp(request), userAgent: String(request.headers["user-agent"] ?? "").slice(0, 300), app: "api-gate" };
-          const result = await internalRequest("POST", "/internal/auth/login", undefined, { loginId, password, meta });
-          passed = result.status === 200 && result.body?.user?.role === "admin";
-        } catch { passed = false; }
-      }
-      access.record(key, passed, loginId, emergency ? "emergency" : "login");
-      // The passcode is written in the source, so it only ever opens the up/down answer, whatever was asked for.
-      if (emergency) target = "/api/health";
-      if (!passed) {
-        browserLoginAttempts.set(key, { count: attempt && attempt.resetAt > now ? attempt.count + 1 : 1, resetAt: attempt && attempt.resetAt > now ? attempt.resetAt : now + 10 * 60_000 });
-        redirectBrowserToMain(response);
-        return;
-      }
-      browserLoginAttempts.delete(key);
-      request.method = "GET";
-      request.url = target;
-      await handle(request, response, true);
-    } catch {
-      send(response, 400, { error: "invalid_request" });
-    }
-    return;
-  }
-
-  const browserNavigation = request.method === "GET" &&
-    ((request.headers.accept ?? "").includes("text/html") || request.headers["sec-fetch-mode"] === "navigate");
-  const browserAuthExempt = url.pathname === "/api/auth/discord/start" || url.pathname === "/api/auth/discord/callback" ||
-    url.pathname === "/api/auth/oidc/login" || url.pathname === "/api/auth/oidc/callback"; // top-level navigations of the single sign-on flow
-  if (browserNavigation && url.pathname.startsWith("/api/") && !browserAuthExempt && !browserAuthorized) {
-    await sendLanding(response, "login_required", `${url.pathname}${url.search}`, 401);
-    return;
-  }
-
   if (oidc.rp && await oidc.rp.handle(request, response, url)) return; // single sign-on sign-in for the app hosts
-
-  // People who open the API port in a browser get a page instead of raw JSON;
-  // the apps' fetch calls (Accept: */*) keep receiving JSON.
-  const browser = browserNavigation;
-  if (browser && (url.pathname === "/" || url.pathname === "/api" || !url.pathname.startsWith("/api/"))) {
-    await sendLanding(response, url.pathname === "/" && url.searchParams.has("login") ? "login" : url.pathname === "/" || url.pathname === "/api" ? "home" : "not_found", url.pathname);
-    return;
-  }
 
   if (request.method === "GET" && url.pathname === "/api/health") {
     const health = await internalGet("/internal/health");
@@ -484,23 +262,6 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     return;
   }
 
-  if (request.method === "GET" && url.pathname === "/api/auth/discord/start") {
-    await beginDiscordOAuth(request, response, url);
-    return;
-  }
-  if (request.method === "GET" && url.pathname === "/api/auth/discord/callback") {
-    await finishDiscordOAuth(request, response, url);
-    return;
-  }
-  if (request.method === "GET" && url.pathname === "/api/auth/discord/verification") {
-    const verification = verifiedCookie(cookieValue(request, discordCookie));
-    if (verification?.kind !== "discord" || !verification.purpose) {
-      send(response, 401, { error: "discord_verification_required" });
-    } else {
-      send(response, 200, { userId: verification.userId, nickname: verification.nickname, purpose: verification.purpose });
-    }
-    return;
-  }
   // Official site (apps/site): public Contact/Report forms, shown in the dashboard.
   if (request.method === "POST" && url.pathname === "/api/site/feedback") {
     const key = request.socket.remoteAddress ?? "local";
@@ -555,64 +316,6 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     send(response, result.status, result.body);
     return;
   }
-  if (request.method === "GET" && url.pathname === "/api/auth/countries") {
-    const result = await internalGet("/internal/auth/countries");
-    send(response, result.status, result.body);
-    return;
-  }
-  if (request.method === "GET" && url.pathname === "/api/auth/config") {
-    send(response, 200, { discordOAuthConfigured: Boolean(discordClientId && discordClientSecret), oidc: Boolean(oidc.rp?.servesHost(request.headers.host)) });
-    return;
-  }
-  if (request.method === "POST" && url.pathname === "/api/auth/login" && oidc.rp?.servesHost(request.headers.host)) {
-    send(response, 410, { error: "sso_required" }); // app hosts sign in through the identity provider; direct loopback access keeps the password login
-    return;
-  }
-  if (request.method === "POST" && url.pathname === "/api/auth/login") {
-    const body = await requestJson(request);
-    const loginBody = body as { loginId?: string; userId?: string; password?: string };
-    const attemptKey = `${request.socket.remoteAddress ?? "local"}:auto:${loginBody.loginId ?? loginBody.userId ?? ""}`;
-    const attempt = failedLogins.get(attemptKey);
-    if (attempt && attempt.resetAt > Date.now() && attempt.count >= 8) {
-      send(response, 429, { error: "login_rate_limited" });
-      return;
-    }
-    // Where the login came from, kept by the Python service for administrator accounts.
-    const meta = { clientIp: clientIp(request), userAgent: String(request.headers["user-agent"] ?? "").slice(0, 300), app: loginApp(request) };
-    const result = await internalRequest("POST", "/internal/auth/login", undefined,
-      { ...(body && typeof body === "object" ? body : {}), meta });
-    if (result.status === 200 && result.body.user?.userId) {
-      failedLogins.delete(attemptKey);
-      send(response, 200, result.body, { "set-cookie": sessionHeader(result.body.user.userId, result.body.user.authVersion) });
-    } else {
-      if (result.status === 401 || result.status === 404) {
-        const current = attempt && attempt.resetAt > Date.now() ? attempt : { count: 0, resetAt: Date.now() + 15 * 60_000 };
-        current.count += 1;
-        failedLogins.set(attemptKey, current);
-      }
-      send(response, result.status, result.body);
-    }
-    return;
-  }
-  if (request.method === "POST" && (url.pathname === "/api/auth/register" || url.pathname === "/api/auth/password/reset")) {
-    const purpose: DiscordPurpose = url.pathname === "/api/auth/register" ? "register" : "reset-password";
-    const verification = verifiedDiscord(request, purpose);
-    if (!verification || consumedVerificationNonces.has(verification.nonce!)) {
-      send(response, 403, { error: "discord_verification_required" });
-      return;
-    }
-    const body = await requestJson(request);
-    const internalPath = purpose === "register" ? "/internal/auth/register" : "/internal/auth/password/reset";
-    const result = await internalRequest("POST", internalPath, verification.userId, {
-      ...(body as Record<string, unknown>), nickname: verification.nickname,
-    });
-    if (result.status >= 200 && result.status < 300) consumedVerificationNonces.add(verification.nonce!);
-    const cookies = result.status >= 200 && result.status < 300 && result.body.user?.userId
-      ? [cookieHeader(discordCookie, "", 0), sessionHeader(result.body.user.userId, result.body.user.authVersion)]
-      : [];
-    send(response, result.status, result.body, cookies.length ? { "set-cookie": cookies } : {});
-    return;
-  }
   if (request.method === "POST" && url.pathname === "/api/auth/logout") {
     const session = verifiedCookie(cookieValue(request, sessionCookie));
     if (session?.kind === "session" && session.by) {
@@ -640,8 +343,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     return;
   }
   if (!principal) {
-    if (browser) await sendLanding(response, "login_required", url.pathname, 401);
-    else send(response, 401, { error: "authentication_required" });
+    send(response, 401, { error: "authentication_required" });
     return;
   }
 

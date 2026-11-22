@@ -2,8 +2,7 @@ import { useEffect, useState } from "react";
 import { api, clearToken, signedOut, type ApiUser } from "../../shared/api";
 import { Backdrop } from "./Backdrop";
 import { BoardPanel } from "./BoardPanel";
-import { loginAction, oidcEnabled } from "./guest";
-import { logoutRedirect } from "../../shared/sso";
+import { currentReturnTo, logoutRedirect, ssoLoginUrl } from "../../shared/sso";
 
 /**
  * /board — the board as its own page. Anyone can read; a signed-in session
@@ -19,7 +18,6 @@ export function BoardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const asset = new URLSearchParams(location.search).get("asset") ?? "";
-  const here = location.pathname + location.search;
   const logout = () => {
     clearToken();
     try { sessionStorage.removeItem("inazina.hts.user"); } catch { /* nothing cached */ }
@@ -28,6 +26,6 @@ export function BoardPage() {
   };
   return <div className="stage board-stage"><Backdrop />
     {user !== undefined && <BoardPanel user={user} initialAsset={asset} onLogout={logout}
-      onLogin={() => void oidcEnabled().then((oidc) => { const action = loginAction(oidc, window.location); location.assign(action.kind === "redirect" ? action.url : `/?return=${encodeURIComponent(here)}`); })} />}
+      onLogin={() => location.assign(ssoLoginUrl(currentReturnTo(window.location)))} />}
   </div>;
 }

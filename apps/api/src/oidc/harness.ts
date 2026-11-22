@@ -42,13 +42,15 @@ export async function followUntil(base: string, jar: Jar, first: Response, stopP
   throw new Error("redirect chain did not reach " + stopPrefix);
 }
 
-// Signs in at the identity provider as a browser would: starts at `authorizeUrl`, posts the login form, follows to `stopPrefix`.
+// Signs in at the identity provider as a browser would: starts at `authorizeUrl`, posts the JSON login, follows to `stopPrefix`.
 export async function idpSignIn(idpBase: string, jar: Jar, authorizeUrl: string, stopPrefix: string, loginId = "alice", password = "pw"): Promise<URL> {
   const first = await send(authorizeUrl, jar);
   const uid = /\/oidc\/interaction\/([\w-]+)$/.exec(first.headers.get("location") ?? "")?.[1];
   if (!uid) throw new Error("no interaction: " + first.status + " " + first.headers.get("location"));
-  const posted = await send(`${idpBase}/oidc/interaction/${uid}/login`, jar, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ loginId, password }) });
-  return followUntil(idpBase, jar, posted, stopPrefix);
+  const posted = await send(`${idpBase}/oidc/interaction/${uid}/login`, jar, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ loginId, password }) });
+  const { redirectTo } = await posted.json() as { redirectTo: string };
+  const resumed = await send(redirectTo, jar);
+  return followUntil(idpBase, jar, resumed, stopPrefix);
 }
 
 // ---- A complete identity provider on a loopback port, with a fake data service and a fake Discord. ----

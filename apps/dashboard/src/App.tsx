@@ -3,7 +3,7 @@ import { validMoney, moneyCompare } from "../../shared/money";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api, appUrl, clearToken, onUnauthorized, signedOut, type ApiUser } from "../../shared/api";
-import { AuthPanel } from "../../shared/AuthPanel";
+import { SsoGate } from "../../shared/SsoGate";
 import { logoutRedirect } from "../../shared/sso";
 import { Card, date, errorText, number, plain, type Ctx } from "./common";
 import { JumpDialog, type JumpTarget } from "./JumpDialog";
@@ -434,7 +434,7 @@ export default function App() {
       ? <div className="notice error" role="alert"><span>{sessionError} 서버가 켜져 있는지 확인한 뒤 다시 시도해주세요.</span><button type="button" className="soft" onClick={() => { sessionTries.current = 0; setSessionError(""); void loadSession(); }}>다시 시도</button></div>
       : <p className="loading">불러오는 중…</p>}
   </main></Stage>;
-  if (!user) return <Stage>{noticeBar && <div className="center-shell">{noticeBar}</div>}<AuthPanel app="dashboard" onAuthenticated={(next) => { setNotice(null); setUser(next); }} /></Stage>;
+  if (!user) return <Stage>{noticeBar && <div className="center-shell">{noticeBar}</div>}<SsoGate autoRedirect /></Stage>;
   if (page === "ownership" && user.role === "admin") return <Stage><Suspense fallback={<main className="center-shell"><p className="loading">조직도를 여는 중…</p></main>}><OrganizationOwnershipWindow route={initialRoute.sub} /></Suspense></Stage>;
   // Users, country and company accounts get their own account dashboard, like the HTS.
   if (user.role !== "admin") {

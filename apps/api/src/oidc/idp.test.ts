@@ -50,29 +50,38 @@ async function begin(base: string, jar: Jar, codeVerifier: string) {
   return uid;
 }
 const postLogin = (base: string, jar: Jar, uid: string, loginId: string, password: string) =>
-  send(`${base}/oidc/interaction/${uid}/login`, jar, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ loginId, password }) });
-
+  send(`${base}/oidc/interaction/${uid}/login`, jar, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ loginId, password }) });
 const followToCallback = (base: string, jar: Jar, first: Response): Promise<URL> => followUntil(base, jar, first, callback);
 const exchange = (base: string, code: string, codeVerifier: string) => fetch(`${base}/oidc/token`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
   body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: callback, client_id: "naru", code_verifier: codeVerifier }) });
 
 async function signIn(base: string, jar: Jar, codeVerifier: string) {
   const uid = await begin(base, jar, codeVerifier);
-  return followToCallback(base, jar, await postLogin(base, jar, uid, "alice", "pw"));
+  const { redirectTo } = await (await postLogin(base, jar, uid, "alice", "pw")).json() as { redirectTo: string };
+  return followToCallback(base, jar, await send(redirectTo, jar));
 }
 
-test("the interaction page is the shared login layout with a form posting to the interaction", async () => {
+test("without the built login screen the interaction page says so (503) instead of drawing a page of its own", async () => {
   const { base, close } = await start();
   try {
     const jar = new Jar();
     const uid = await begin(base, jar, newVerifier());
     const page = await send(`${base}/oidc/interaction/${uid}`, jar);
-    assert.equal(page.status, 200);
-    assert.match(page.headers.get("content-type") ?? "", /text\/html/);
-    assert.equal(page.headers.get("cache-control"), "no-store");
+    assert.equal(page.status, 503);
     const html = await page.text();
-    assert.ok(html.includes(`action="/oidc/interaction/${uid}/login"`) && html.includes('name="loginId"') && html.includes('name="password"'));
-    assert.ok(html.includes(startLogin("register")) && html.includes(startLogin("reset-password")) && !html.includes("{{"));
+    assert.match(html, /apps\/id/);
+    assert.ok(!html.includes("<form") && !html.includes('name="password"'), "the login server has no login form of its own");
+  } finally { await close(); }
+});
+
+test("an HTML form post is refused: the login takes JSON only", async () => {
+  const { base, close } = await start();
+  try {
+    const jar = new Jar();
+    const uid = await begin(base, jar, newVerifier());
+    const response = await send(`${base}/oidc/interaction/${uid}/login`, jar, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ loginId: "alice", password: "pw" }) });
+    assert.equal(response.status, 415);
+    assert.deepEqual(await response.json(), { error: "json_required" });
   } finally { await close(); }
 });
 
@@ -114,16 +123,14 @@ test("a code cannot be used twice, nor with another verifier", async () => {
   } finally { await close(); }
 });
 
-test("a wrong password re-renders the page with 401 and a message; an unknown account gives 404", async () => {
+test("a wrong password answers 401 and an unknown account 404, as JSON", async () => {
   const { base, close } = await start();
   try {
     const jar = new Jar();
     const uid = await begin(base, jar, newVerifier());
     const wrong = await postLogin(base, jar, uid, "alice", "nope");
     assert.equal(wrong.status, 401);
-    const html = await wrong.text();
-    assert.match(html, /아이디 또는 비밀번호가 올바르지 않습니다/);
-    assert.ok(html.includes('value="alice"') && !html.includes("nope"));
+    assert.deepEqual(await wrong.json(), { error: "invalid_credentials" });
     assert.equal((await postLogin(base, jar, uid, "ghost", "pw")).status, 404);
   } finally { await close(); }
 });

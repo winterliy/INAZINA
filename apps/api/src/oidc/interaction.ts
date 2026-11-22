@@ -1,11 +1,7 @@
-// The identity provider's login step: the page people type their credentials into, the credential check against the
-// data service, and the automatic consent for INAZINA's own apps.
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+// The identity provider's login step: the credential check against the data service (the login screen itself is apps/id,
+// built and served by ui.ts) and the automatic consent for INAZINA's own apps.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type Provider from "oidc-provider";
-import { ICON } from "../landing.js";
 
 export type InternalRequest = (method: "GET" | "POST", path: string, userId: string | undefined, body?: unknown) => Promise<{ status: number; body: any }>;
 export type AppUrls = { home: string }; // the app the login server sends people back to (its address ends with /)
@@ -21,44 +17,6 @@ const maxFailures = 8; // per address and id, per 15 minutes: the same limit as 
 const failureWindowMs = 15 * 60_000;
 // The login history keeps the app names it always had.
 const appLabels: Record<string, string> = { console: "dashboard", naru: "hts" };
-const clientNames: Record<string, string> = { console: "콘솔", naru: "나루" };
-const messages: Record<number, string> = {
-  401: "아이디 또는 비밀번호가 올바르지 않습니다.", 404: "존재하지 않는 계정입니다.",
-  429: "로그인 시도가 너무 많습니다. 잠시 뒤에 다시 시도해 주세요.", 403: "사용할 수 없는 계정입니다.",
-};
-
-const sharedDir = join(dirname(fileURLToPath(import.meta.url)), "../../../shared");
-const escape = (value: string) => value.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
-
-// The shared gate layout (apps/shared/gate.html) with its script-driven form swapped for a plain form post.
-let template: string | undefined;
-function layout(): string {
-  if (!template) {
-    const html = readFileSync(join(sharedDir, "gate.html"), "utf8").replace("{{SCENE}}", readFileSync(join(sharedDir, "scene.svg"), "utf8"))
-      .replace(/<form id="gate"[\s\S]*?<\/form>\s*<p class="err"[^>]*><\/p>\s*<div id="out" hidden><\/div>/, "{{FORM}}")
-      .replace(/<script>[\s\S]*<\/script>/, "");
-    if (!html.includes("{{FORM}}")) throw new Error("apps/shared/gate.html changed: the identity provider login page cannot be built");
-    template = html;
-  }
-  return template;
-}
-
-function loginPage(uid: string, clientId: string, appUrls: AppUrls, loginId = "", error = ""): string {
-  const form = `<form method="post" action="/oidc/interaction/${escape(uid)}/login" autocomplete="off">
-<label><span>아이디</span><input name="loginId" autocomplete="username" placeholder="아이디" value="${escape(loginId)}" required></label>
-<label><span>비밀번호</span><input name="password" type="password" autocomplete="current-password" placeholder="비밀번호" required></label>
-<button class="go" type="submit">로그인</button>
-</form>
-<p class="err" role="alert">${escape(error)}</p>`;
-  const values: Record<string, string> = {
-    TITLE: "로그인", ICON, HEADING: "INAZINA 로그인", LEAD: "하나의 계정으로 나루와 콘솔을 이용하세요.",
-    PATH_CHIP: `<span class="chip">${escape(clientNames[clientId] ?? clientId)}</span>`, FORM: form,
-    LINKS: `<a class="back" href="${escape(appLoginUrl(appUrls.home, "register"))}">회원가입</a><a class="back" href="${escape(appLoginUrl(appUrls.home, "reset-password"))}">비밀번호 찾기</a>`,
-    STATUS_CLASS: "ok", STATUS_TEXT: "통합 로그인",
-  };
-  return layout().replace(/\{\{(\w+)\}\}/g, (_match, key: string) => values[key] ?? "");
-}
-
 export function sendHtml(response: ServerResponse, status: number, body: string): void {
   response.writeHead(status, {
     "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer",
@@ -103,7 +61,7 @@ export async function interactionFor(provider: Provider, request: IncomingMessag
 }
 
 export function createInteractionHandler(deps: InteractionDeps): (request: IncomingMessage, response: ServerResponse, url: URL) => Promise<boolean> {
-  const { provider, appUrls } = deps;
+  const { provider } = deps;
   const failures = new Map<string, { count: number; resetAt: number }>();
   const expired = (response: ServerResponse) => sendHtml(response, 400, "<!doctype html><meta charset=\"utf-8\"><p>로그인 요청이 만료되었습니다. 앱에서 다시 시작해 주세요.</p>");
 
@@ -135,7 +93,8 @@ export function createInteractionHandler(deps: InteractionDeps): (request: Incom
     if (request.method === "GET" && !match[2]) {
       if (details.prompt.name === "login") {
         const shell = deps.shell?.();
-        sendHtml(response, 200, shell ?? loginPage(details.uid, clientId, appUrls));
+        if (shell) sendHtml(response, 200, shell);
+        else sendHtml(response, 503, "<!doctype html><meta charset=\"utf-8\"><title>로그인 화면 없음</title><p>로그인 화면(apps/id)이 빌드되지 않았습니다. <code>npm run build --workspace @inazina/id</code> 를 실행해 주세요.</p>");
         return true;
       }
       if (details.prompt.name === "consent") {
@@ -153,26 +112,17 @@ export function createInteractionHandler(deps: InteractionDeps): (request: Incom
     }
 
     if (request.method === "POST" && match[2] && details.prompt.name === "login") {
+      if (!json) { sendJson(response, 415, { error: "json_required" }); return true; }
       let loginId = "";
       let password = "";
-      try {
-        if (json) { const body = await readJson(request); loginId = String(body.loginId ?? ""); password = String(body.password ?? ""); }
-        else { const form = new URLSearchParams(await readBody(request, 2048)); loginId = form.get("loginId") ?? ""; password = form.get("password") ?? ""; }
-      } catch {
-        if (json) sendJson(response, 400, { error: "invalid_request" }); else sendHtml(response, 413, loginPage(details.uid, clientId, appUrls, "", messages[401]));
-        return true;
-      }
+      try { const body = await readJson(request); loginId = String(body.loginId ?? ""); password = String(body.password ?? ""); }
+      catch { sendJson(response, 400, { error: "invalid_request" }); return true; }
       loginId = loginId.trim().slice(0, 80);
       const result = await attempt(request, clientId, loginId, password);
-      if (result.status !== 200) {
-        if (json) sendJson(response, result.status, { error: result.error });
-        else sendHtml(response, result.status, loginPage(details.uid, clientId, appUrls, loginId, messages[result.status] ?? "로그인할 수 없습니다. 잠시 뒤에 다시 시도해 주세요."));
-        return true;
-      }
+      if (result.status !== 200) { sendJson(response, result.status, { error: result.error }); return true; }
       // remember: false -> the single sign-on session lives only as long as the browser stays open.
       const outcome = { login: { accountId: result.accountId!, remember: false } };
-      if (json) sendJson(response, 200, { redirectTo: await provider.interactionResult(request, response, outcome, { mergeWithLastSubmission: false }) });
-      else await provider.interactionFinished(request, response, outcome, { mergeWithLastSubmission: false });
+      sendJson(response, 200, { redirectTo: await provider.interactionResult(request, response, outcome, { mergeWithLastSubmission: false }) });
       return true;
     }
     expired(response);

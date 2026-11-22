@@ -1,5 +1,5 @@
-// Turns the identity provider on when INAZINA_OIDC_ISSUER is set (e.g. https://id.inazina.kr/oidc); without it the API
-// behaves exactly as before, with its own password login.
+// The login server (identity provider) and the sign-in of the app hosts. The apps (naru, console) have no login of their own,
+// so this is always on: the issuer is INAZINA_OIDC_ISSUER, or https://id.<INAZINA_DOMAIN>/oidc (default domain inazina.localhost).
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { loadClients } from "./clients.js";
 import { createDiscordClient } from "./discord.js";
@@ -8,8 +8,8 @@ import { createProvider, loadJwks } from "./provider.js";
 import { createRp } from "./rp.js";
 
 export type OidcSetup = {
-  idp?: (request: IncomingMessage, response: ServerResponse) => Promise<boolean>; // the identity provider's own host
-  rp?: ReturnType<typeof createRp>; // sign-in for the app hosts (naru, console)
+  idp: (request: IncomingMessage, response: ServerResponse) => Promise<boolean>; // the identity provider's own host
+  rp: ReturnType<typeof createRp>; // sign-in for the app hosts (naru, console)
 };
 
 export type SetupDeps = {
@@ -24,10 +24,9 @@ export type SetupDeps = {
 
 export async function setupOidc(deps: SetupDeps): Promise<OidcSetup> {
   const { env, internalRequest } = deps;
-  if (!env.INAZINA_OIDC_ISSUER) return {};
-  const issuer = new URL(env.INAZINA_OIDC_ISSUER);
-  if (issuer.pathname !== "/oidc") throw new Error("INAZINA_OIDC_ISSUER must end in /oidc (the provider is mounted there), e.g. https://id.inazina.kr/oidc");
   const domain = env.INAZINA_DOMAIN || "inazina.localhost";
+  const issuer = new URL(env.INAZINA_OIDC_ISSUER || `https://id.${domain}/oidc`);
+  if (issuer.pathname !== "/oidc") throw new Error("INAZINA_OIDC_ISSUER must end in /oidc (the provider is mounted there), e.g. https://id.inazina.kr/oidc");
   const home = `https://naru.${domain}/`;
   const provider = createProvider({
     issuer: issuer.href, clients: loadClients(env), call: async (operation, body) => (await internalRequest("POST", `/internal/oidc/store/${operation}`, undefined, body)).body,
@@ -39,7 +38,7 @@ export async function setupOidc(deps: SetupDeps): Promise<OidcSetup> {
     },
   });
   return {
-    rp: createRp({ env, authSecret: deps.authSecret, issueSession: deps.issueSession }),
+    rp: createRp({ env: { ...env, INAZINA_OIDC_ISSUER: issuer.href }, authSecret: deps.authSecret, issueSession: deps.issueSession }),
     idp: createIdp({
       provider, issuerHost: issuer.host, internalRequest, clientIp: deps.clientIp, appUrls: { home },
       // Discord proves who owns an account for register / reset; its callback is on the identity provider itself.

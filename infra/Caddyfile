@@ -1,23 +1,8 @@
-# INAZINA public edge. api.<domain> and port 4313 (internal gateway) are
-# intentionally NOT published here.
-# Env: INAZINA_FRONTEND (dev | static), INAZINA_ROOT (project folder, for static), INAZINA_WL (proxy | off),
-#      INAZINA_DOMAIN (default inazina.localhost), WL_DOMAIN (default wl.kr.localhost; production: wl.kr),
-#      INAZINA_TLS ("internal" locally, empty or unset in production).
-
-# Certificates: INAZINA_TLS=internal uses Caddy's own local certificates (development); empty or unset leaves Caddy's
-# automatic HTTPS on, which gets public certificates for the real domains (they must resolve to this machine, ports 80/443 open).
-(tls_internal) {
-	tls internal
-}
-(tls_public) {
-	tls {
-		protocols tls1.2 tls1.3
-	}
-}
-# INAZINA_TLS set but empty (a bare `INAZINA_TLS=` line in .env) means the same as unset.
-(tls_) {
-	import tls_public
-}
+# INAZINA front door, for the internal network: every name is <service>.inazina.localhost (id., naru., console., www., corp.)
+# except the wiki viewer, which is wl.localhost, and certificates come from Caddy's own local CA (`tls internal`); there is no public DNS or public certificate.
+# api.<domain> and port 4313 (internal gateway) are intentionally NOT published here. work. and mc. are on hold.
+# Env (all optional): INAZINA_DOMAIN (default inazina.localhost), INAZINA_FRONTEND (dev | static), INAZINA_ROOT (project folder,
+# for static), INAZINA_WL (proxy | off).
 
 # The screens (naru, console, the site). INAZINA_FRONTEND=dev (default) proxies to the Vite development servers; `static`
 # serves the built files (apps/<app>/dist from `npm run build`) from Caddy itself, which is what belongs on the internet:
@@ -40,8 +25,8 @@
 	import frontend_dev {args[0]} {args[1]}
 }
 
-# The wiki viewer (wl.kr): its server part (entry password, file reads) exists only inside Vite, so it cannot be built into
-# static files. INAZINA_WL=proxy (default in development) publishes that dev server; start_all sets `off` in static mode.
+# The wiki viewer (wl.localhost): its server part (entry password, file reads) exists only inside Vite, so it cannot be built into
+# static files and is always proxied to that dev server on the internal network. INAZINA_WL=off turns it off.
 (wl_proxy) {
 	reverse_proxy 127.0.0.1:4315
 }
@@ -53,7 +38,7 @@
 }
 
 (common) {
-	import tls_{$INAZINA_TLS:public}
+	tls internal
 	header {
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options nosniff
@@ -133,17 +118,10 @@ console.{$INAZINA_DOMAIN:inazina.localhost} {
 	}
 }
 
-# A separate domain with its own entry password; not part of the SSO.
-{$WL_DOMAIN:wl.kr.localhost} {
+# The wiki viewer has its own entry password; it is not part of the single sign-on. Its one name is wl.localhost.
+wl.localhost {
 	import common
 	import wl_{$INAZINA_WL:proxy}
 }
 
-# Placeholders, not yet active:
-# work.{$INAZINA_DOMAIN:inazina.localhost} {
-# 	import common
-# 	reverse_proxy 127.0.0.1:0000
-# }
-# mc.{$INAZINA_DOMAIN:inazina.localhost} {
-# 	# Minecraft TCP needs caddy-l4, or use a plain DNS-only record.
-# }
+# On hold (no service yet): work.<domain> (new work platform) and mc.<domain> (Minecraft, TCP 25565: needs caddy-l4 or plain DNS).

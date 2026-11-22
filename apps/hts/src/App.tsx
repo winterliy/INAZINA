@@ -4,9 +4,9 @@ import type { FormEvent } from "react";
 import { api, apiError, clearToken, onUnauthorized, signedOut, ApiError, type ApiUser } from "../../shared/api";
 import { Logo } from "../../shared/Logo";
 import { navigate } from "./nav";
-import { AuthPanel } from "../../shared/AuthPanel";
-import { logoutRedirect, currentReturnTo } from "../../shared/sso";
-import { guestCanView, loginAction, loginPanelRequested, oidcEnabled } from "./guest";
+import { SsoGate } from "../../shared/SsoGate";
+import { logoutRedirect, currentReturnTo, ssoLoginUrl } from "../../shared/sso";
+import { guestCanView, loginPanelRequested } from "./guest";
 import "./guest.css";
 import { DEFAULT_INDICATORS, INDICATOR_CATALOG, PriceChart, type Candle, type Drawing, type IndicatorCatalog, type IndicatorChoice, type IndicatorData, type Point, type Tool } from "./PriceChart";
 import { OPEN } from "./commandKit";
@@ -125,15 +125,11 @@ export default function App() {
     try { if (next) sessionStorage.setItem(USER_KEY, JSON.stringify(next)); else sessionStorage.removeItem(USER_KEY); } catch { /* not cached */ }
   }, []);
   const [notice, setNoticeState] = useState<Notice | null>(null);
-  // Guest mode: the page opens without a session. `loginPanel` shows the account panel (no single sign-on, e.g. local development).
-  const [loginPanel, setLoginPanel] = useState(false);
-  // Asks the server (once) whether single sign-on is on, so the very first click is not answered with the wrong login.
-  const requireLogin = useCallback(() => {
-    void oidcEnabled().then((on) => {
-      const action = loginAction(on, window.location);
-      if (action.kind === "redirect") window.location.assign(action.url); else setLoginPanel(true);
-    });
-  }, []);
+  // Whether the sign-in gate (register, reset, a sign-in error) was asked for is decided once, on arrival: the gate cleans the
+  // address up, and the page must not fall back to the guest view in the middle of showing its message.
+  const [gateOpen, setGateOpen] = useState(() => loginPanelRequested(window.location.search));
+  // Guest mode: the page opens without a session; any login-only part sends the visitor to the login server and back to this page.
+  const requireLogin = useCallback(() => window.location.assign(ssoLoginUrl(currentReturnTo(window.location))), []);
   const [busy, setBusy] = useState(false);
   const submitLock = useRef(false);
   // Idempotency key of the order being confirmed. The same order content keeps the key, so a retry after a timeout
@@ -681,15 +677,10 @@ export default function App() {
 
   if (!user && !checked) return <div className="stage"><Backdrop /><p className="page-loading" role="status">불러오는 중…</p></div>;
   // After the session expires the login screen carries the notice; "다시 로그인" dismisses it and focuses the form.
-  const relogin = () => { setNoticeState(null); window.setTimeout(() => document.querySelector<HTMLElement>(".stage input")?.focus(), 0); };
+  const relogin = () => { setNoticeState(null); requireLogin(); };
   const toast = notice && <div className={`toast ${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}><span>{notice.text}</span>{notice.expired && <button type="button" onClick={relogin}>다시 로그인</button>}<button type="button" onClick={() => setNoticeState(null)}>닫기</button></div>;
-  // Visitors without a session see the page; the account panel opens only when asked for (register, reset, sign-in error, login click).
-  if (!user && (loginPanel || loginPanelRequested(location.search))) return <div className="stage"><Backdrop />{toast}<AuthPanel app="hts" onAuthenticated={(next) => {
-    const back = new URLSearchParams(location.search).get("return");
-    if (back?.startsWith("/board")) { location.assign(back); return; }
-    setNoticeState(null); setLoginPanel(false); setUser(next);
-    if (loginPanelRequested(location.search)) window.history.replaceState(null, "", currentReturnTo(window.location));
-  }} extra={<>{loginPanel ? <button type="button" className="board-guest-button" onClick={() => { setLoginPanel(false); if (!guestCanView(location.pathname)) window.location.assign("/"); }}>로그인 없이 둘러보기</button> : <a className="board-guest-button" href={boardUrl()}>로그인 없이 게시판 보기</a>}</>} /></div>;
+  // Visitors without a session see the page; the sign-in gate opens only when asked for (register, reset, a sign-in error).
+  if (!user && gateOpen) return <div className="stage"><Backdrop />{toast}<SsoGate autoRedirect={false} onBrowse={() => setGateOpen(false)} /></div>;
   const guest = !user;
   const me: ApiUser = user ?? GUEST_USER;
   // A login-only part of the page stays visible but blurred; any click or Enter on it asks the visitor to sign in.
