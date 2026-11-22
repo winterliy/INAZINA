@@ -1,10 +1,25 @@
 # INAZINA public edge. api.<domain> and port 4313 (internal gateway) are
 # intentionally NOT published here.
 # Env: INAZINA_DOMAIN (default inazina.localhost), WL_DOMAIN (default wl.kr.localhost; production: wl.kr),
-#      INAZINA_TLS ("internal" locally, empty in production).
+#      INAZINA_TLS ("internal" locally, empty or unset in production).
+
+# Certificates: INAZINA_TLS=internal uses Caddy's own local certificates (development); empty or unset leaves Caddy's
+# automatic HTTPS on, which gets public certificates for the real domains (they must resolve to this machine, ports 80/443 open).
+(tls_internal) {
+	tls internal
+}
+(tls_public) {
+	tls {
+		protocols tls1.2 tls1.3
+	}
+}
+# INAZINA_TLS set but empty (a bare `INAZINA_TLS=` line in .env) means the same as unset.
+(tls_) {
+	import tls_public
+}
 
 (common) {
-	tls {$INAZINA_TLS}
+	import tls_{$INAZINA_TLS:public}
 	header {
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options nosniff

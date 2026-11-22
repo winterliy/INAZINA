@@ -45,6 +45,14 @@
 5. 브라우저에서 `https://naru.inazina.localhost`. `*.localhost` 는 자동으로 이 컴퓨터를 가리킨다.
 - 4310/4311 에 직접(`127.0.0.1`) 접속하면 이전처럼 비밀번호 로그인이 된다(앱 호스트가 아닌 접속은 SSO 를 강제하지 않는다). 운영자의 비상 경로이기도 하다.
 
+## 운영 도메인 인증서 (Caddy 가 자동 발급)
+Caddy 는 `INAZINA_TLS` 를 비우면(또는 지우면) 실제 도메인용 공개 인증서를 스스로 받고 갱신한다(Let's Encrypt/ZeroSSL). 받으려면 아래가 먼저 갖춰져야 한다. 하나라도 빠지면 발급이 실패한다.
+1. **도메인과 DNS:** `inazina.kr` 이 등록·위임되어 있고 `inazina.kr`, `www.`, `corp.`, `id.`, `naru.`, `console.` 과 `wl.kr` 의 A(또는 AAAA) 레코드가 이 서버의 공인 IP 를 가리킨다. (2026-11-22 확인: `inazina.kr`·`wl.kr` 은 NS/SOA 도 조회되지 않았다. 도메인 등록·DNS 설정이 먼저다.)
+2. **80/443 이 인터넷에서 닿는다:** 공유기 포트포워딩과 방화벽. 인증서 발급 때 인증 기관이 이 서버의 80/443 에 접속해 소유를 확인한다. 4310~4315 는 열지 않는다(`127.0.0.1` 에서만 듣는다).
+3. **`.env`:** `INAZINA_DOMAIN=inazina.kr`, `WL_DOMAIN=wl.kr`, `INAZINA_TLS=`(빈 값), `INAZINA_COOKIE_SECURE=true`, `INAZINA_OIDC_ISSUER=https://id.inazina.kr/oidc`. 브라우저가 쓰는 앱 주소가 바뀌므로 `INAZINA_OIDC_CLIENTS` 를 따로 쓰고 있다면 그 안의 주소도 맞춘다.
+4. Caddy 를 시작하고 로그에서 `certificate obtained successfully` 가 호스트마다 나오는지 본다. 실패하면 같은 로그에 이유(DNS 미해결, 80 접속 불가 등)가 나온다. 같은 도메인으로 짧은 시간에 실패를 반복하면 인증 기관의 횟수 제한에 걸리니, 원인을 고친 뒤 다시 시도한다.
+- 설정 파일이 운영 모드에서 올바른지는 `INAZINA_DOMAIN=inazina.kr WL_DOMAIN=wl.kr caddy validate --config infra/Caddyfile --adapter caddyfile` 로 확인한다(시험 `tests/test_caddyfile.py` 가 로컬·운영 모드를 실제 Caddy 로 검증한다).
+
 ## 디스코드 (배포 전 확인)
 가입·비밀번호 재설정·아이디 찾기는 **id 서버**가 디스코드로 본인 확인을 한다. 디스코드는 우리 서버로 신호를 보내지 않고, 인증이 끝나면 **사용자의 브라우저**를 등록된 주소로 돌려보낸다. 그래서 필요한 것은 사용자 브라우저가 열 수 있는 공개 주소이고 `api.` 주소일 필요는 없다.
 - 돌아오는 주소는 `INAZINA_OIDC_ISSUER` 에서 자동으로 만들어진다: `<issuer 의 주소>/oidc/account/discord/callback` (운영 `https://id.inazina.kr/oidc/account/discord/callback`, 로컬 `https://id.inazina.localhost/oidc/account/discord/callback`). `.env` 에 따로 쓸 값은 없다(`DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` 은 그대로 쓴다).

@@ -1,4 +1,7 @@
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 TEXT = (Path(__file__).resolve().parents[1] / "infra" / "Caddyfile").read_text()
@@ -43,12 +46,12 @@ SITES = blocks(LIVE)
 def test_no_public_api_or_internal_gateway():
     assert "4313" not in LIVE
     assert not re.search(r"^api\.", LIVE, re.M)
-    assert "{$INAZINA_TLS" in LIVE
+    assert "tls_{$INAZINA_TLS" in LIVE
 
 
 def test_sites_present():
     assert set(SITES) == {
-        "(common)", D, f"www.{D}", f"corp.{D}", f"id.{D}", f"naru.{D}", f"console.{D}", "{$WL_DOMAIN:wl.kr.localhost}",
+        "(common)", "(tls_internal)", "(tls_public)", "(tls_)", D, f"www.{D}", f"corp.{D}", f"id.{D}", f"naru.{D}", f"console.{D}", "{$WL_DOMAIN:wl.kr.localhost}",
     }
 
 
@@ -95,3 +98,22 @@ def test_site_hosts_send_only_the_contact_form_to_the_api():
         found = handlers(body)
         assert found["@feedback"].strip() == "reverse_proxy 127.0.0.1:4312"
         assert found[""].strip() == "reverse_proxy 127.0.0.1:4314"
+
+
+# The text checks above cannot see what Caddy makes of the file (an empty tls argument in production once broke it), so
+# when Caddy is installed the file is also loaded for real, once as in local development and once as in production.
+import pytest
+
+
+@pytest.mark.skipif(shutil.which("caddy") is None, reason="caddy is not installed")
+@pytest.mark.parametrize("env", [
+    {"INAZINA_TLS": "internal"},                                                       # local: Caddy's own certificates
+    {"INAZINA_TLS": "", "INAZINA_DOMAIN": "inazina.kr", "WL_DOMAIN": "wl.kr"},         # production: public certificates
+    {"INAZINA_DOMAIN": "inazina.kr", "WL_DOMAIN": "wl.kr"},                            # production with the variable unset
+], ids=["local", "production", "production-unset"])
+def test_caddy_accepts_the_file_in_local_and_production_mode(env):
+    merged = {key: value for key, value in os.environ.items() if key not in ("INAZINA_TLS", "INAZINA_DOMAIN", "WL_DOMAIN")}
+    merged.update(env)
+    result = subprocess.run(["caddy", "validate", "--config", str(Path(__file__).resolve().parents[1] / "infra" / "Caddyfile"), "--adapter", "caddyfile"],
+                            capture_output=True, text=True, env=merged, timeout=60)
+    assert result.returncode == 0, result.stderr[-400:]
