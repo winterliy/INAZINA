@@ -6,7 +6,9 @@ type Evidence = { path: string; test: string; found: boolean };
 type Control = { id: string; control: string; location: string; evidence: Evidence[]; status: "verified" | "broken" };
 type Drill = { date: string; source: string; command: string; ok: boolean; cleanup_ok: boolean; elapsed_seconds?: number; tables?: number; error?: string; note?: string };
 type Review = { date: string; scope: string; admin_count: number; audit_rows: number; audit_range: string; findings: string[] };
-type Overview = { controls: Control[]; summary: { total: number; verified: number }; restoreDrills: Drill[]; accessReviews: Review[]; stress: { scenarios?: string[]; last_run?: string; result?: string; test_file?: string } };
+type Backup = { status: "ok" | "stale" | "missing"; count: number; maxAgeHours: number; latest: string | null; ageHours: number | null };
+type ReviewState = { status: "ok" | "overdue" | "missing"; lastDate: string | null; ageDays: number | null; maxDays: number };
+type Overview = { backup: Backup; accessReview: ReviewState; controls: Control[]; summary: { total: number; verified: number }; restoreDrills: Drill[]; accessReviews: Review[]; stress: { scenarios?: string[]; last_run?: string; result?: string; test_file?: string } };
 const SCENARIO = { rate_spike: "금리 급등", deposit_run: "예금 인출", correlated_defaults: "상관 부도", collateral_decline: "담보 하락", fx_rate_jump: "환율 급변", settlement_failures: "결제 실패" } as Record<string, string>;
 
 /** 통제 · 복구: control-evidence status, dated restore drills and access reviews, stress scenarios. Read only. */
@@ -15,7 +17,16 @@ export function ControlsPage({ ctx }: { ctx: Ctx }) {
   const [data, setData] = useState<Overview | null>(null);
   useEffect(() => { api<Overview>("/api/admin/controls").then(setData).catch((cause) => say(errorText(cause, "통제 정보를 불러오지 못했습니다."), true)); }, []);
   if (!data) return <p className="cap">불러오는 중…</p>;
+  const { backup, accessReview } = data;
   return <>
+    <Card title="점검 경고" caption="조회 전용입니다. 백업을 만들거나 검토를 대신하지 않고 상태만 알려 줍니다.">
+      <div className="scroll-x"><table><thead><tr><th>항목</th><th>상태</th><th>내용</th></tr></thead><tbody>
+        <tr><td>백업 최신성</td><td className={backup.status === "ok" ? "" : "neg"}>{{ ok: "정상", stale: "오래됨", missing: "없음" }[backup.status]}</td>
+          <td className="cap">{backup.latest ? `${backup.latest} · ${backup.ageHours}시간 전 (기준 ${backup.maxAgeHours}시간) · ${backup.count}개 보관` : "백업 파일이 없습니다."}</td></tr>
+        <tr><td>관리자 접근 검토</td><td className={accessReview.status === "ok" ? "" : "neg"}>{{ ok: "정상", overdue: "기한 지남", missing: "없음" }[accessReview.status]}</td>
+          <td className="cap">{accessReview.lastDate ? `마지막 검토 ${accessReview.lastDate} · ${accessReview.ageDays}일 전 (기준 ${accessReview.maxDays}일)` : "검토 기록이 없습니다."}</td></tr>
+      </tbody></table></div>
+    </Card>
     <Card title="통제 증빙표" caption={`${data.summary.verified} / ${data.summary.total}개 통제의 증빙 시험이 실제로 존재합니다. 존재만 확인하며 통과 여부는 시험 실행으로 확인합니다.`}>
       <div className="scroll-x"><table><thead><tr><th>ID</th><th>상태</th><th>증빙</th><th>통제</th><th>구현 위치</th></tr></thead><tbody>
         {data.controls.map((row) => <tr key={row.id}>

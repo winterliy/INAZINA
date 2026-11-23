@@ -49,7 +49,7 @@
       "scope": "운영 DB 읽기 전용 조회",
       "admins": [
         {
-          "user_id_tail": "0278",
+          "user_id_tail": "2278",
           "role": "admin",
           "bootstrap_id": true
         }

@@ -8,9 +8,7 @@ HANDLERS = {"do_GET", "do_POST", "do_PUT", "do_PATCH", "do_DELETE"}
 # Calls that record the administrator's action: explicit audit rows, the audited admin scope, or the admin command layer.
 AUDIT_MARKERS = ("audit", "admin_scope", "admin_control")
 # Administrator POST routes whose audit evidence is not visible statically. Each needs a reason; shrink this list, never grow it quietly.
-NO_STATIC_AUDIT_EVIDENCE = {
-    "/internal/admin/dr/monitor/sample": "samples DR deviation state through DrDeviationMonitorManager; no admin_audit row (미비)",
-}
+NO_STATIC_AUDIT_EVIDENCE = {}   # emptied 2026-11-24: dr/monitor/sample now records its use
 
 SOURCE = SERVER.read_text(encoding="utf-8")
 TREE = ast.parse(SOURCE)
@@ -106,10 +104,10 @@ def test_admin_writes_leave_audit_evidence():
 
 
 def test_sensitive_admin_reads_are_audited():
-    """Reads of user lists, funding and ALM record who looked (audit_admin_access). Login history, the security
-    overview and the audit log itself are read without a trail: a known gap listed in docs/threat_model_laplace.md."""
+    """Reads of user lists, funding and ALM record who looked (audit_admin_access). Login history and the audit log itself are read with a trail too."""
     text = SOURCE
-    for route in ("/internal/admin/users", "/internal/admin/funding-cashflow", "/internal/admin/funding", "/internal/admin/alm"):
+    for route in ("/internal/admin/users", "/internal/admin/funding-cashflow", "/internal/admin/funding", "/internal/admin/alm",
+                  "/internal/admin/login-history", "/internal/admin/audit"):
         get = next(h for h in handler_functions() if h.name == "do_GET")
         branch = next(b for b, _ in admin_routes(get) if route_name(b) == route)
         assert "audit_admin_access" in ast.get_source_segment(text, branch), route

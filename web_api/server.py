@@ -26,7 +26,17 @@ DATABASE = Path(os.environ.get("INAZINA_DB_PATH", ROOT / "database" / "inazina.d
 INTERNAL_TOKEN = os.environ.get("INAZINA_INTERNAL_TOKEN", "")
 PORT = int(os.environ.get("INAZINA_PYTHON_PORT", "4313"))
 MAX_HTTP_THREADS = max(1, min(int(os.environ.get("INAZINA_MAX_HTTP_THREADS", "16")), 64))
-BOOTSTRAP_ADMIN_IDS = {"1076861147560542278"}
+# Accounts that are administrators before the database says so (first start). The default keeps the original account;
+# INAZINA_BOOTSTRAP_ADMIN_IDS (comma separated) replaces it. An empty value is ignored so a typo cannot lock everyone out.
+_DEFAULT_BOOTSTRAP_ADMIN_IDS = "1076861147560542278"
+
+
+def bootstrap_admin_ids(environ=os.environ):
+    raw = (environ.get("INAZINA_BOOTSTRAP_ADMIN_IDS") or "").strip()
+    return {item.strip() for item in (raw or _DEFAULT_BOOTSTRAP_ADMIN_IDS).split(",") if item.strip()}
+
+
+BOOTSTRAP_ADMIN_IDS = bootstrap_admin_ids()
 sys.path.insert(0, str(ROOT))
 from database.unified import sql as unified_sql, UnifiedConnection
 from database.pool import pooled
@@ -5132,14 +5142,17 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     target = parse_qs(parsed.query).get("user", [""])[0].strip() or None
                     with connect_db(timeout=5) as connection:
-                        self.send_json(200, {"events": admin_logins.history(connection, target),
-                                             "retentionDays": admin_logins.RETENTION_SECONDS // 86400})
+                        events = admin_logins.history(connection, target)
+                    audit_admin_access(user["userId"], "login_history.read", {"target": target, "result_count": len(events)})
+                    self.send_json(200, {"events": events, "retentionDays": admin_logins.RETENTION_SECONDS // 86400})
             elif path == "/internal/admin/audit":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
                 else:
-                    self.send_json(200, {"entries": admin_audit()})
+                    entries = admin_audit()
+                    audit_admin_access(user["userId"], "admin_audit.read", {"result_count": len(entries)})
+                    self.send_json(200, {"entries": entries})
             elif path == "/internal/admin/funding-cashflow":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -5541,8 +5554,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(400, {"error": str(exc)})
         except (sqlite3.Error, RuntimeError) as exc:
             # Keep the real cause in the console and the response, so a broken query is not mistaken for a down DB.
-            logging.getLogger("inazina.web").exception("GET %s failed", self.path)
-            self.send_json(503, {"error": "database_unavailable", "message": f"데이터베이스를 읽지 못했습니다: {exc}"})
+            self.send_db_failure("GET", 503, "database_unavailable", "데이터베이스를 읽지 못했습니다.")
 
     def do_POST(self):
         _DELEGATION.by = unquote(self.headers.get("x-inazina-delegated-by", ""))
@@ -6198,6 +6210,7 @@ class Handler(BaseHTTPRequestHandler):
                 if payload:
                     raise ValueError("invalid_dr_monitor_sample_payload")
                 from managers.dr_deviation_monitor_manager import DrDeviationMonitorManager
+                audit_admin_access(user["userId"], "dr_monitor.sample", {})
                 db = domain().db
                 with db.atomic() as connection:
                     result = DrDeviationMonitorManager.sample_conn(connection)
@@ -6455,17 +6468,22 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError, OverflowError) as exc:
             self.send_json(400, {"error": str(exc)})
         except sqlite3.IntegrityError as exc:
-            # Constraint and trigger failures (CHECK, FOREIGN KEY, RAISE) are
-            # validation errors the administrator can act on.
-            self.send_json(400, {"error": "constraint_failed", "message": str(exc)})
+            # Constraint and trigger failures (CHECK, FOREIGN KEY, RAISE): the client gets a generic message and a request id;
+            # the database's own text stays in the server log.
+            self.send_db_failure("POST", 400, "constraint_failed", "입력이 데이터 제약 조건에 맞지 않아 처리하지 못했습니다.")
         except sqlite3.OperationalError as exc:
             if "locked" in str(exc) or "busy" in str(exc):
                 self.send_json(503, {"error": "database_unavailable"})
             else:
-                self.send_json(400, {"error": "database_rejected", "message": str(exc)})
+                self.send_db_failure("POST", 400, "database_rejected", "데이터베이스가 요청을 받아들이지 않았습니다.")
         except sqlite3.Error as exc:
-            logging.getLogger("inazina.web").exception("POST %s failed", self.path)
-            self.send_json(503, {"error": "database_unavailable", "message": f"데이터베이스 작업에 실패했습니다: {exc}"})
+            self.send_db_failure("POST", 503, "database_unavailable", "데이터베이스 작업에 실패했습니다.")
+
+    def send_db_failure(self, method, status, error, message):
+        """Database errors can carry SQL, table names and values: log them with a request id and give the client only the id."""
+        request_id = secrets.token_hex(4)
+        logging.getLogger("inazina.web").exception("%s %s failed [request %s]", method, self.path, request_id)
+        self.send_json(status, {"error": error, "message": f"{message} (요청 번호 {request_id})", "requestId": request_id})
 
     def redirect_browser_to_main(self):
         self.send_response(303)
