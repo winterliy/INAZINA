@@ -172,6 +172,7 @@ export default function App() {
           {page === "commands" && <CommandsTab ctx={ctx} tab={tab} openProducts={(group) => go(group === "market" ? "instruments" : "finance")} onChanged={() => void refresh()} />}
           {page === "database" && <Lazy.DatabasePage ctx={ctx} />}
           {page === "security" && <Lazy.SecurityPage ctx={ctx} />}
+          {page === "ops" && <Lazy.OpsPage ctx={ctx} />}
           {page === "controls" && <Lazy.ControlsPage ctx={ctx} />}
           {page === "account" && <Lazy.AccountPage ctx={ctx} user={user} onLogout={logout} />}
         </Suspense>

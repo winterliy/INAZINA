@@ -1,6 +1,6 @@
 import { LEGACY_PAGE } from "./nav";
 
-export type Page = "home" | "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "court" | "feedback" | "board" | "documents" | "credit" | "accounting" | "close" | "alm" | "rates" | "events" | "liquidity" | "commands" | "database" | "security" | "controls" | "ownership";
+export type Page = "home" | "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "court" | "feedback" | "board" | "documents" | "credit" | "accounting" | "close" | "alm" | "rates" | "events" | "liquidity" | "commands" | "database" | "security" | "ops" | "controls" | "ownership";
 
 export const pages: { id: Page; label: string }[] = [
   { id: "home", label: "메인" },
@@ -27,6 +27,7 @@ export const pages: { id: Page; label: string }[] = [
   { id: "commands", label: "관리자 명령어" },
   { id: "database", label: "DB 편집" },
   { id: "security", label: "보안" },
+  { id: "ops", label: "서비스" },
   { id: "controls", label: "통제 · 복구" },
   { id: "ownership", label: "조직도" },
 ];
@@ -56,6 +57,7 @@ export const subtitles: Record<Page, string> = {
   commands: "Discord의 모든 $ 명령어와 도움말을 같은 검증과 기록으로 실행합니다.",
   database: "DB Browser에서 하던 설정 편집을 감사 기록과 함께 처리합니다.",
   security: "4312·4313 접속 비밀번호를 바꾸고, 접속 시도와 적용 중인 보호를 확인합니다.",
+  ops: "서비스의 켜짐 상태, 주요 설정값, 서비스별 최근 로그를 확인합니다. 읽기 전용입니다.",
   controls: "통제 증빙표 상태, 복구 훈련·접근 검토 기록, 스트레스 시험 범위를 확인합니다. 읽기 전용입니다.",
   ownership: "기업 지분과 의결권 관계를 넓은 화면에서 확인합니다.",
 };

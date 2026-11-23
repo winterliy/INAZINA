@@ -37,6 +37,21 @@ fi
 typeset -a pids
 pids=()
 
+# Every service's output goes to the terminal and to logs/<name>.log (the console's 서비스 page reads these files). A log that
+# has grown past 5 MB is moved aside to <name>.log.1 at start. Python must not buffer, or the logs arrive late.
+LOGDIR="$ROOT/logs"
+mkdir -p "$LOGDIR"
+for log in "$LOGDIR"/*.log(N); do
+  [[ "$(stat -f%z "$log" 2>/dev/null || echo 0)" -gt 5242880 ]] && mv -f "$log" "$log.1"
+done
+export PYTHONUNBUFFERED=1
+# start <name> <command...>: runs the command in the background, logged, and remembers its PID for cleanup.
+start() {
+  local name="$1"; shift
+  "$@" > >(tee -a "$LOGDIR/$name.log") 2>&1 &
+  pids+=("$!")
+}
+
 cleanup() {
   trap - INT TERM EXIT
   for pid in $pids; do
@@ -123,25 +138,19 @@ if [[ ! -f "$api_built" ]] || [[ -n "$(find "$ROOT/apps/api/src" "$ROOT/apps/api
     exit 1
   }
 fi
-npm run start --workspace @inazina/api &
-pids+=("$!")
+start api npm run start --workspace @inazina/api
 if [[ "$FRONTEND" != "static" ]]; then
-  npm run dev:dashboard &
-  pids+=("$!")
-  npm run dev:hts &
-  pids+=("$!")
-  npm run dev:site &
-  pids+=("$!")
+  start dashboard npm run dev:dashboard
+  start hts npm run dev:hts
+  start site npm run dev:site
 fi
 # The wiki viewer's server part exists only in Vite; Caddy serves it as wl.<domain> (INAZINA_WL=off turns that off).
-npm run dev:wl &
-pids+=("$!")
+start wl npm run dev:wl
 
 # The front door (docs/sso.md): Caddy, when single sign-on is on (INAZINA_OIDC_ISSUER) or the screens are static.
 if [[ -n "${INAZINA_OIDC_ISSUER:-}" || "$FRONTEND" == "static" ]]; then
   if command -v caddy >/dev/null 2>&1; then
-    INAZINA_FRONTEND="$FRONTEND" INAZINA_ROOT="$ROOT" caddy run --config "$ROOT/infra/Caddyfile" --adapter caddyfile &
-    pids+=("$!")
+    start caddy env INAZINA_FRONTEND="$FRONTEND" INAZINA_ROOT="$ROOT" caddy run --config "$ROOT/infra/Caddyfile" --adapter caddyfile
   else
     print -u2 "주의: INAZINA_OIDC_ISSUER 가 설정됐지만 caddy 가 설치돼 있지 않아 도메인 서버(infra/Caddyfile)를 시작하지 않습니다."
   fi
@@ -165,7 +174,6 @@ if (( ! python_ready )); then
   exit 1
 fi
 print "Python 데이터 서비스와 DB가 준비됐습니다. Discord 봇을 시작합니다."
-"$PYTHON" "$ROOT/run.py" &
-pids+=("$!")
+start bot "$PYTHON" "$ROOT/run.py"
 
 wait

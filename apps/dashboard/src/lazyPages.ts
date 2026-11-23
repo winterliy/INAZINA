@@ -12,6 +12,7 @@ export const DocumentsPage = lazy(() => import("./DocumentsPage").then((module) 
 export const CompliancePage = lazy(() => import("./CompliancePage").then((module) => ({ default: module.CompliancePage })));
 export const BanksPage = lazy(() => import("./BanksPage").then((module) => ({ default: module.BanksPage })));
 export const SecurityPage = lazy(() => import("./SecurityPage").then((module) => ({ default: module.SecurityPage })));
+export const OpsPage = lazy(() => import("./OpsPage").then((module) => ({ default: module.OpsPage })));
 export const DatabasePage = lazy(() => import("./DatabasePage").then((module) => ({ default: module.DatabasePage })));
 export const RatesPage = lazy(() => import("./RatesPage").then((module) => ({ default: module.RatesPage })));
 export const AlmPage = lazy(() => import("./AlmPage").then((module) => ({ default: module.AlmPage })));

@@ -7,6 +7,7 @@ import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRateLimiter, createSharedCache, guestRatePerMinute, publicMarketPath } from "./publicMarket.js";
+import { LOG_SERVICES, processRunning, readLog, safeSettings, serviceStatus } from "./ops.js";
 import { setupOidc } from "./oidc/setup.js";
 
 const projectRoot = findProjectRoot();
@@ -365,6 +366,28 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   if (request.method === "GET" && url.pathname === "/api/me/ownership-graph") {
     const result = await internalGet("/internal/me/ownership-graph", principal.userId);
     send(response, result.status, result.body);
+    return;
+  }
+  // The console's 서비스 page (read-only, administrators only): which services answer, the settings that matter, and the end of the logs.
+  if (request.method === "GET" && (url.pathname === "/api/admin/ops" || url.pathname === "/api/admin/ops/log")) {
+    if (user.role !== "admin" || principal.by) {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const logDir = join(projectRoot, "logs");
+    if (url.pathname === "/api/admin/ops/log") {
+      const tail = readLog(logDir, url.searchParams.get("service") ?? "", Number(url.searchParams.get("lines") ?? 200));
+      if (tail) send(response, 200, tail); else send(response, 400, { error: "unknown_service" });
+      return;
+    }
+    const dataPorts = Object.fromEntries(pythonPorts.map((workerPort, index) => [pythonWorkers > 1 ? `data-${index + 1}` : "data", workerPort]));
+    send(response, 200, {
+      api: { pid: process.pid, uptimeSeconds: Math.round(process.uptime()), node: process.version, mode: import.meta.url.includes("/dist/") ? "build" : "watch" },
+      services: await serviceStatus({ api: port, ...dataPorts, caddy: 2019, dashboard: 4310, hts: 4311, site: 4314, wl: 4315 }),
+      bot: { running: await processRunning(join(projectRoot, "run.py")) },
+      settings: safeSettings(process.env),
+      logs: { dir: "logs", services: LOG_SERVICES },
+    });
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/admin/login-as") {

@@ -35,3 +35,4 @@ docs/wide-learning/
 /database/security.json
 /database/wl-security.json
 /database/browser-access.log.jsonl
+logs/
