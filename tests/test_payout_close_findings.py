@@ -38,3 +38,11 @@ class PayoutCloseFindingTests(unittest.TestCase):
         with self.db.readonly() as conn:
             report = AccountingJournal.reconcile_all_financial_ledgers(conn)
         self.assertIn("payout_requests", report["coverage"])
+
+    def test_open_payout_of_a_kind_with_no_cash_ledger_is_flagged_not_netted(self):
+        with self.db.atomic() as conn:
+            payout = PayoutManager.offer(conn, "alice", "bob", "NWX", 5, "mystery", "r3", now=1_800_000_000)
+        self.assertEqual(self.findings(1_800_000_001), [{"payout_id": payout, "status": "uncovered_kind", "kind": "mystery"}])
+        with self.db.atomic() as conn:
+            conn.execute("UPDATE payout_requests SET status='forfeited',decided_epoch=? WHERE payout_id=?", (1_800_000_002, payout))
+        self.assertEqual(self.findings(1_800_000_003), [])

@@ -174,6 +174,8 @@ M8 진행: 통제-증빙 추적표([controls_laplace.md](controls_laplace.md))�
 
 2026-11-21 M4 통합 보고 보강: `rebuild_from_subledgers`가 `treasury_bond_cash` 대사 결과와 FX 재평가 preview를 통합 보고서의 명시적 항목 및 coverage로 노출하도록 했다. `tests/test_financial_close_control.py`에 두 항목의 coverage/status 계약을 추가했다. 격리 PostgreSQL에서 M4 대사·FX 및 M8 정리 관련 50 tests와 2 subtests, `compileall`, `git diff --check`가 통과했다. SQLite 및 psycopg 미종료 연결 ResourceWarning은 남았다. 환율 평가를 조회할 수 없거나 국채 대사 검사가 누락되면 통합 보고서는 mismatch 및 close_ready=false로 반환한다. 현 기간 FX 평가의 통화별 잔액·환율·계산 결과·분개와 이전 기간 역분개를 검사하고 누락·불일치 시 마감을 막는다. 최초 기준점은 이전 거래별 FX 원가를 재구성하지 않는다. 같은 기간 평가 후 잔액이나 환율이 바뀌면 마감이 차단되고, 재실행(`FxRevaluation.run`)이 이전 실행을 고치지 않고 추가 전용 정정(`fx_revaluation_corrections`, 차액 분개)을 남기며 다음 기간에 정정분도 역분개한다. 읽기 전용 포지션·마감 점검은 L1 `managers/fx_position.py`로 분리해 통합 대사(L1)가 상위 계층을 가져오지 않는다. 전사 원장 대사와 과거 원가 재구성은 미완료다.
 
+2026-11-24 M4 지급 예정액 상계 결정(보수안): 선택 대기·임시계좌 지급액은 그 금액을 보유하는 상품 원장에 근거가 있을 때만 지갑과 상계한다. 현재 근거가 있는 종류는 선물(`_futures_held`가 대기 지급을 상품 현금에 포함)뿐이며 `AccountingJournal.HELD_PAYOUT_KINDS`로 명시한다. 그 밖의 종류의 대기 지급은 상계하지 않고 통합 대사의 `payout_requests` finding(`uncovered_kind`)으로 마감을 막는다. 새 종류를 추가하려면 보유 원장과 기준선을 먼저 만들고 이 목록에 올린다.
+
 ## #80 종료 범위
 
 #80은 내부 시뮬레이터 범위에서 완료다. HTS 의결권 위임/투표, DR 수탁 요청·예약·지연·수수료·재시도/만료, 세무거주지 스냅샷, 국가별 배당 원천징수, 불변 이벤트·내부 복식분개 및 관리자 대사를 포함한다. 실제 수탁/예탁/은행/세무기관 연결, 신분·거주지 증빙, 법적 조약 판정과 외부 송금은 제외한다.

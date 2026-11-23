@@ -2514,6 +2514,10 @@ class AccountingJournal:
             (event_id, int(mark[1])))
         return int(wallet.rowcount) + int(fund.rowcount)
 
+    # Held payouts of these kinds are counted inside that product's own cash (see _futures_held), so they net against the
+    # wallet through the product's cash baseline. A held payout of any other kind has no ledger to net against.
+    HELD_PAYOUT_KINDS = ("futures",)
+
     @staticmethod
     def payout_findings(conn, now=None):
         """Held payouts (amounts waiting for the receiver) that the close must not carry: overdue ones not yet returned to
@@ -2521,9 +2525,11 @@ class AccountingJournal:
         import time
         now = int(now if now is not None else time.time())
         findings = []
-        for row in conn.execute("SELECT payout_id,status,minor_units,expires_epoch,decided_epoch FROM payout_requests"):
-            payout_id, status, minor, expires, decided = row[0], row[1], int(row[2]), int(row[3]), row[4]
-            if minor <= 0:
+        for row in conn.execute("SELECT payout_id,status,minor_units,expires_epoch,decided_epoch,kind FROM payout_requests"):
+            payout_id, status, minor, expires, decided, kind = row[0], row[1], int(row[2]), int(row[3]), row[4], row[5]
+            if status in ("pending", "temp_open") and kind not in AccountingJournal.HELD_PAYOUT_KINDS:
+                findings.append({"payout_id": int(payout_id), "status": "uncovered_kind", "kind": str(kind)})
+            elif minor <= 0:
                 findings.append({"payout_id": int(payout_id), "status": "invalid_amount"})
             elif status in ("pending", "temp_open") and expires <= now:
                 findings.append({"payout_id": int(payout_id), "status": "overdue_not_returned"})
