@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../../shared/api";
-import { Card, plain, type Ctx } from "./common";
+import { Card, plain, type Ctx, confirmAction } from "./common";
 
 type Result = { message: string; success: boolean };
 
@@ -29,8 +29,8 @@ export function LogCard<T>({ ctx, log, title, caption, rows, idOf, deletable = (
     if (next.has(id)) next.delete(id); else next.add(id);
     setSelected(next);
   }
-  function remove(body: { ids: number[] } | { all: true }, question: string) {
-    if (!window.confirm(question)) return;
+  async function remove(body: { ids: number[] } | { all: true }, question: string) {
+    if (!await confirmAction(question)) return;
     void run(() => api<Result>(`/api/admin/logs/${log}/delete`, { method: "POST", body: JSON.stringify(body) }), "기록을 삭제하지 못했습니다.",
       (result) => { say(plain(result.message), !result.success); setSelected(new Set()); onChanged(); });
   }

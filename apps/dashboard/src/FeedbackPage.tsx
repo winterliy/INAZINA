@@ -1,6 +1,7 @@
+import { tabPanel } from "./tabKeys";
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
-import { Card, Tabs, date, plain, type Ctx } from "./common";
+import { Card, Tabs, date, plain, type Ctx, confirmAction } from "./common";
 
 type Feedback = { feedback_id: number; kind: "contact" | "report"; title: string; body: string; discord_id: string; email: string;
   status: "new" | "read" | "done"; created_epoch: number; handled_by: string | null; handled_epoch: number | null };
@@ -35,8 +36,8 @@ export function FeedbackPage({ ctx, onChange }: { ctx: Ctx; onChange: () => void
       "상태를 바꾸지 못했습니다.", done);
   }
 
-  function remove(body: { ids: number[] } | { all: true }, question: string) {
-    if (!window.confirm(question)) return;
+  async function remove(body: { ids: number[] } | { all: true }, question: string) {
+    if (!await confirmAction(question)) return;
     void run(() => api<Result>("/api/admin/feedback/delete", { method: "POST", body: JSON.stringify(body) }), "삭제하지 못했습니다.", done);
   }
 
@@ -85,8 +86,8 @@ export function FeedbackPage({ ctx, onChange }: { ctx: Ctx; onChange: () => void
       <button className="soft small danger" type="button" disabled={busy}
         onClick={() => remove({ all: true }, "읽은 문의·신고를 모두 삭제할까요? 새 알림은 남고, 삭제한 내용은 되돌릴 수 없습니다.")}>읽은 항목 전체 삭제</button>
     </>}>
-    <Tabs label="상태" value={filter} onChange={setFilter} options={[["new", "새 알림"], ["read", "확인함"], ["done", "처리 완료"], ["all", "전체"]]} />
-    <div className="scroll-x tall"><table><thead><tr>
+    <Tabs group="feedback" label="상태" value={filter} onChange={setFilter} options={[["new", "새 알림"], ["read", "확인함"], ["done", "처리 완료"], ["all", "전체"]]} />
+    <div className="scroll-x tall" {...tabPanel("feedback", filter)}><table><thead><tr>
       <th><input type="checkbox" aria-label="읽은 항목 모두 선택" checked={allChecked} disabled={!deletable.length}
         onChange={() => setSelected(allChecked ? new Set() : new Set(deletable.map((item) => item.feedback_id)))} /></th>
       <th>#</th><th>종류</th><th>제목</th><th>디스코드 아이디</th><th>이메일</th><th>접수</th><th>상태</th><th />

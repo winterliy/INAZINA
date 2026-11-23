@@ -1,6 +1,7 @@
+import { tabPanel } from "./tabKeys";
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
-import { Card, Tabs, date, plain, type Ctx } from "./common";
+import { Card, Tabs, date, plain, type Ctx, confirmAction } from "./common";
 
 type Status = "submitted" | "reviewing" | "approved" | "rejected";
 type Filing = { filingId: number; kind: "rehabilitation" | "bankruptcy"; label: string; reason: string; plan: string; status: Status;
@@ -54,13 +55,13 @@ export function CourtPage({ ctx }: { ctx: Ctx }) {
   }, [filter]);
   useEffect(() => { load().catch((cause) => say(cause instanceof Error ? cause.message : "신청을 불러오지 못했습니다.", true)); }, [load]);
 
-  function decide(item: Filing, status: Status) {
+  async function decide(item: Filing, status: Status) {
     const note = (notes[item.filingId] ?? "").trim();
     if (status === "rejected" && !note) { say("기각 사유를 적어주세요.", true); return; }
     const effect = status !== "approved" ? "" : item.kind === "bankruptcy"
       ? " 면제재산을 뺀 주식·채권·통장을 처분해 대출에 배당하고, 남은 대출을 면책하며, 신용점수를 내리고 대출을 막습니다."
       : " 변제계획을 시작합니다. 변제 중에는 이자가 멈추고 매주 변제금이 자동으로 빠져나갑니다.";
-    if (status !== "reviewing" && !window.confirm(`${caseNo(item)} ${item.label} 신청을 '${STATUS[status]}'(으)로 결정할까요?${effect} 되돌릴 수 없고, 신청자에게 DM으로 알립니다.`)) return;
+    if (status !== "reviewing" && !await confirmAction(`${caseNo(item)} ${item.label} 신청을 '${STATUS[status]}'(으)로 결정할까요?${effect} 되돌릴 수 없고, 신청자에게 DM으로 알립니다.`)) return;
     const body = { status, note, ...(status === "approved" && item.kind === "rehabilitation" && weeks[item.filingId] ? { weeks: Number(weeks[item.filingId]) } : {}) };
     void run(() => api<Result>(`/api/admin/court/${item.filingId}`, { method: "POST", body: JSON.stringify(body) }),
       "결정을 저장하지 못했습니다.", async (result) => { say(plain(result.message), !result.success); await load(); });
@@ -79,8 +80,8 @@ export function CourtPage({ ctx }: { ctx: Ctx }) {
       <section className="tile"><p className="tile-label">기각</p><p className="tile-value">{counts.rejected}</p></section>
     </div>
     <Card title="회생 · 파산 심리" caption="나루 '회생 · 파산' 탭으로 들어온 신청입니다. 행을 열면 신청 이유·변제계획과 제출 당시 자산을 볼 수 있습니다. 결정하면 신청자에게 Discord DM으로 알리며, 인가·기각은 되돌릴 수 없습니다. 파산 인가는 자산 처분·배당·면책을, 회생 인가는 주간 자동 변제를 바로 실행합니다. 수치는 아래 국가별 기준을 따릅니다.">
-      <Tabs label="상태" value={filter} onChange={setFilter} options={[["submitted", "접수", counts.submitted], ["reviewing", "심리 중", counts.reviewing], ["approved", "인가", counts.approved], ["rejected", "기각", counts.rejected], ["all", "전체", total]]} />
-      <div className="scroll-x tall"><table><thead><tr><th>사건번호</th><th>종류</th><th>신청인</th><th>접수</th><th>상태</th><th>처리</th></tr></thead><tbody>
+      <Tabs group="court" label="상태" value={filter} onChange={setFilter} options={[["submitted", "접수", counts.submitted], ["reviewing", "심리 중", counts.reviewing], ["approved", "인가", counts.approved], ["rejected", "기각", counts.rejected], ["all", "전체", total]]} />
+      <div className="scroll-x tall" {...tabPanel("court", filter)}><table><thead><tr><th>사건번호</th><th>종류</th><th>신청인</th><th>접수</th><th>상태</th><th>처리</th></tr></thead><tbody>
         {visible.map((item) => <Fragment key={item.filingId}>
           <tr className={open === item.filingId ? "clickable selected" : "clickable"} tabIndex={0} onClick={() => setOpen(open === item.filingId ? null : item.filingId)} onKeyDown={(event) => { if (event.key === "Enter") setOpen(open === item.filingId ? null : item.filingId); }}>
             <td className="mono">{caseNo(item)}</td><td>{item.label}</td><td><b>{item.nickname}</b> <span className="mono hint">{item.userId}</span></td>

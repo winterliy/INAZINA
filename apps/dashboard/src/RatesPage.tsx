@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
-import { Card, errorText, type Ctx } from "./common";
+import { Card, errorText, type Ctx, confirmAction } from "./common";
 import "./alm.css";
 
 type Rule = { rule_id: number; nationality: string; customer_type: string; product_type: string; effective_epoch: number; max_rate_bps: number | null;
@@ -69,7 +69,7 @@ export function RatesPage({ ctx }: { ctx: Ctx }) {
 
   const bps = (text: string) => text.trim() === "" ? null : Math.round(Number(text) * 100);
 
-  function submit() {
+  async function submit() {
     const max = bps(form.maxRate), tax = bps(form.tax);
     const valid = (value: number | null) => value === null || (Number.isInteger(value) && value >= 0 && value <= 10000);
     if (!form.nationality || !form.date) { say("국가와 적용일을 입력해주세요.", true); return; }
@@ -77,7 +77,7 @@ export function RatesPage({ ctx }: { ctx: Ctx }) {
     if (max === null && !form.apr && tax === null) { say("최고금리, APR 표시, 세율 중 하나 이상을 정해주세요.", true); return; }
     const epoch = Math.floor(new Date(`${form.date}T00:00:00`).getTime() / 1000);
     if (!Number.isFinite(epoch) || epoch < 0) { say("적용일을 확인해주세요.", true); return; }
-    if (!window.confirm(`${form.nationality} · ${label(CUSTOMER, form.customer)} · ${label(PRODUCT, form.product)} 규칙을 ${form.date}부터 적용할까요? 이 날짜 이후에 체결하는 계약에만 적용되며, 등록한 규칙은 고치거나 지울 수 없습니다.`)) return;
+    if (!await confirmAction(`${form.nationality} · ${label(CUSTOMER, form.customer)} · ${label(PRODUCT, form.product)} 규칙을 ${form.date}부터 적용할까요? 이 날짜 이후에 체결하는 계약에만 적용되며, 등록한 규칙은 고치거나 지울 수 없습니다.`)) return;
     void run(() => api<{ success: boolean; ruleId: number }>("/api/admin/rate-rules", { method: "POST", body: JSON.stringify({
       action: "add_rule", nationality: form.nationality, customerType: form.customer, productType: form.product, effectiveEpoch: epoch,
       maxRateBps: max, aprDisplay: form.apr || null, taxBps: tax, note: form.note.trim() }) }), "규칙을 저장하지 못했습니다.", (response) => {

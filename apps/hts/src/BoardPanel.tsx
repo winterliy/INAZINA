@@ -1,4 +1,5 @@
 import { exactMoney, formatMoney, type Money } from "../../shared/money";
+import { alertDialog, confirmDialog, promptDialog } from "../../shared/dialogs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api, type ApiUser } from "../../shared/api";
@@ -101,11 +102,11 @@ export function BoardPanel({ user, initialAsset = "", onLogin, onLogout }: { use
     void write(path, payload, async () => { await reloadBoards(); setBoardDraft(null); setEditingBoardId(null); setError(""); });
   }
 
-  function removeBoard(item: BoardInfo) {
+  async function removeBoard(item: BoardInfo) {
     const moveTo = deleteTargets[item.board_id] || boards.find((other) => other.board_id !== item.board_id)?.board_id || "";
-    if (!window.confirm(item.post_count
+    if (!await confirmDialog({ title: "게시판 삭제", danger: true, message: item.post_count
       ? `“${item.name}” 게시판을 삭제하고 게시글 ${item.post_count}개를 “${boardInfo(moveTo)?.name ?? moveTo}”으로 옮길까요?`
-      : `“${item.name}” 게시판을 삭제할까요?`)) return;
+      : `“${item.name}” 게시판을 삭제할까요?` })) return;
     void write(`/api/admin/board/board/${encodeURIComponent(item.board_id)}`,
       { action: "delete", moveTo }, async () => {
         const updated = await reloadBoards();
@@ -220,12 +221,12 @@ export function BoardPanel({ user, initialAsset = "", onLogin, onLogout }: { use
     </span>;
   }
 
-  function reportTarget(target: { postId: number } | { commentId: number }) {
+  async function reportTarget(target: { postId: number } | { commentId: number }) {
     if (!user) { onLogin(); return; }
-    const reason = window.prompt("신고 사유를 적어 주세요. (300자 이내)");
+    const reason = await promptDialog({ title: "신고 사유", label: "사유 (300자 이내)", maxLength: 300, multiline: true, confirmLabel: "신고" });
     if (!reason?.trim()) return;
     if (reason.trim().length > 300) { setError("신고 사유는 300자 이내로 적어 주세요."); return; }
-    void write("/api/board/reports", { ...target, reason: reason.trim() }, () => window.alert("신고를 접수했습니다. 3명 이상이 신고하면 관리자 확인 전까지 숨겨집니다."));
+    void write("/api/board/reports", { ...target, reason: reason.trim() }, () => alertDialog("신고를 접수했습니다. 3명 이상이 신고하면 관리자 확인 전까지 숨겨집니다."));
   }
 
   function startDraft(existing?: Post) {
@@ -279,7 +280,7 @@ export function BoardPanel({ user, initialAsset = "", onLogin, onLogout }: { use
     return <>
       <p className="board-comment-meta"><b>{authorView(item.author, item.author_admin)}</b> · {when(item.created_epoch)}
         {item.mine
-          ? <button type="button" className="danger" onClick={() => { if (window.confirm("댓글을 삭제할까요?")) void write(`/api/board/comments/${item.comment_id}/delete`, {}, async () => { await open(post!.post_id); await loadList(); }); }}>삭제</button>
+          ? <button type="button" className="danger" onClick={async () => { if (await confirmDialog({ title: "댓글 삭제", message: "댓글을 삭제할까요?", danger: true })) void write(`/api/board/comments/${item.comment_id}/delete`, {}, async () => { await open(post!.post_id); await loadList(); }); }}>삭제</button>
           : <button type="button" disabled={closed} onClick={() => reportTarget({ commentId: item.comment_id })}>신고</button>}</p>
       <p className={item.locked ? "board-comment-body board-locked" : "board-comment-body"}>{item.locked ? `🔒 ${item.body}` : item.body}</p>
       <div className="board-comment-actions">
@@ -342,10 +343,10 @@ export function BoardPanel({ user, initialAsset = "", onLogin, onLogout }: { use
         </li>)}</ul>
       </section>}
       <nav className="plaza-boards plaza-gnb" aria-label="게시판 목록">
-          <div className="board-tabs" role="tablist" aria-label="게시판" onKeyDown={tabListKeys}>{[{ board_id: "", name: "전체" }, ...boards].map((item) => <button key={item.board_id || "all"} type="button" role="tab" tabIndex={board === item.board_id ? 0 : -1} aria-selected={board === item.board_id} className={board === item.board_id ? "active" : ""} onClick={() => { setBoard(item.board_id); setAdminPostsBoard(""); setCategory(null); setPage(1); if (!boardInfo(item.board_id)?.allow_asset) setAsset(""); }}>{boardInfo(item.board_id)?.secret ? "🔒 " : ""}{item.name}</button>)}</div>
+          <div className="board-tabs" role="tablist" aria-label="게시판" onKeyDown={tabListKeys}>{[{ board_id: "", name: "전체" }, ...boards].map((item) => <button key={item.board_id || "all"} type="button" role="tab" id={`board-tab-${item.board_id || "all"}`} aria-controls="board-panel" tabIndex={board === item.board_id ? 0 : -1} aria-selected={board === item.board_id} className={board === item.board_id ? "active" : ""} onClick={() => { setBoard(item.board_id); setAdminPostsBoard(""); setCategory(null); setPage(1); if (!boardInfo(item.board_id)?.allow_asset) setAsset(""); }}>{boardInfo(item.board_id)?.secret ? "🔒 " : ""}{item.name}</button>)}</div>
       </nav>
       <div className="board-body plaza-body">
-        <div className="plaza-center">
+        <div className="plaza-center" id="board-panel" role="tabpanel" aria-labelledby={`board-tab-${board || "all"}`}>
           {user && accountOpen && <BoardAccount user={user} onClose={() => setAccountOpen(false)} onChange={(next) => { setDefaults(next); setCommentAnonymous(next.commentAnonymous); setCommentSecret(next.commentSecret); }} />}
           {(draft || post) && <div className="board-main" ref={mainRef}>
           {draft && <form className="board-form" onSubmit={submitDraft}>
@@ -436,7 +437,7 @@ export function BoardPanel({ user, initialAsset = "", onLogin, onLogout }: { use
                   </div>}
                 </form>
                 {(admin || post.mine) && <div className="board-poll-actions">{poll.open
-                  ? <button type="button" disabled={busy} onClick={() => { if (window.confirm("설문을 지금 마감할까요?")) void write(`/api/board/polls/${poll.poll_id}/close`, {}, async () => { await open(post.post_id); }); }}>지금 마감</button>
+                  ? <button type="button" disabled={busy} onClick={async () => { if (await confirmDialog({ title: "설문 마감", message: "설문을 지금 마감할까요?", danger: true })) void write(`/api/board/polls/${poll.poll_id}/close`, {}, async () => { await open(post.post_id); }); }}>지금 마감</button>
                   : <button type="button" disabled={busy} onClick={() => void write(`/api/board/polls/${poll.poll_id}/reopen`, {}, async () => { await open(post.post_id); })}>다시 열기</button>}</div>}
               </section>;
             })()}
@@ -444,14 +445,14 @@ export function BoardPanel({ user, initialAsset = "", onLogin, onLogout }: { use
               {reactions(post.like_count, post.dislike_count, post.my_reaction, `/api/board/posts/${post.post_id}/react`)}
               {post.mine ? <>
                 <button type="button" onClick={() => startDraft(post)}>수정</button>
-                <button type="button" className="danger" disabled={busy} onClick={() => { if (window.confirm("이 글을 삭제할까요?")) void write(`/api/board/posts/${post.post_id}/delete`, {}, async () => { setPost(null); await loadList(); }); }}>삭제</button>
+                <button type="button" className="danger" disabled={busy} onClick={async () => { if (await confirmDialog({ title: "글 삭제", message: "이 글을 삭제할까요?", danger: true })) void write(`/api/board/posts/${post.post_id}/delete`, {}, async () => { setPost(null); await loadList(); }); }}>삭제</button>
               </> : <button type="button" disabled={closed} onClick={() => reportTarget({ postId: post.post_id })}>신고</button>}
             </div>
             {admin && <div className="board-admin-bar" aria-label="관리자 설정">
               <span className="board-admin-label">관리자</span>
               <button type="button" disabled={busy} className={post.pinned ? "active" : ""} onClick={() => moderate({ action: post.pinned ? "unpin" : "pin" })}>{post.pinned ? "고정 해제" : "고정"}</button>
               <button type="button" disabled={busy} className={post.notice ? "active" : ""} onClick={() => moderate({ action: post.notice ? "unnotice" : "notice" })}>{post.notice ? "공지 해제" : "공지로 설정"}</button>
-              <label>게시판 이동<select value={post.board} disabled={busy} onChange={(event) => { if (window.confirm(`이 글을 ${boardInfo(event.target.value)?.name ?? event.target.value} 게시판으로 옮길까요? 카테고리는 해제됩니다.`)) moderate({ action: "move", board: event.target.value }); }}>{boards.map((item) => <option key={item.board_id} value={item.board_id}>{item.name}</option>)}</select></label>
+              <label>게시판 이동<select value={post.board} disabled={busy} onChange={async (event) => { const target = event.target.value; if (await confirmDialog({ title: "게시판 이동", message: `이 글을 ${boardInfo(target)?.name ?? target} 게시판으로 옮길까요? 카테고리는 해제됩니다.` })) moderate({ action: "move", board: target }); }}>{boards.map((item) => <option key={item.board_id} value={item.board_id}>{item.name}</option>)}</select></label>
               {(boardInfo(post.board)?.categories.length ?? 0) > 0 && <label>카테고리<select value={post.category_id ?? ""} disabled={busy} onChange={(event) => moderate({ action: "category", categoryId: event.target.value ? Number(event.target.value) : null })}><option value="">없음</option>{boardInfo(post.board)!.categories.map((item) => <option key={item.category_id} value={item.category_id}>{item.name}</option>)}</select></label>}
             </div>}
             <section className="board-comments" aria-label="댓글">

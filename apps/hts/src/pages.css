@@ -11,6 +11,7 @@
   min-height: 100vh; color: var(--bg-ink); background: #fff; font-family: var(--bg-font); letter-spacing: -.01em;
 }
 :is(.portfolio-page-shell, .heatmap-page-shell) > :is(.wall, .blob) { display: none; }
+/* !important kept: page-level up/down colors override the many component-level .up/.down rules */
 :is(.portfolio-page-shell, .heatmap-page-shell) .up { color: var(--bg-up) !important; } :is(.portfolio-page-shell, .heatmap-page-shell) .down { color: var(--bg-down) !important; }
 
 .bg-page { padding-left: 250px; }
@@ -49,11 +50,13 @@
 .bg-stat-dots button[aria-selected="true"] { width: 22px; background: var(--bg-ink); }
 .on-dark .bg-stat { border-color: rgba(255,255,255,.35); background: linear-gradient(160deg, rgba(255,255,255,.2), rgba(255,255,255,.06)); }
 .on-dark .bg-stat small, .on-dark .bg-stat-body > span, .bg-hero.on-dark strong { color: #fff; }
+/* !important kept: light up/down colors for the dark hero beat the generic .up/.down rules */
 .bg-hero.on-dark strong.up { color: #6ee7a8 !important; } .bg-hero.on-dark strong.down { color: #ff9b85 !important; }
 .on-dark .bg-stat-dots button { background: rgba(255,255,255,.35); }
 .on-dark .bg-stat-dots button[aria-selected="true"] { background: #fff; }
 .bg-hero-tip { position: absolute; left: 16px; bottom: 16px; margin: 0; padding: 8px 12px; border-radius: 4px; color: #fff; background: var(--bg-ink); font-size: 14px; pointer-events: none; }
 .bg-hero-tip b { font-weight: 600; }
+/* !important kept: same light colors inside the hero tooltip */
 .bg-hero-tip .up { color: #6ee7a8 !important; } .bg-hero-tip .down { color: #ff9b85 !important; }
 
 /* Portfolio: allocation bands */
@@ -144,7 +147,7 @@ button.bg-row:hover, button.bg-row:focus-visible { background: #f6f7f9; }
   .bg-page { padding-left: 0; }
   .bg-side { position: static; width: auto; height: auto; grid-template-rows: none; border-right: 0; border-bottom: 1px solid var(--bg-line); }
   .bg-side nav { display: flex; gap: 20px; padding: 14px 16px; overflow-x: auto; border-bottom: 0; }
-  .bg-side nav > * { flex: none; transform: none !important; }
+  .bg-side nav > * { flex: none; transform: none !important; } /* !important kept: cancels the desktop hover/slide transform on the mobile strip */
   .bg-side nav > *::before { display: none; }
   .bg-side-foot { display: none; }
   .bg-intro, .bg-section-head, .bg-cols { grid-template-columns: 1fr; gap: 16px; }
@@ -158,4 +161,5 @@ button.bg-row:hover, button.bg-row:focus-visible { background: #f6f7f9; }
   .bg-metrics > div { min-height: 140px; padding: 18px; }
   .bg-copy > p, .bg-aside p { font-size: 17px; }
 }
+/* !important kept: reduced motion must beat the page's own transitions and animations */
 @media (prefers-reduced-motion: reduce) { .bg-page *, .bg-page *::before { transition: none !important; animation: none !important; } }

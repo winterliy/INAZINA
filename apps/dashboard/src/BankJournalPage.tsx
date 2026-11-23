@@ -2,7 +2,7 @@ import { formatMoney, moneyAdd, moneyCompare, moneyDivide, moneyMultiply, minorM
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../shared/api";
-import { Card, Field, number, type Ctx } from "./common";
+import { Card, Field, number, type Ctx, confirmAction } from "./common";
 
 type Trial = { currency_code: string; account_code: string; debit_units: Money; credit_units: Money; balance_units: Money; debit_amount: string; credit_amount: string; balance_amount: string; decimal_places: number; entry_count?: number };
 type Unbalanced = { entry_id: number; issuer: string; event_type: string; reference_key: string; currency_code: string; line_count: number; debit_units: Money; credit_units: Money; debit_amount: string; credit_amount: string };
@@ -80,14 +80,14 @@ export function BankJournalPage({ ctx, bank }: { ctx: Ctx; bank?: string }) {
       ...(since ? { since: String(Math.floor(new Date(since).getTime() / 1000)) } : {}) });
     void run(() => api<Report>(`/api/admin/bank-journal?${query}`), "은행 원장 대사 정보를 불러오지 못했습니다.", setReport);
   }
-  function closePeriod(event: FormEvent<HTMLFormElement>) {
+  async function closePeriod(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const start = Math.floor(new Date(closing.start).getTime() / 1000);
     const end = Math.floor(new Date(closing.end).getTime() / 1000);
     if (!closing.entity.trim() || !closing.currency.trim() || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
       say("대상, 통화와 올바른 시작·종료 시각을 입력해주세요.", true); return;
     }
-    if (!window.confirm(`${closing.scope}/${closing.entity} · ${closing.currency.toUpperCase()} 기간을 마감할까요? 마감 후 이 기간에 소급 전기할 수 없으며 수정은 다음 기간 조정전기로 해야 합니다.`)) return;
+    if (!await confirmAction(`${closing.scope}/${closing.entity} · ${closing.currency.toUpperCase()} 기간을 마감할까요? 마감 후 이 기간에 소급 전기할 수 없으며 수정은 다음 기간 조정전기로 해야 합니다.`)) return;
     void run(() => api<{ success: boolean; closingId: number }>("/api/admin/bank-journal/close", {
       method: "POST", body: JSON.stringify({ ledgerScope: closing.scope, entityId: closing.entity.trim(), currencyCode: closing.currency.trim().toUpperCase(), periodStartEpoch: start, periodEndEpoch: end }),
     }), "회계기간을 마감하지 못했습니다.", (result) => say(`회계기간 마감 #${result.closingId}을 기록했습니다.`, !result.success));

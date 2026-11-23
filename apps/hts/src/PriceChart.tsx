@@ -395,7 +395,8 @@ export function PriceChart({ points, candles, candleInterval, mode, fallbackPric
         <button type="button" aria-pressed={tool === "horizontal"} className={tool === "horizontal" ? "selected" : ""} title="클릭한 가격에 수평선" onClick={() => onToolChange("horizontal")}>수평선</button>
         <button title="되돌리기 (Ctrl/⌘+Z)" disabled={!history.current.length} onClick={undo}>되돌리기</button>
         <button title="선택한 선 삭제 (Delete)" disabled={!selected} onClick={remove}>삭제</button>
-        <button title="모든 선 삭제" disabled={!drawings.length} onClick={() => { if (window.confirm("이 종목의 차트 선을 모두 삭제할까요?")) { commit([]); setSelected(""); } }}>전체 삭제</button>
+        <button title="모든 선 삭제" disabled={!drawings.length} onClick={async () => { // Loaded on use: the dialog module pulls in CSS, which the node unit tests cannot import.
+          if (await (await import("../../shared/dialogs")).confirmDialog({ title: "차트 선 삭제", message: "이 종목의 차트 선을 모두 삭제할까요?", danger: true })) { commit([]); setSelected(""); } }}>전체 삭제</button>
       </div>
       <div className="chart-settings" ref={settingsRef}>
         <button type="button" className={settingsOpen ? "chart-settings-button selected" : "chart-settings-button"} aria-label="보조지표 · 하단 그래프 설정" title="보조지표 · 하단 그래프 설정" aria-expanded={settingsOpen} onClick={() => setSettingsOpen((open) => !open)}>

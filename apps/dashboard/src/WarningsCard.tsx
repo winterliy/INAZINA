@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
-import { Card, Field, date, plain, type Ctx } from "./common";
+import { Card, Field, date, plain, type Ctx, confirmAction } from "./common";
 
 type Warning = { asset_code: string; level: "caution" | "warning" | "danger"; reason: string; set_by: string; created_epoch: number; expires_epoch: number | null };
 type Result = { message: string; success: boolean };
@@ -17,8 +17,8 @@ export function WarningsCard({ ctx }: { ctx: Ctx }) {
   const load = useCallback(async () => setWarnings((await api<{ warnings: Warning[] }>("/api/admin/warnings")).warnings), []);
   useEffect(() => { load().catch((cause) => say(cause instanceof Error ? cause.message : "거래경고를 불러오지 못했습니다.", true)); }, [load]);
 
-  function save(code: string, body: Record<string, string>, question: string) {
-    if (!window.confirm(question)) return;
+  async function save(code: string, body: Record<string, string>, question: string) {
+    if (!await confirmAction(question)) return;
     void run(() => api<Result>(`/api/admin/warnings/${encodeURIComponent(code)}`, { method: "POST", body: JSON.stringify(body) }),
       "거래경고를 저장하지 못했습니다.", async (result) => { say(plain(result.message), !result.success); await load(); });
   }

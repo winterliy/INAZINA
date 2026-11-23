@@ -1,8 +1,10 @@
+import { tabPanel } from "./tabKeys";
+import { promptDialog } from "../../shared/dialogs";
 import { minorMoney, moneyAdd, moneyCompare, exactMoney, validMoney, type Money } from "../../shared/money";
 import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../shared/api";
-import { Field, Tabs, date, errorText, number, plain, type Ctx } from "./common";
+import { Field, Tabs, date, errorText, number, plain, type Ctx, confirmAction } from "./common";
 
 type Account = { code: string; name: string; category: string; protected: boolean };
 type Line = { account: string; amount: Money };
@@ -54,8 +56,8 @@ export function CompanyLedger({ code, ctx, onChanged }: { code: string; ctx: Ctx
   const balanced = moneyCompare(debit, 0) > 0 && moneyCompare(debit, credit) === 0;
   const touchesCash = rows.some((row) => row.account === "cash");
 
-  function act(body: Record<string, unknown>, confirmText: string, done?: () => void) {
-    if (!window.confirm(confirmText)) return;
+  async function act(body: Record<string, unknown>, confirmText: string, done?: () => void) {
+    if (!await confirmAction(confirmText)) return;
     void run(() => api<{ success: boolean; message: string }>(`/api/admin/companies/${encodeURIComponent(code)}/journal`, { method: "POST", body: JSON.stringify(body) }),
       "재무 기록을 저장하지 못했습니다.", async (result) => {
         say(plain(result.message), !result.success);
@@ -73,8 +75,8 @@ export function CompanyLedger({ code, ctx, onChanged }: { code: string; ctx: Ctx
     act({ action: "entry", description, flow, lines }, `${code}에 수정 분개를 기록할까요?\n\n${description}\n${summary}`, () => { setRows(blank()); setDescription(""); setFlow("none"); });
   }
 
-  function reverse(entry: Entry) {
-    const reason = window.prompt(`분개 #${entry.id} (${entry.description})을 정정합니다. 원래 분개의 반대 분개가 이번 달에 기록됩니다.\n\n정정 사유:`);
+  async function reverse(entry: Entry) {
+    const reason = await promptDialog({ title: "분개 정정", message: `분개 #${entry.id} (${entry.description})을 정정합니다. 원래 분개의 반대 분개가 이번 달에 기록됩니다.`, label: "정정 사유" });
     if (!reason?.trim()) return;
     act({ action: "reverse", entryId: entry.id, description: reason.trim() }, `분개 #${entry.id}을 정정할까요?`);
   }
@@ -94,9 +96,9 @@ export function CompanyLedger({ code, ctx, onChanged }: { code: string; ctx: Ctx
       <label className="ledger-period">기간<input type="month" value={period} max={thisMonth()} onChange={(event) => event.target.value && setPeriod(event.target.value)} /></label>
     </div>
     <p className="hint">재무제표는 원장에서 계산됩니다. 숫자를 직접 덮어쓰지 않고 차변·대변이 맞는 수정 분개로 고치며, 잘못 넣은 관리자 분개는 반대 분개로 정정합니다. 결산한 달은 바꿀 수 없으니 다음 달에 정정하세요. 금액 단위 {journal?.currency ?? "—"}.</p>
-    <Tabs label="재무 수정" value={tab} onChange={setTab} options={[["entry", "수정 분개"], ["history", "분개 내역", journal?.entries.length], ["operating", "월간 영업 설정"], ["close", "결산", journal?.closed.length]]} />
+    <Tabs group="ledger" label="재무 수정" value={tab} onChange={setTab} options={[["entry", "수정 분개"], ["history", "분개 내역", journal?.entries.length], ["operating", "월간 영업 설정"], ["close", "결산", journal?.closed.length]]} />
 
-    {tab === "entry" && <form className="ledger-form" onSubmit={post}>
+    {tab === "entry" && <form className="ledger-form" {...tabPanel("ledger", tab)} onSubmit={post}>
       <div className="organization-form-row"><p className="hint">추정치는 실제 공시가 아닌 업종 기반 가정이며, 현금 잔액을 변경하지 않습니다.</p>
         <button type="button" className="soft" disabled={busy || period !== thisMonth()} onClick={() => act({ action: "estimate" }, `${code} ${period}의 업종 기반 재무 추정치를 채울까요? 기존 계정은 보존되고 추정 분개 하나가 추가됩니다.`)}>이번 달 추정 채우기</button></div>
       <div className="form-grid">
@@ -114,7 +116,7 @@ export function CompanyLedger({ code, ctx, onChanged }: { code: string; ctx: Ctx
       <button className="btn primary" disabled={busy || !balanced || !description.trim()}>분개 기록</button>
     </form>}
 
-    {tab === "history" && <div className="scroll-x tall"><table><thead><tr><th>#</th><th>시각</th><th>설명</th><th>분개</th><th>현금흐름</th><th /></tr></thead><tbody>
+    {tab === "history" && <div className="scroll-x tall" {...tabPanel("ledger", tab)}><table><thead><tr><th>#</th><th>시각</th><th>설명</th><th>분개</th><th>현금흐름</th><th /></tr></thead><tbody>
       {(journal?.entries ?? []).map((entry) => <tr key={entry.id} className={entry.reversedBy ? "muted" : undefined}>
         <td className="mono">#{entry.id}</td><td>{date(entry.epoch)}</td>
         <td>{entry.description}{entry.estimated ? <span className="tag warn inline">추정</span> : !entry.manual && <span className="tag inline">자동</span>}{entry.reversalOf && <span className="tag inline">#{entry.reversalOf} 정정</span>}{entry.reversedBy && <span className="tag warn inline">#{entry.reversedBy}로 정정됨</span>}</td>
@@ -124,14 +126,14 @@ export function CompanyLedger({ code, ctx, onChanged }: { code: string; ctx: Ctx
       </tr>)}
     </tbody></table>{journal && !journal.entries.length && <p className="empty">{journal.period}에 기록된 분개가 없습니다.</p>}</div>}
 
-    {tab === "operating" && <form className="form-grid" onSubmit={saveProfile}>
+    {tab === "operating" && <form className="form-grid" {...tabPanel("ledger", tab)} onSubmit={saveProfile}>
       <p className="hint span-wide">매달 외상매출·비용을 자동으로 인식합니다. 현금 수금·지급은 수정 분개로 처리합니다.{journal?.profile ? ` 현재 ${journal.profile.enabled ? "활성" : "중지"} · ${journal.profile.start_period}부터 적용.` : " 아직 설정이 없습니다."}</p>
       <Field label="자동 영업 인식"><select value={enabled ? "on" : "off"} onChange={(event) => setEnabled(event.target.value === "on")}><option value="on">켜기</option><option value="off">끄기</option></select></Field>
       {PROFILE_FIELDS.map(([key, label]) => <Field key={key} label={label}><input className="mono" inputMode="decimal" value={profile[key] ?? ""} onChange={(event) => setProfile({ ...profile, [key]: event.target.value.replace(/[^\d.]/g, "") })} /></Field>)}
       <button className="btn primary" disabled={busy}>영업 설정 저장</button>
     </form>}
 
-    {tab === "close" && <form className="form-grid" onSubmit={(event) => { event.preventDefault(); act({ action: "close", period: closing }, `${code}의 ${closing}을 결산할까요? 결산한 달은 더 이상 수정할 수 없습니다.`); }}>
+    {tab === "close" && <form className="form-grid" {...tabPanel("ledger", tab)} onSubmit={(event) => { event.preventDefault(); act({ action: "close", period: closing }, `${code}의 ${closing}을 결산할까요? 결산한 달은 더 이상 수정할 수 없습니다.`); }}>
       <Field label="마감할 월" hint="끝난 달만 결산할 수 있습니다"><input type="month" required value={closing} max={lastMonth()} onChange={(event) => setClosing(event.target.value)} /></Field>
       <button className="btn primary" disabled={busy}>결산</button>
       <p className="hint span-wide">결산한 달: {journal?.closed.length ? journal.closed.join(", ") : "없음"}</p>

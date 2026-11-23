@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { DialogHost } from "../../shared/dialogs";
 import { RootErrorBoundary } from "./RootErrorBoundary";
 import "./style.css";
 import "../../shared/typography.css";
@@ -11,6 +12,6 @@ import { fitTiles } from "./fitTiles";
 fitTiles();
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <RootErrorBoundary><App /></RootErrorBoundary>
+    <RootErrorBoundary><App /><DialogHost /></RootErrorBoundary>
   </React.StrictMode>,
 );

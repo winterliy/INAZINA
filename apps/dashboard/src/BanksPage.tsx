@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../shared/api";
 import { BankJournalPage } from "./BankJournalPage";
-import { Card, Field, number, plain, show, type Ctx } from "./common";
+import { Card, Field, number, plain, show, type Ctx, confirmAction } from "./common";
 
 type Bank = { id: string; issuer: string; nationality: string; status: string; equityCapital: number; retainedEarnings: number; products: number;
   depositAccounts: number; deposits: Money; loans: Money; loanBalance: number; account: string | null; cash: Money | null };
@@ -39,19 +39,19 @@ export function BanksPage({ ctx }: { ctx: Ctx }) {
     if (open) loadDetail(open).catch((cause) => say(cause instanceof Error ? cause.message : "은행 정보를 불러오지 못했습니다.", true));
   }, [open, loadDetail]);
 
-  function create(event: FormEvent<HTMLFormElement>) {
+  async function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!window.confirm(`${draft.nationality} 국적의 ${draft.issuer} 은행을 만들까요?`)) return;
+    if (!await confirmAction(`${draft.nationality} 국적의 ${draft.issuer} 은행을 만들까요?`)) return;
     void run(() => api<Result>("/api/admin/banks", { method: "POST", body: JSON.stringify(draft) }), "은행을 만들지 못했습니다.",
       async (result) => { say(plain(result.message), !result.success); setDraft({ id: "", issuer: "", nationality: "", equityCapital: "" }); await load(); });
   }
 
-  function save(event: FormEvent<HTMLFormElement>) {
+  async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!detail) return;
     const changes = Object.fromEntries(Object.entries(settings).filter(([key, value]) => value !== String(detail.settings[key])));
     if (!Object.keys(changes).length) { say("변경된 설정이 없습니다.", true); return; }
-    if (!window.confirm(`${detail.issuer} (${detail.id}) 설정을 바꿀까요?\n\n${Object.entries(changes).map(([key, value]) => `${key}: ${detail.settings[key]} → ${value}`).join("\n")}`)) return;
+    if (!await confirmAction(`${detail.issuer} (${detail.id}) 설정을 바꿀까요?\n\n${Object.entries(changes).map(([key, value]) => `${key}: ${detail.settings[key]} → ${value}`).join("\n")}`)) return;
     void run(() => api<Result>(`/api/admin/banks/${encodeURIComponent(detail.id)}`, { method: "POST", body: JSON.stringify(changes) }), "은행 설정을 저장하지 못했습니다.",
       async (result) => { say(plain(result.message), !result.success); await Promise.all([loadDetail(detail.id), load()]); });
   }

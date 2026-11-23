@@ -1,8 +1,9 @@
+import { tabPanel } from "./tabKeys";
 import type { Money } from "../../shared/money";
 import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../shared/api";
-import { Card, Field, Tabs, changed, date, number, plain, show, text, type Ctx } from "./common";
+import { Card, Field, Tabs, changed, date, number, plain, show, text, type Ctx, confirmAction } from "./common";
 import { Donut, Gauge, topSlices } from "./Donut";
 
 type Citizen = { userId: string; nickname: string; nationality: string; cash: Money; creditScore: number; status: string; role: string; accountType: "discord" | "country" | "company"; companyCode: string | null };
@@ -37,9 +38,11 @@ export function UsersPage({ ctx, currentUserId }: { ctx: Ctx; currentUserId: str
   const loadCountries = useCallback(async () => setCountries((await api<{ countries: Country[] }>("/api/admin/countries")).countries), []);
   useEffect(() => { loadCountries().catch((cause) => ctx.say(cause instanceof Error ? cause.message : "국가를 불러오지 못했습니다.", true)); }, [loadCountries]);
   return <>
-    <Tabs label="사용자 종류" value={tab} onChange={setTab} options={[["users", "사용자"], ["companies", "법인"], ["countries", "국가"]]} />
-    {tab === "countries" ? <CountryTab ctx={ctx} countries={countries} reload={loadCountries} />
-      : <UserTab key={tab} ctx={ctx} countries={countries} currentUserId={currentUserId} companies={tab === "companies"} />}
+    <Tabs group="users" label="사용자 종류" value={tab} onChange={setTab} options={[["users", "사용자"], ["companies", "법인"], ["countries", "국가"]]} />
+    <div {...tabPanel("users", tab)}>
+      {tab === "countries" ? <CountryTab ctx={ctx} countries={countries} reload={loadCountries} />
+        : <UserTab key={tab} ctx={ctx} countries={countries} currentUserId={currentUserId} companies={tab === "companies"} />}
+    </div>
   </>;
 }
 
@@ -70,7 +73,7 @@ function UserTab({ ctx, countries, currentUserId, companies }: { ctx: Ctx; count
   }
   const select = (userId: string) => run(() => open(userId), "사용자 정보를 불러오지 못했습니다.");
 
-  function saveUser(event: FormEvent<HTMLFormElement>) {
+  async function saveUser(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!detail) return;
     const changes = changed(form, detail.user);
@@ -80,18 +83,18 @@ function UserTab({ ctx, countries, currentUserId, companies }: { ctx: Ctx; count
       changes.credit_score_reason = creditReason.trim();
     }
     const id = String(detail.user.user_id);
-    if (!window.confirm(`${detail.user.nickname} (${id}) 설정을 저장할까요?\n\n${Object.entries(changes).map(([key, value]) => `${key}: ${show(detail.user[key])} → ${value}`).join("\n")}`)) return;
+    if (!await confirmAction(`${detail.user.nickname} (${id}) 설정을 저장할까요?\n\n${Object.entries(changes).map(([key, value]) => `${key}: ${show(detail.user[key])} → ${value}`).join("\n")}`)) return;
     void run(() => api<Result>(`/api/admin/user/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ changes }) }),
       "사용자 설정을 저장하지 못했습니다.", async (result) => { say(plain(result.message)); await open(id); await loadList(); });
   }
 
-  function changeNationality() {
+  async function changeNationality() {
     if (!detail) return;
     const id = String(detail.user.user_id);
     const from = countries.find((country) => country.nationality === detail.user.nationality);
     const to = countries.find((country) => country.nationality === nationality);
     if (!to || nationality === detail.user.nationality) return;
-    if (!window.confirm(`${detail.user.nickname}의 국적을 ${detail.user.nationality} → ${nationality}(으)로 바꿀까요?\n\n` +
+    if (!await confirmAction(`${detail.user.nickname}의 국적을 ${detail.user.nationality} → ${nationality}(으)로 바꿀까요?\n\n` +
       "· 미체결 주문을 모두 취소합니다\n· 보유 종목·국채를 현재가로 이전 국가 국고에 넘기고 현금화합니다\n· 모든 통장(입출금·외환)을 해지합니다\n· 대출을 현금으로 상환합니다 (부족하면 중단)\n" +
       `· 남은 현금을 ${from?.currency_code ?? "이전 통화"} → ${to.currency_code}로 환전해 지갑에 넣습니다 (환전 수수료는 이전 국가 국고)\n\n` +
       "선물·작성 옵션·ELS가 남아 있으면 거부됩니다. 되돌릴 수 없습니다.")) return;
@@ -99,12 +102,12 @@ function UserTab({ ctx, countries, currentUserId, companies }: { ctx: Ctx; count
       "국적을 바꾸지 못했습니다.", async (result) => { say(plain(result.message)); await open(id); await loadList(); });
   }
 
-  function web(action: "password" | "hts_id" | "logout" | "remove") {
+  async function web(action: "password" | "hts_id" | "logout" | "remove") {
     if (!detail) return;
     const id = String(detail.user.user_id);
     const labels = { password: "웹 비밀번호를 설정", hts_id: htsId ? `나루 ID를 ${htsId}(으)로 변경` : "나루 ID를 삭제", logout: "모든 웹 로그인을 만료", remove: "웹 로그인을 삭제" };
     if (action === "password" && (password.length < 12 || !/[A-Za-z]/.test(password) || !/\d/.test(password))) { say("비밀번호는 영문과 숫자를 포함해 12~128자로 입력해주세요.", true); return; }
-    if (!window.confirm(`${detail.user.nickname} (${id})의 ${labels[action]}할까요?`)) return;
+    if (!await confirmAction(`${detail.user.nickname} (${id})의 ${labels[action]}할까요?`)) return;
     void run(() => api<Result>(`/api/admin/user/${encodeURIComponent(id)}/web`, { method: "POST", body: JSON.stringify({ action, password, htsId }) }),
       "웹 로그인을 변경하지 못했습니다.", async (result) => { say(plain(result.message)); setPassword(""); await open(id); });
   }
@@ -218,8 +221,8 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
     if (firstCurve) setMarketRate({ benchmarkKey: firstCurve.benchmark_key, tenorDays: String(firstCurve.tenor_days), annualRate: String(firstCurve.annual_rate) });
   }, [country]);
 
-  function act(nationality: string, body: Record<string, unknown>, question: string) {
-    if (!window.confirm(question)) return;
+  async function act(nationality: string, body: Record<string, unknown>, question: string) {
+    if (!await confirmAction(question)) return;
     void run(() => api<Result>(`/api/admin/countries/${encodeURIComponent(nationality)}`, { method: "POST", body: JSON.stringify(body) }),
       "국가 설정을 저장하지 못했습니다.", async (result) => { say(plain(result.message), !result.success); await reload(); });
   }
@@ -263,11 +266,11 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
   const pressureFor = (key: string) => country?.marketRatePressure.find((item) => item.benchmark_key === key)?.adjustment ?? 0;
   const curveName = (key: string) => ({ funding: "조달금리", bank_bond: "은행채", treasury: "국채" }[key] ?? key);
 
-  function countryLogin(action: "create" | "password" | "hts_id" | "logout" | "remove") {
+  async function countryLogin(action: "create" | "password" | "hts_id" | "logout" | "remove") {
     if (!country) return;
     if ((action === "create" || action === "password") && (password.length < 12 || !/[A-Za-z]/.test(password) || !/\d/.test(password))) { say("비밀번호는 영문과 숫자를 포함해 12~128자로 입력해주세요.", true); return; }
     const labels = { create: "국가 계정을 만들", password: "국가 계정 비밀번호를 바꿀", hts_id: "나루 ID를 저장할", logout: "모든 로그인을 만료할", remove: "국가 계정 웹 로그인을 삭제할" };
-    if (!window.confirm(`${country.nationality} ${labels[action]}까요?`)) return;
+    if (!await confirmAction(`${country.nationality} ${labels[action]}까요?`)) return;
     const request = action === "create"
       ? api<Result>("/api/admin/users/country-account", { method: "POST", body: JSON.stringify({ countryId: country.nationality, password }) })
       : api<Result>(`/api/admin/user/${encodeURIComponent(country.nationality)}/web`, { method: "POST", body: JSON.stringify({ action, password, htsId }) });

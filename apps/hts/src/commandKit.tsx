@@ -1,4 +1,5 @@
 import { formatMoney, minorMoney, type Money } from "../../shared/money";
+import { confirmDialog } from "../../shared/dialogs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../../shared/api";
@@ -163,7 +164,7 @@ export function useCommands({ instruments, portfolio, orders, homeCurrency, onDo
   /** Runs a command; resolves to its result (null when the confirmation was declined). */
   async function execute(target: Command, input: Record<string, string>, ask = true): Promise<Result | null> {
     const summary = target.fields.filter((field) => input[field.key] && field.kind !== "password").map((field) => `${field.label}: ${input[field.key]}`).join("\n");
-    if (ask && !READ_ONLY.has(target.name) && !window.confirm(`${target.description}\n${summary ? `\n${summary}\n` : ""}\n진행할까요?`)) return null;
+    if (ask && !READ_ONLY.has(target.name) && !await confirmDialog({ title: "명령 실행", message: `${target.description}\n${summary ? `\n${summary}\n` : ""}\n진행할까요?` })) return null;
     const readOnly = READ_ONLY.has(target.name);
     if (!readOnly) { setPending((count) => count + 1); setError(""); }
     let entry: Result;

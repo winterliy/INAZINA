@@ -1,7 +1,7 @@
 import type { Money } from "../../shared/money";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
-import { date, number, type Ctx } from "./common";
+import { date, number, type Ctx, confirmAction } from "./common";
 
 type Preview = { holdings: number; bonds: number; accounts: number; loans: Money; netWorth: number; currency: string };
 type Request = {
@@ -20,9 +20,9 @@ export function NaturalizationPage({ ctx, onChange }: { ctx: Ctx; onChange: () =
   const load = useCallback(async () => setRequests((await api<{ requests: Request[] }>("/api/admin/naturalization")).requests), []);
   useEffect(() => { load().catch((cause) => say(cause instanceof Error ? cause.message : "귀화 신청을 불러오지 못했습니다.", true)); }, [load]);
 
-  function decide(item: Request, approve: boolean) {
+  async function decide(item: Request, approve: boolean) {
     const who = item.nickname ?? item.user_id;
-    if (!window.confirm(approve
+    if (!await confirmAction(approve
       ? `${who}의 ${item.to_nationality} 귀화를 승인할까요?\n\n보유 자산을 현재가로 정리하고 국적을 옮깁니다. 되돌릴 수 없습니다.`
       : `${who}의 귀화 신청을 거절할까요?`)) return;
     void run(() => api<{ message: string }>(`/api/admin/naturalization/${item.request_id}`, { method: "POST", body: JSON.stringify({ action: approve ? "approve" : "reject", note: notes[item.request_id] ?? "" }) }),

@@ -2,7 +2,7 @@ import { formatQuantity, moneyAdd, moneyCompare, minorMoney, moneyMultiply, mone
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
 import { Donut, ShareholderPie, VotingRightsPie, topSlices, type Shareholders } from "./Donut";
-import { Card, Field, number, plain, type Ctx, BigValue } from "./common";
+import { Card, Field, number, plain, type Ctx, BigValue, confirmAction } from "./common";
 import { CompanyLedger } from "./CompanyLedger";
 
 type Holding = { asset_code: string; quantity: number };
@@ -91,14 +91,14 @@ function ListingControl({ ctx, company, onDone }: { ctx: Ctx; company: Company; 
   }
   const primaryChanged = target !== current || (venue?.market_type === "exchange" && ratio !== currentPercent);
   /** 3-1: 이중상장 없이 대상 거래소에만 상장하고 마법사를 닫는다. */
-  function finishPrimary() {
+  async function finishPrimary() {
     const question = `${company.name} (${company.company_code})을(를) ${venueName(venue)}에 상장할까요?${venue?.market_type === "exchange" ? `\n발행 주식 ${number(company.total_shares)}주 중 ${ratio}% (${number(listed)}주)를 상장합니다.` : "\n주주의 보유 지분은 유지됩니다."}`;
-    if (!window.confirm(question)) return;
+    if (!await confirmAction(question)) return;
     void run(primaryRequest, "상장하지 못했습니다.", (result) => { say(plain(result.message), !result.success); if (result.success) { setStep(null); onDone(); } });
   }
   /** 3-2: 대상 거래소 1차 상장 뒤 2차상장 거래소에 지정 주식 수를 올린다. */
-  function finishDual() {
-    if (!window.confirm(`${company.name}을(를) ${target}(1차, ${number(listed)}주)와 ${second}(2차, ${number(secondCount)}주)에 이중상장할까요?`)) return;
+  async function finishDual() {
+    if (!await confirmAction(`${company.name}을(를) ${target}(1차, ${number(listed)}주)와 ${second}(2차, ${number(secondCount)}주)에 이중상장할까요?`)) return;
     void run(async () => {
       if (primaryChanged) {
         const first = await primaryRequest();
@@ -107,9 +107,9 @@ function ListingControl({ ctx, company, onDone }: { ctx: Ctx; company: Company; 
       return api<{ message: string; success: boolean }>(`/api/admin/companies/${encodeURIComponent(company.company_code)}/secondary-listings`, { method: "POST", body: JSON.stringify({ action: "add", exchangeId: second, listedShares: secondCount, currency: currencyChoice, conversionFeeBps: Number(feeBps) }) });
     }, "이중상장하지 못했습니다.", (result) => { say(plain(result.message), !result.success); if (result.success) { setStep(null); onDone(); } });
   }
-  function secondaryAction(exchangeId: string, action: "update" | "remove", shares?: number) {
+  async function secondaryAction(exchangeId: string, action: "update" | "remove", shares?: number) {
     const question = action === "remove" ? `${exchangeId} 2차상장을 해제할까요? 주주 보유 지분은 유지됩니다.` : `${exchangeId} 2차상장 주식 수를 ${number(shares ?? 0)}주로 바꿀까요?`;
-    if (!window.confirm(question)) return;
+    if (!await confirmAction(question)) return;
     void run(() => api<{ message: string; success: boolean }>(`/api/admin/companies/${encodeURIComponent(company.company_code)}/secondary-listings`, { method: "POST", body: JSON.stringify({ action, exchangeId, listedShares: shares }) }),
       "2차상장을 바꾸지 못했습니다.", (result) => { say(plain(result.message), !result.success); if (result.success) { setEdits({}); onDone(); } });
   }
@@ -158,12 +158,12 @@ function ListingControl({ ctx, company, onDone }: { ctx: Ctx; company: Company; 
       })}</tbody></table>
     </div>}
     {current && exchanges.find((item) => item.exchange_id === current)?.market_type === "exchange" && !step && <button className="soft" type="button" disabled={busy} onClick={() => { setStep("secondary"); setTarget(current); setPercent(String(currentPercent)); const left = company.total_shares - (company.listed_shares ?? company.total_shares) - secondaryTotal; setSecond(secondVenues[0]?.exchange_id ?? ""); setSecondShares(String(Math.max(left, 0))); }}>2차상장 추가</button>}
-    <button className="soft" type="button" disabled={busy || company.trading_status === "suspended"} onClick={() => {
-      if (!window.confirm(`${company.name}의 거래를 중지할까요? 미체결 주문은 취소되며 법인과 주주 지분은 유지됩니다.`)) return;
+    <button className="soft" type="button" disabled={busy || company.trading_status === "suspended"} onClick={async () => {
+      if (!await confirmAction(`${company.name}의 거래를 중지할까요? 미체결 주문은 취소되며 법인과 주주 지분은 유지됩니다.`)) return;
       void run(() => api<{ message: string; success: boolean }>(`/api/admin/companies/${encodeURIComponent(company.company_code)}/trading-status`, { method: "POST", body: JSON.stringify({ tradingStatus: "suspended" }) }), "거래를 중지하지 못했습니다.", (result) => { say(plain(result.message), !result.success); if (result.success) onDone(); });
     }}>거래중지</button>
-    <button className="soft" type="button" disabled={busy || company.trading_status !== "suspended"} onClick={() => {
-      if (!window.confirm(`${company.name}의 거래를 재개할까요?`)) return;
+    <button className="soft" type="button" disabled={busy || company.trading_status !== "suspended"} onClick={async () => {
+      if (!await confirmAction(`${company.name}의 거래를 재개할까요?`)) return;
       void run(() => api<{ message: string; success: boolean }>(`/api/admin/companies/${encodeURIComponent(company.company_code)}/trading-status`, { method: "POST", body: JSON.stringify({ tradingStatus: "active" }) }), "거래를 재개하지 못했습니다.", (result) => { say(plain(result.message), !result.success); if (result.success) onDone(); });
     }}>거래재개</button>
   </div>;
@@ -208,9 +208,9 @@ function ShareSplitControl({ ctx, company, onDone }: { ctx: Ctx; company: Compan
   return <Card title="정식 액면분할 · 주식분할 · 액면병합 · 일반비율분할" caption="주총은 의결 결과를 남기고, 관리자가 별도로 집행합니다. 의결 등록만으로 주식 수가 바뀌지는 않습니다.">
     <p className="hint">자본금 {number(company.capital)} {currency} · 현재 액면가 {company.par_value_minor_units === null ? "미등록" : `${number(minorMoney(company.par_value_minor_units, Math.log10(scale)))} ${currency}`} · 미체결·예약 주문과 연결된 파생상품은 먼저 정리해주세요.</p>
     {error && <p role="alert">{error}</p>}
-    <form className="form-grid" onSubmit={(event) => {
+    <form className="form-grid" onSubmit={async (event) => {
       event.preventDefault();
-      if (!valid || !window.confirm(`${company.name} (${company.company_code}) ${labels[mode]} 관리자 집행\n${oldUnits}주 → ${newUnits}주\n주가 ${number(company.share_price)} → ${number(price)} ${currency}\n발행주식 ${number(company.total_shares)} → ${number(shares)}주\n자본금은 유지합니다.${mode === "par_split" ? `\n가결 의결 #${resolutionId}를 집행하고 액면가도 조정합니다.` : ""}`)) return;
+      if (!valid || !await confirmAction(`${company.name} (${company.company_code}) ${labels[mode]} 관리자 집행\n${oldUnits}주 → ${newUnits}주\n주가 ${number(company.share_price)} → ${number(price)} ${currency}\n발행주식 ${number(company.total_shares)} → ${number(shares)}주\n자본금은 유지합니다.${mode === "par_split" ? `\n가결 의결 #${resolutionId}를 집행하고 액면가도 조정합니다.` : ""}`)) return;
       void ctx.run(() => api<Result>(path, { method: "POST", body: JSON.stringify({ action: "execute", mode, ratio: String(value), ...(ordinary ? { oldShares: oldRatio, newShares: newRatio } : {}), ...(mode === "par_split" ? { resolutionId } : {}) }) }),
         "주식 수를 조정하지 못했습니다.", async (result) => { ctx.say(plain(result.message), !result.success); if (result.success) await onDone(); });
     }}>
@@ -289,16 +289,16 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
   const company = companies.find((item) => item.company_code === selected);
   const visible = companies.filter((item) => !query.trim() || `${item.company_code} ${item.name}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
 
-  function submit() {
+  async function submit() {
     if (!company || !spec) return;
-    if (!window.confirm(`${company.name}(${company.company_code}) 법인 계정으로 ${command}을(를) 실행할까요?`)) return;
+    if (!await confirmAction(`${company.name}(${company.company_code}) 법인 계정으로 ${command}을(를) 실행할까요?`)) return;
     void run(() => api<Result>(`/api/admin/companies/${encodeURIComponent(company.company_code)}`, { method: "POST", body: JSON.stringify({ command, values }) }),
       "법인 명령을 실행하지 못했습니다.", async (result) => { say(plain(result.message), !result.success); setValues({}); await load(); await open(company.company_code); });
   }
 
-  function saveLogin() {
+  async function saveLogin() {
     if (!company) return;
-    if (!window.confirm(`${company.name} 법인 계정의 웹·나루 비밀번호를 설정할까요?\n로그인 ID는 ${company.company_code}입니다.`)) return;
+    if (!await confirmAction(`${company.name} 법인 계정의 웹·나루 비밀번호를 설정할까요?\n로그인 ID는 ${company.company_code}입니다.`)) return;
     void run(() => api<{ account: { message: string } }>("/api/admin/companies/login", { method: "POST", body: JSON.stringify({ companyId: company.company_code, password }) }),
       "법인 로그인을 설정하지 못했습니다.", async (result) => { say(plain(result.account.message)); setPassword(""); await open(company.company_code); });
   }

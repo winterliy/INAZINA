@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
-import { Card, date, errorText, number, type Ctx } from "./common";
+import { Card, date, errorText, number, type Ctx, confirmAction } from "./common";
 import "./liquidity.css";
 
 type Profile = "low" | "medium" | "high";
@@ -56,8 +56,8 @@ export function LiquidityPage({ ctx }: { ctx: Ctx }) {
     return () => window.clearInterval(timer);
   }, [open, loadDetail]);
 
-  const act = (body: Record<string, unknown>, fallback: string, confirmText?: string) => {
-    if (confirmText && !window.confirm(confirmText)) return;
+  const act = async (body: Record<string, unknown>, fallback: string, confirmText?: string) => {
+    if (confirmText && !await confirmAction(confirmText)) return;
     void run(() => api<{ message: string }>("/api/admin/liquidity", { method: "POST", body: JSON.stringify(body) }), fallback,
       (result) => { say(result.message); void load(); if (open) void loadDetail(open).catch(() => undefined); });
   };

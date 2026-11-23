@@ -2,7 +2,7 @@ import { validMoney, moneyCompare, minorMoney, formatMoney } from "../../shared/
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../shared/api";
-import { Card, Field, date, plain, type Ctx } from "./common";
+import { Card, Field, date, plain, type Ctx, confirmAction } from "./common";
 
 type EclScenario = { nationality: string; scenario_key: "optimistic" | "base" | "downside"; probability: number; pd_multiplier: number; lgd_multiplier: number; updated_epoch: number };
 type EclAssessment = { assessment_id: number; loan_id: number; as_of_day: string; stage: number; risk_grade: string | null; nonaccrual_since_epoch: number | null; pd_12m: number; lifetime_pd: number; lgd: number; ead: number; expected_loss: number; discount_factor: number; effective_interest_rate: number; expected_loss_time_years: number; macro_pd_multiplier: number; ead_text: string; expected_loss_text: string; decimal_places: number; quote_currency: string; scenario: string; calculated_epoch: number; nationality: string };
@@ -68,7 +68,7 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
 
   useEffect(() => { load().catch((cause) => say(cause instanceof Error ? cause.message : "준법 정보를 불러오지 못했습니다.", true)); }, [load, say]);
 
-  function saveScenarios(event: FormEvent<HTMLFormElement>) {
+  async function saveScenarios(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (scenarioDraftCountry !== nationality) { say("선택한 국가의 ECL 가정을 불러오는 중입니다.", true); return; }
     const scenarios = (["optimistic", "base", "downside"] as const).map((key) => ({ key,
@@ -77,13 +77,13 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
     if (scenarios.some((item) => !Number.isFinite(item.probability) || item.probability < 0 || item.probability > 1 || !Number.isFinite(item.pdMultiplier) || item.pdMultiplier < 0 || item.pdMultiplier > 20 || !Number.isFinite(item.lgdMultiplier) || item.lgdMultiplier < 0 || item.lgdMultiplier > 5) || Math.abs(scenarios.reduce((sum, item) => sum + item.probability, 0) - 1) > 1e-6) {
       say("확률은 각각 0~1 범위이고 세 시나리오 합은 1이어야 합니다. PD 배수 0~20, LGD 배수 0~5 범위도 확인해주세요.", true); return;
     }
-    if (!window.confirm(`${nationality}의 ECL 낙관·기준·하방 가정을 저장할까요? 이후 평가에 적용됩니다.`)) return;
+    if (!await confirmAction(`${nationality}의 ECL 낙관·기준·하방 가정을 저장할까요? 이후 평가에 적용됩니다.`)) return;
     void run(() => api<Result>("/api/admin/compliance", { method: "POST", body: JSON.stringify({ action: "credit_risk_scenarios", nationality,
       scenarios: scenarios.map(({ key, probability, pdMultiplier, lgdMultiplier }) => ({ key, probability, pdMultiplier, lgdMultiplier })) }) }),
       "ECL 시나리오를 저장하지 못했습니다.", async (result) => { say(plain(JSON.stringify(result.result)), !result.success); await load(); });
   }
 
-  function saveCreditSupport(event: FormEvent<HTMLFormElement>) {
+  async function saveCreditSupport(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const isGuarantor = creditSupport.supportType === "guarantor";
     const payload = { action: "loan_credit_support", loanId: Number(creditSupport.loanId), partyUserId: creditSupport.partyUserId.trim(), supportType: creditSupport.supportType,
@@ -95,7 +95,7 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
       (isGuarantor && (!validMoney(payload.guaranteeLimit, true)))) {
       say("대출·당사자와 신용지원 조건을 확인해주세요.", true); return;
     }
-    if (!window.confirm(`대출 #${payload.loanId}의 ${payload.supportType} 신용지원을 등록할까요? 평가에 반영되며 변경 이력을 남깁니다.`)) return;
+    if (!await confirmAction(`대출 #${payload.loanId}의 ${payload.supportType} 신용지원을 등록할까요? 평가에 반영되며 변경 이력을 남깁니다.`)) return;
     const dti = creditSupport.underwritingDti === "" ? undefined : Number(creditSupport.underwritingDti);
     const dsr = creditSupport.underwritingDsr === "" ? undefined : Number(creditSupport.underwritingDsr);
     if ([dti, dsr].some((value) => value !== undefined && (!Number.isFinite(value) || value < 0 || value > 200))) {
@@ -105,7 +105,7 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
       "신용지원을 저장하지 못했습니다.", async (result) => { say(plain(JSON.stringify(result.result)), !result.success); await load(); });
   }
 
-  function saveCreditPolicy(event: FormEvent<HTMLFormElement>) {
+  async function saveCreditPolicy(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const gradeKeys = ["a", "b", "c", "d", "e", "f"] as const;
     const gradeThresholds = Object.fromEntries(gradeKeys.map((key) => [key, Number(policyDraft[key])])) as Record<typeof gradeKeys[number], number>;
@@ -116,12 +116,12 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
       limits.some((value, index) => index > 0 && value <= limits[index - 1])) {
       say("관할·PD 배수와 A~F 등급기준(0~1, 오름차순)을 확인해주세요.", true); return;
     }
-    if (!window.confirm(`${nationality} · ${policyDraft.productCode === "*" ? "모든 상품" : policyDraft.productCode}의 PD·등급기준을 저장할까요? 이후 평가부터 적용됩니다.`)) return;
+    if (!await confirmAction(`${nationality} · ${policyDraft.productCode === "*" ? "모든 상품" : policyDraft.productCode}의 PD·등급기준을 저장할까요? 이후 평가부터 적용됩니다.`)) return;
     void run(() => api<Result>("/api/admin/compliance", { method: "POST", body: JSON.stringify({ action: "credit_risk_policy", nationality, productCode: policyDraft.productCode,
       pdMultiplier: multiplier, gradeThresholds }) }), "신용위험 정책을 저장하지 못했습니다.", async (result) => { say(plain(JSON.stringify(result.result)), !result.success); await load(); });
   }
 
-  function saveFutureCommitment(event: FormEvent<HTMLFormElement>) {
+  async function saveFutureCommitment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const expiresEpoch = commitmentDraft.expires ? Math.floor(new Date(commitmentDraft.expires).getTime()/1000) : undefined;
     const loanId = Number(commitmentDraft.loanId), limit = commitmentDraft.limit, ccf = Number(commitmentDraft.conversionBps);
@@ -129,24 +129,24 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
       !Number.isSafeInteger(ccf) || ccf < 0 || ccf > 10000 || (expiresEpoch !== undefined && !Number.isFinite(expiresEpoch))) {
       say("약정 대출 ID·한도·신용환산율을 확인해주세요.", true); return;
     }
-    if (!window.confirm(`대출 #${loanId}의 미사용 약정한도 ${limit} 및 CCF ${ccf}bp를 EAD 가정으로 저장할까요?`)) return;
+    if (!await confirmAction(`대출 #${loanId}의 미사용 약정한도 ${limit} 및 CCF ${ccf}bp를 EAD 가정으로 저장할까요?`)) return;
     void run(() => api<Result>("/api/admin/compliance", { method: "POST", body: JSON.stringify({ action: "loan_future_commitment", loanId, committedLimit: limit,
       creditConversionFactorBps: ccf, active: true, ...(expiresEpoch ? { expiresEpoch } : {}) }) }), "미사용 약정을 저장하지 못했습니다.",
     async (result) => { say(plain(JSON.stringify(result.result)), !result.success); await load(); });
   }
 
-  function saveCollateralRecovery(event: FormEvent<HTMLFormElement>) {
+  async function saveCollateralRecovery(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const values = [Number(collateralDraft.collateralId), Number(collateralDraft.seniorityRank), Number(collateralDraft.recoveryDays), Number(collateralDraft.recoveryCostBps)];
     if (!values.every(Number.isSafeInteger) || values[0] <= 0 || values[1] < 1 || values[1] > 100 || values[2] < 0 || values[2] > 3650 || values[3] < 0 || values[3] > 10000) {
       say("담보 식별자와 회수 순위·기간·비용을 확인해주세요.", true); return;
     }
-    if (!window.confirm(`담보 #${values[0]}의 회수순위·기간·비용을 갱신할까요? 이후 LGD 평가부터 적용되며 변경 이력을 남깁니다.`)) return;
+    if (!await confirmAction(`담보 #${values[0]}의 회수순위·기간·비용을 갱신할까요? 이후 LGD 평가부터 적용되며 변경 이력을 남깁니다.`)) return;
     void run(() => api<Result>("/api/admin/compliance", { method: "POST", body: JSON.stringify({ action: "loan_collateral_recovery", collateralId: values[0], seniorityRank: values[1], recoveryDays: values[2], recoveryCostBps: values[3] }) }),
       "담보 회수 가정을 저장하지 못했습니다.", async (result) => { say(plain(JSON.stringify(result.result)), !result.success); await load(); });
   }
 
-  function recordChargeoff(event: FormEvent<HTMLFormElement>) {
+  async function recordChargeoff(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const loanId = Number(chargeoffDraft.loanId), amount = chargeoffDraft.amount;
     if (!Number.isSafeInteger(loanId) || loanId <= 0 || !chargeoffDraft.eventKey.trim() ||
@@ -155,7 +155,7 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
     }
     const chargeoff = chargeoffDraft.action === "charge_off";
     const label = chargeoff ? "부도채권을 상각" : `회수액 ${amount}을 기록`;
-    if (!window.confirm(`대출 #${loanId} ${label}할까요? 불변 원장 이벤트로 기록됩니다.`)) return;
+    if (!await confirmAction(`대출 #${loanId} ${label}할까요? 불변 원장 이벤트로 기록됩니다.`)) return;
     const body = chargeoff
       ? { action: "loan_charge_off", loanId, eventKey: chargeoffDraft.eventKey.trim(), memo: chargeoffDraft.memo }
       : { action: "loan_chargeoff_recovery", loanId, amount, eventKey: chargeoffDraft.eventKey.trim(), memo: chargeoffDraft.memo };

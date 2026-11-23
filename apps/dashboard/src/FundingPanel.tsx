@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
-import { Card, date, errorText, type Ctx } from "./common";
+import { Card, date, errorText, type Ctx, confirmAction } from "./common";
 
 type Amount = string | number;
 type Limit = { source_type: string; currency_code: string; decimal_places: number; limit_minor_units: Amount; outstanding_minor_units: Amount; available_minor_units: Amount; updated_by: string; updated_epoch: number };
@@ -42,26 +42,26 @@ export function FundingPanel({ ctx, bankId, currency }: { ctx: Ctx; bankId: stri
   const post = (body: Record<string, unknown>, fallback: string, done: (result: Result["result"]) => void) =>
     run(() => api<Result>("/api/admin/funding", { method: "POST", body: JSON.stringify({ bankId, ...body }) }), fallback, (response) => { done(response.result); load(); });
 
-  function submitLimit() {
+  async function submitLimit() {
     if (!/^\d{1,15}(\.\d{1,6})?$/.test(limit.amount)) { say("한도는 0 이상의 숫자(소수 6자리까지)로 입력해주세요.", true); return; }
-    if (!window.confirm(`${SOURCE_LABEL[limit.source]} · ${limit.currency} 한도를 ${limit.amount}(으)로 정할까요?`)) return;
+    if (!await confirmAction(`${SOURCE_LABEL[limit.source]} · ${limit.currency} 한도를 ${limit.amount}(으)로 정할까요?`)) return;
     void post({ action: "set_limit", sourceType: limit.source, currency: limit.currency.trim().toUpperCase(), limit: limit.amount }, "한도를 저장하지 못했습니다.", () => { say("한도를 저장했습니다."); setLimit({ ...limit, amount: "" }); });
   }
-  function submitDraw() {
+  async function submitDraw() {
     const rate = Number(draw.ratePercent), days = Number(draw.days), haircut = Number(draw.haircutPercent || "0");
     if (!/^\d{1,15}(\.\d{1,6})?$/.test(draw.amount) || !/^\d{1,15}(\.\d{1,6})?$/.test(draw.collateral || "0")) { say("금액과 담보는 0 이상의 숫자(소수 6자리까지)로 입력해주세요.", true); return; }
     if (!(rate >= 0 && rate <= 1000) || !Number.isInteger(days) || days < 1 || days > 36500 || !(haircut >= 0 && haircut <= 100)) { say("금리(0~1000%), 만기(1~36500일), 헤어컷(0~100%)을 확인해주세요.", true); return; }
-    if (!window.confirm(`${SOURCE_LABEL[draw.source]} ${draw.amount} ${draw.currency}을(를) 연 ${rate}% · ${days}일 만기로 조달할까요? 은행 원장에 조달 부채가 기록됩니다.`)) return;
+    if (!await confirmAction(`${SOURCE_LABEL[draw.source]} ${draw.amount} ${draw.currency}을(를) 연 ${rate}% · ${days}일 만기로 조달할까요? 은행 원장에 조달 부채가 기록됩니다.`)) return;
     void post({ action: "draw", sourceType: draw.source, currency: draw.currency.trim().toUpperCase(), amount: draw.amount, rateBps: Math.round(rate * 100), maturityDays: days, referenceKey: draw.reference,
       counterparty: draw.counterparty.trim(), collateral: draw.collateral || "0", haircutBps: Math.round(haircut * 100) }, "조달을 실행하지 못했습니다.",
     (result) => { say(`조달 #${result.fundingId}을 기록했습니다.`); setDraw({ ...draw, amount: "", ratePercent: "", days: "", counterparty: "", collateral: "", haircutPercent: "", reference: newReference() }); });
   }
-  function repay(row: Draw) {
-    if (!window.confirm(`조달 #${row.funding_id}(${units(row.principal_minor_units, row.decimal_places)} ${row.currency_code})을 지금 상환할까요? 원금과 실제 경과일 기준(ACT/365) 이자가 기록됩니다.`)) return;
+  async function repay(row: Draw) {
+    if (!await confirmAction(`조달 #${row.funding_id}(${units(row.principal_minor_units, row.decimal_places)} ${row.currency_code})을 지금 상환할까요? 원금과 실제 경과일 기준(ACT/365) 이자가 기록됩니다.`)) return;
     void post({ action: "repay", fundingId: row.funding_id }, "상환하지 못했습니다.", () => say(`조달 #${row.funding_id}을 상환했습니다.`));
   }
-  function processDue() {
-    if (!window.confirm(`만기가 지난 ${data?.overdue_count ?? 0}건을 만기순으로 상환할까요? 이 은행의 조달만 처리하며, 실패한 건은 건너뛰고 알려 드립니다.`)) return;
+  async function processDue() {
+    if (!await confirmAction(`만기가 지난 ${data?.overdue_count ?? 0}건을 만기순으로 상환할까요? 이 은행의 조달만 처리하며, 실패한 건은 건너뛰고 알려 드립니다.`)) return;
     void post({ action: "process_due" }, "만기 처리에 실패했습니다.", (result) => {
       const failed = result.failed ?? [];
       say(`${result.repaid?.length ?? 0}건을 상환했습니다.${failed.length ? ` 실패 ${failed.length}건: ${failed.map((row) => `#${row.funding_id} ${row.error}`).join(", ")}` : ""}`, failed.length > 0);

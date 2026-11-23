@@ -10,7 +10,8 @@ const SECTIONS = [
 export function InvestPage({ kit }: ServiceProps) {
   const [section, setSection] = useState<(typeof SECTIONS)[number][0]>("options");
   return <div className="svc-invest">
-    <div className="svc-tabs" role="tablist" aria-label="투자상품" onKeyDown={tabListKeys}>{SECTIONS.map(([id, label]) => <button key={id} type="button" role="tab" tabIndex={section === id ? 0 : -1} aria-selected={section === id} className={section === id ? "active" : ""} onClick={() => setSection(id)}>{label}</button>)}</div>
+    <div className="svc-tabs" role="tablist" aria-label="투자상품" onKeyDown={tabListKeys}>{SECTIONS.map(([id, label]) => <button key={id} type="button" role="tab" id={`invest-tab-${id}`} aria-controls="invest-panel" tabIndex={section === id ? 0 : -1} aria-selected={section === id} className={section === id ? "active" : ""} onClick={() => setSection(id)}>{label}</button>)}</div>
+    <div id="invest-panel" role="tabpanel" aria-labelledby={`invest-tab-${section}`}>
     {section === "options" && <div className="svc-two">
       <ActionCard kit={kit} name="옵션체인" title="옵션 시세표" description="거래할 수 있는 콜·풋 옵션입니다. 기초 주식을 고르면 그 종목만 봅니다." autoRun submit="시세 보기" />
       <ActionCard kit={kit} name="옵션작성" title="옵션 매도 (작성)" description="콜은 기초 주식을, 풋은 행사가만큼 현금을 담보로 맡기고 매도 호가를 냅니다. 만기까지 의무가 남습니다." submit="옵션 작성" />
@@ -29,5 +30,6 @@ export function InvestPage({ kit }: ServiceProps) {
       <ActionCard kit={kit} name="운용계좌" title="내가 운용하는 랩어카운트" autoRun submit="새로고침" />
       <ActionCard kit={kit} name="랩주문" title="랩 계좌로 주문" description="고객 랩 계좌의 현금과 보유자산으로만 사고팝니다. 계좌 통화로 결제하는 종목만 가능합니다." submit="주문 넣기" />
     </div>}
+    </div>
   </div>;
 }

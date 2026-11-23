@@ -1,0 +1,23 @@
+import { lazy } from "react";
+
+export const ProductsPage = lazy(() => import("./ProductsPage").then((module) => ({ default: module.ProductsPage })));
+export const UsersPage = lazy(() => import("./UsersPage").then((module) => ({ default: module.UsersPage })));
+export const ExchangesPage = lazy(() => import("./ExchangesPage").then((module) => ({ default: module.ExchangesPage })));
+export const CompaniesPage = lazy(() => import("./CompaniesPage").then((module) => ({ default: module.CompaniesPage })));
+export const WarningsCard = lazy(() => import("./WarningsCard").then((module) => ({ default: module.WarningsCard })));
+export const CourtPage = lazy(() => import("./CourtPage").then((module) => ({ default: module.CourtPage })));
+export const FeedbackPage = lazy(() => import("./FeedbackPage").then((module) => ({ default: module.FeedbackPage })));
+export const BoardAdminPage = lazy(() => import("./BoardAdminPage").then((module) => ({ default: module.BoardAdminPage })));
+export const DocumentsPage = lazy(() => import("./DocumentsPage").then((module) => ({ default: module.DocumentsPage })));
+export const CompliancePage = lazy(() => import("./CompliancePage").then((module) => ({ default: module.CompliancePage })));
+export const BanksPage = lazy(() => import("./BanksPage").then((module) => ({ default: module.BanksPage })));
+export const SecurityPage = lazy(() => import("./SecurityPage").then((module) => ({ default: module.SecurityPage })));
+export const DatabasePage = lazy(() => import("./DatabasePage").then((module) => ({ default: module.DatabasePage })));
+export const RatesPage = lazy(() => import("./RatesPage").then((module) => ({ default: module.RatesPage })));
+export const AlmPage = lazy(() => import("./AlmPage").then((module) => ({ default: module.AlmPage })));
+export const ControlsPage = lazy(() => import("./ControlsPage").then((module) => ({ default: module.ControlsPage })));
+export const AccountingClosePage = lazy(() => import("./AccountingClosePage").then((module) => ({ default: module.AccountingClosePage })));
+export const LiquidityPage = lazy(() => import("./LiquidityPage").then((module) => ({ default: module.LiquidityPage })));
+export const NaturalizationPage = lazy(() => import("./NaturalizationPage").then((module) => ({ default: module.NaturalizationPage })));
+export const OrganizationPage = lazy(() => import("./OrganizationPage").then((module) => ({ default: module.OrganizationPage })));export const AccountPage = lazy(() => import("./AccountPage").then((module) => ({ default: module.AccountPage })));
+export const OrganizationOwnershipWindow = lazy(() => import("./OrganizationOwnershipWindow").then((module) => ({ default: module.OrganizationOwnershipWindow })));

@@ -1,5 +1,7 @@
 import { formatMoney } from "../../shared/money";
 import type { ReactNode } from "react";
+import { tabButton, tabListKeys } from "./tabKeys";
+import { confirmDialog } from "../../shared/dialogs";
 
 export const number = formatMoney;
 export const date = (value: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "medium" }).format(value * 1000);
@@ -13,6 +15,14 @@ export function plain(text: string) {
     .replace(/\*\*/g, "")
     .replace(/`{3}\w*\n?/g, "")
     .replace(/`/g, "");
+}
+
+// A question that ends in one of these verbs is destructive: red confirm button, focus on "cancel", and the verb as the button label.
+const DESTRUCTIVE: [RegExp, string][] = [[/삭제(할|하시)?까요|지울까요/, "삭제"], [/초기화할까요/, "초기화"], [/해제할까요/, "해제"], [/폐지할까요/, "폐지"], [/종료할까요/, "종료"], [/뺄까요/, "빼기"], [/거둘까요/, "철회"], [/버리고/, "버리기"]];
+/** window.confirm replacement: the dialog keeps the original question, destructive ones get the danger styling. */
+export function confirmAction(message: string): Promise<boolean> {
+  const verb = DESTRUCTIVE.find(([pattern]) => pattern.test(message))?.[1];
+  return confirmDialog(verb ? { title: `${verb} 확인`, message, danger: true, confirmLabel: verb } : message);
 }
 
 /** Resolves true when the work (and its done callback) succeeded, false when it failed and a notice was shown. */
@@ -34,9 +44,9 @@ export function Card({ title, caption, actions, children, className = "" }: { ti
   </section>;
 }
 
-export function Tabs<T extends string>({ value, options, onChange, label }: { value: T; options: [T, string, number?][]; onChange: (value: T) => void; label: string }) {
-  return <div className="segment-tabs mb" role="tablist" aria-label={label}>
-    {options.map(([id, text, count]) => <button key={id} role="tab" aria-selected={value === id} className={value === id ? "active" : ""} onClick={() => onChange(id)}>{text}{count !== undefined && <span>{count}</span>}</button>)}
+export function Tabs<T extends string>({ value, options, onChange, label, group }: { value: T; options: [T, string, number?][]; onChange: (value: T) => void; label: string; group: string }) {
+  return <div className="segment-tabs mb" role="tablist" aria-label={label} onKeyDown={tabListKeys}>
+    {options.map(([id, text, count]) => <button key={id} type="button" {...tabButton(group, id, value === id)} className={value === id ? "active" : ""} onClick={() => onChange(id)}>{text}{count !== undefined && <span>{count}</span>}</button>)}
   </div>;
 }
 

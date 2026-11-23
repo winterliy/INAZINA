@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { BoardPage } from "./BoardPage";
 import { RootErrorBoundary } from "./RootErrorBoundary";
+import { DialogHost } from "../../shared/dialogs";
 import { NAVIGATE, interceptLinks } from "./nav";
 import "./style.css";
 import "../../shared/typography.css";
@@ -23,6 +24,6 @@ function Root() {
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <RootErrorBoundary><Root /></RootErrorBoundary>
+    <RootErrorBoundary><Root /><DialogHost /></RootErrorBoundary>
   </React.StrictMode>,
 );

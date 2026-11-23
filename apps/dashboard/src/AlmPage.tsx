@@ -1,6 +1,7 @@
+import { tabPanel } from "./tabKeys";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
-import { Card, Tabs, errorText, type Ctx } from "./common";
+import { Card, Tabs, errorText, type Ctx, confirmAction } from "./common";
 import { FundingPanel } from "./FundingPanel";
 import "./alm.css";
 
@@ -86,12 +87,12 @@ export function AlmPage({ ctx }: { ctx: Ctx }) {
     }).catch((cause) => say(errorText(cause, "은행 목록을 불러오지 못했습니다."), true));
   }, []);
 
-  function saveParameter() {
+  async function saveParameter() {
     const value = Number(edit.value);
     if (!report || !Number.isInteger(value) || value < 0) { say("값은 0 이상의 정수(베이시스포인트, 100 = 1%)로 입력해주세요.", true); return; }
     const autoWarning = edit.key === "funding_auto_maturity_flag" && value === 1
       ? "\n켜면 이 관할 은행의 만기 도래 도매조달이 10분마다 자동 상환되고, 상환 이자가 은행 손익·자본에 반영됩니다." : "";
-    if (!window.confirm(`${report.jurisdiction} 관할의 ‘${PARAMETER[edit.key]}’을(를) ${parameterText(edit.key, value)}(으)로 바꿀까요? 이 관할 모든 은행에 반영됩니다.${autoWarning}`)) return;
+    if (!await confirmAction(`${report.jurisdiction} 관할의 ‘${PARAMETER[edit.key]}’을(를) ${parameterText(edit.key, value)}(으)로 바꿀까요? 이 관할 모든 은행에 반영됩니다.${autoWarning}`)) return;
     void run(() => api<{ success: boolean }>("/api/admin/compliance", { method: "POST",
       body: JSON.stringify({ action: "prudential_parameter_set", nationality: report.jurisdiction, key: edit.key, valueBps: value }) }),
     "기준을 저장하지 못했습니다.", () => { say("기준을 저장했습니다."); setEdit({ ...edit, value: "" }); loadReport(bankId); });
@@ -118,7 +119,8 @@ export function AlmPage({ ctx }: { ctx: Ctx }) {
       <button type="button" className="outline" disabled={busy || !bankId} onClick={() => loadReport(bankId)}>다시 계산</button>
       {report && <span className="cap">{report.jurisdiction} 관할 · 기준통화 {report.currency}</span>}
     </div>
-    <Tabs value={tab} onChange={setTab} label="자금 · ALM 화면" options={[["metrics", "규제 지표"], ["funding", "도매조달"]]} />
+    <Tabs group="alm" value={tab} onChange={setTab} label="자금 · ALM 화면" options={[["metrics", "규제 지표"], ["funding", "도매조달"]]} />
+    <div {...tabPanel("alm", tab)}>
     {tab === "funding" ? (bankId ? <FundingPanel ctx={ctx} bankId={bankId} currency={report?.currency ?? "NWX"} /> : <p className="cap">은행을 고르면 조달 내역을 불러옵니다.</p>)
       : !report ? <p className="cap">은행을 고르면 지표를 계산합니다.</p> : <>
       <div className="alm-two">
@@ -212,5 +214,6 @@ export function AlmPage({ ctx }: { ctx: Ctx }) {
       </div>
       <p className="alm-note">{report.method}</p>
     </>}
+    </div>
   </>;
 }

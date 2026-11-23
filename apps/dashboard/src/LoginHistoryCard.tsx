@@ -1,3 +1,4 @@
+import { tabPanel } from "./tabKeys";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
 import { Card, Tabs, date, type Ctx } from "./common";
@@ -34,8 +35,8 @@ export function LoginHistoryCard({ ctx, userId, onLoaded }: { ctx: Ctx; userId?:
 
   return <Card title={userId ? "내 로그인 기록" : "관리자 로그인 기록"} caption={`${userId ? "이 계정" : "관리자 계정"}으로 들어온 로그인 시도(성공·실패)를 최근 200건까지 보여 줍니다. 기록은 ${retention}일 뒤 자동 삭제됩니다.`}
     actions={<button className="soft small" type="button" onClick={() => void load()}>새로고침</button>}>
-    <Tabs label="로그인 기록 필터" value={filter} onChange={setFilter} options={[["all", "전체", events.length], ["failed", "실패만", failed]]} />
-    <div className="scroll-x tall"><table><thead><tr><th>시각</th><th>관리자</th><th>결과</th><th>IP</th><th>위치</th><th>앱</th><th>기기</th></tr></thead><tbody>
+    <Tabs group="login-history" label="로그인 기록 필터" value={filter} onChange={setFilter} options={[["all", "전체", events.length], ["failed", "실패만", failed]]} />
+    <div className="scroll-x tall" {...tabPanel("login-history", filter)}><table><thead><tr><th>시각</th><th>관리자</th><th>결과</th><th>IP</th><th>위치</th><th>앱</th><th>기기</th></tr></thead><tbody>
       {visible.map((item) => <tr key={item.eventId}>
         <td>{date(item.time)}</td>
         <td>{item.nickname ?? item.userId}<small className="mono"> {item.loginId !== item.userId ? `${item.loginId} · ` : ""}{item.userId}</small></td>

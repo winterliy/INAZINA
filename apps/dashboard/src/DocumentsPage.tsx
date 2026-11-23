@@ -1,6 +1,7 @@
+import { tabButton, tabListKeys, tabPanel } from "./tabKeys";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
-import { Card, date, number, plain, type Ctx } from "./common";
+import { Card, date, number, plain, type Ctx, confirmAction } from "./common";
 
 type Summary = { id: string; title: string; shown: string; legal: boolean; path: string; size: number; updatedEpoch: number | null; pendingEffectiveEpoch: number | null };
 type Pending = { content: string; effectiveEpoch: number; announcedEpoch: number; important: boolean };
@@ -37,19 +38,19 @@ export function DocumentsPage({ ctx }: { ctx: Ctx }) {
   useEffect(() => { open(selected).catch((cause) => say(cause instanceof Error ? cause.message : "문서를 불러오지 못했습니다.", true)); }, [selected, open]);
 
   const dirty = document !== null && draft !== document.base;
-  function choose(id: string) {
-    if (dirty && !window.confirm("저장하지 않은 수정이 있습니다. 버리고 다른 문서를 열까요?")) return;
+  async function choose(id: string) {
+    if (dirty && !await confirmAction("저장하지 않은 수정이 있습니다. 버리고 다른 문서를 열까요?")) return;
     setSelected(id);
   }
   function check() {
     void run(() => api<Preview>(`/api/admin/documents/${selected}/preview`, { method: "POST", body: JSON.stringify({ content: draft, important }) }),
       "변경 내용을 확인하지 못했습니다.", setPreview);
   }
-  function save() {
+  async function save() {
     if (!document || !preview) return;
     const effects = [...preview.notes, ...preview.warnings].map((line) => `· ${line}`).join("\n");
     const question = document.legal ? "개정안을 공지할까요?" : "저장할까요? 바로 적용됩니다.";
-    if (!window.confirm(`${document.title} ${question} (+${preview.added} / -${preview.removed}줄)${effects ? `\n\n${effects}` : ""}`)) return;
+    if (!await confirmAction(`${document.title} ${question} (+${preview.added} / -${preview.removed}줄)${effects ? `\n\n${effects}` : ""}`)) return;
     void run(() => api<{ success: boolean; message: string; document: Document }>(`/api/admin/documents/${selected}`, {
       method: "POST", body: JSON.stringify({ content: draft, baseSha256: document.sha256, confirmed: true, important }),
     }), "저장하지 못했습니다.", async (result) => {
@@ -58,21 +59,21 @@ export function DocumentsPage({ ctx }: { ctx: Ctx }) {
       await loadList();
     });
   }
-  function withdraw() {
-    if (!document?.pending || !window.confirm("공지한 개정안을 거둘까요? 지금 문서가 계속 적용되고, 사이트의 개정 예정 안내도 사라집니다.")) return;
+  async function withdraw() {
+    if (!document?.pending || !await confirmAction("공지한 개정안을 거둘까요? 지금 문서가 계속 적용되고, 사이트의 개정 예정 안내도 사라집니다.")) return;
     void run(() => api<{ success: boolean; message: string; document: Document }>(`/api/admin/documents/${selected}/cancel`, { method: "POST", body: "{}" }),
       "개정안을 거두지 못했습니다.", async (result) => { say(plain(result.message), !result.success); setDocument(result.document); setDraft(result.document.base); setPreview(null); await loadList(); });
   }
 
   return <>
     <Card title="문서 · 약관" caption="약관·처리방침·운영규칙·내부규칙은 확정하면 바로 개정 예정으로 공지되고, 공지 기간(7일, 이용자에게 불리하거나 중요한 변경은 30일)이 지난 날 0시(한국시간)에 적용됩니다. 그때까지는 지금 문서가 적용됩니다. 도움말과 Discord 등록 안내문은 확정하면 바로 바뀝니다.">
-      <div className="doc-tabs" role="tablist" aria-label="문서">{list.map((item) => <button key={item.id} type="button" role="tab" aria-selected={selected === item.id} className={selected === item.id ? "doc-tab active" : "doc-tab"} onClick={() => choose(item.id)}>
+      <div className="doc-tabs" role="tablist" aria-label="문서" onKeyDown={tabListKeys}>{list.map((item) => <button key={item.id} type="button" {...tabButton("documents", item.id, selected === item.id)} className={selected === item.id ? "doc-tab active" : "doc-tab"} onClick={() => choose(item.id)}>
         <b>{item.title}</b><small>{item.shown}{item.legal ? " · 공지 후 적용" : " · 즉시 적용"}</small>{item.pendingEffectiveEpoch ? <small className="doc-pending-tag">개정 예정 · {date(item.pendingEffectiveEpoch)} 적용</small> : null}<small className="mono">{number(item.size)}B · {item.updatedEpoch ? date(item.updatedEpoch) : "—"}</small>
       </button>)}</div>
     </Card>
-    {document && <Card title={document.title} caption={<><span className="mono">{document.path}</span> · {document.shown}</>}
+    {document && <div {...tabPanel("documents", selected)}><Card title={document.title} caption={<><span className="mono">{document.path}</span> · {document.shown}</>}
       actions={<><button className="soft" type="button" disabled={busy || !dirty} onClick={() => { setDraft(document.base); setPreview(null); }}>되돌리기</button>
-        <button className="soft" type="button" disabled={busy} onClick={() => { if (!dirty || window.confirm("수정한 내용을 버리고 다시 불러올까요?")) void run(() => open(selected), "다시 불러오지 못했습니다."); }}>다시 불러오기</button>
+        <button className="soft" type="button" disabled={busy} onClick={async () => { if (!dirty || await confirmAction("수정한 내용을 버리고 다시 불러올까요?")) void run(() => open(selected), "다시 불러오지 못했습니다."); }}>다시 불러오기</button>
         <button className="btn primary small" type="button" disabled={busy || !dirty} onClick={check}>변경 내용 확인</button></>}>
       {document.pending && <div className="doc-pending">
         <p>📢 개정안 공지 중 — <b>{date(document.pending.effectiveEpoch)}</b>에 적용됩니다 (공지 {date(document.pending.announcedEpoch)}, {document.pending.important ? `중요한 변경 ${document.importantNoticeDays}일` : `${document.noticeDays}일`}). 아래 편집기는 개정안을 보여 줍니다. 다시 확정하면 개정안을 바꾸고 적용일을 새로 계산합니다.</p>
@@ -91,6 +92,6 @@ export function DocumentsPage({ ctx }: { ctx: Ctx }) {
           <button className="btn primary" type="button" disabled={busy || !preview.changed || preview.blocking} onClick={save}>{document.legal ? "확정 · 개정 공지" : "확정 저장"}</button></div>
       </div>}
       {document.history.length > 0 && <details className="help"><summary>보관된 이전 판 {document.history.length}개</summary><ul className="doc-history">{document.history.map((item) => <li key={item.name} className="mono">{item.name} · {number(item.size)}B</li>)}</ul><p className="hint">서버의 database/document_history/{document.id}/ 폴더에 있습니다.</p></details>}
-    </Card>}
+    </Card></div>}
   </>;
 }

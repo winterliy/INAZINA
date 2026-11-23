@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { confirmDialog } from "../../../shared/dialogs";
 import type { FormEvent } from "react";
 import { api } from "../../../shared/api";
 import type { ServiceProps } from "./ServiceKit";
@@ -62,7 +63,7 @@ function OpenMeeting({ meeting, reload }: { meeting: Meeting; reload: () => void
     {message && <p className={message.ok ? "account-success" : "account-error"} role={message.ok ? "status" : "alert"}>{message.text}</p>}
     <div className="gov-actions">
       {meeting.me && <button type="button" className="svc-submit" disabled={busy || !changed} onClick={() => void post("respond", { votes }, "투표를 제출했습니다. 마감 전까지 바꿀 수 있습니다.")}>{busy ? "제출 중…" : meeting.items.some((item) => item.myVote) ? "투표 수정" : "투표 제출"}</button>}
-      {meeting.canClose && <button type="button" className="gov-ghost" disabled={busy} onClick={() => { if (confirm("투표를 마감하고 주주총회를 종료할까요? 되돌릴 수 없습니다.")) void post("close", {}, "주주총회를 종료했습니다."); }}>회의 종료</button>}
+      {meeting.canClose && <button type="button" className="gov-ghost" disabled={busy} onClick={async () => { if (await confirmDialog({ title: "회의 종료", message: "투표를 마감하고 주주총회를 종료할까요? 되돌릴 수 없습니다.", danger: true })) void post("close", {}, "주주총회를 종료했습니다."); }}>회의 종료</button>}
     </div>
   </article>;
 }

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api } from "../../shared/api";
-import { Card, number, type Ctx } from "./common";
+import { Card, number, type Ctx, confirmAction } from "./common";
 
 type Column = { name: string; type: string; notNull: boolean; primaryKey: boolean; default: string | null };
 type TableInfo = { name: string; editable: boolean; columns: Column[] };
@@ -40,9 +40,9 @@ export function DatabasePage({ ctx }: { ctx: Ctx }) {
   const failed = (cause: unknown) => say(cause instanceof Error ? cause.message : "테이블을 불러오지 못했습니다.", true);
   const dirtyCount = Object.keys(edits).length;
   /** Unsaved cell edits are lost when the sheet changes, so ask first. */
-  const confirmDiscard = () => !dirtyCount || window.confirm("저장하지 않은 변경이 있습니다. 버리고 이동할까요?");
-  const go = (next: Partial<typeof view>) => {
-    if (!confirmDiscard()) return;
+  const confirmDiscard = async () => !dirtyCount || await confirmAction("저장하지 않은 변경이 있습니다. 버리고 이동할까요?");
+  const go = async (next: Partial<typeof view>) => {
+    if (!await confirmDiscard()) return;
     setNewRow(null);
     setEdits({});
     setView((current) => ({ ...current, offset: 0, ...next }));
@@ -53,8 +53,8 @@ export function DatabasePage({ ctx }: { ctx: Ctx }) {
   // The search box belongs to the page header; apply it after a short pause, and not at all if the user keeps their edits.
   useEffect(() => {
     if (query === view.query) return;
-    const timer = window.setTimeout(() => {
-      if (!confirmDiscard()) return;
+    const timer = window.setTimeout(async () => {
+      if (!await confirmDiscard()) return;
       setNewRow(null);
       setEdits({});
       setView((current) => ({ ...current, query, offset: 0 }));
@@ -79,22 +79,22 @@ export function DatabasePage({ ctx }: { ctx: Ctx }) {
   const tableInfo = tables.find((item) => item.name === table);
   const columnOf = (name: string) => tableInfo?.columns.find((column) => column.name === name);
 
-  function saveRow(row: Row, rowid: number) {
+  async function saveRow(row: Row, rowid: number) {
     const values = Object.fromEntries(Object.entries(edits[rowid] ?? {}).map(([name, input]) => [name, parseCell(input, columnOf(name))]));
     if (!Object.keys(values).length) return;
     const summary = Object.entries(values).map(([name, value]) => `${name}: ${showCell(row[name])} → ${showCell(value)}`).join("\n");
-    if (!window.confirm(`${table} #${rowid} 행을 저장할까요?\n\n${summary}`)) return;
+    if (!await confirmAction(`${table} #${rowid} 행을 저장할까요?\n\n${summary}`)) return;
     void run(() => api(`/api/admin/db/tables/${encodeURIComponent(table)}/rows/${rowid}`, { method: "POST", body: JSON.stringify({ values }) }),
       "행을 저장하지 못했습니다.", () => { say(`${table} #${rowid} 행을 저장했습니다.`); load(); });
   }
 
-  function deleteRow(rowid: number) {
-    if (!window.confirm(`${table} #${rowid} 행을 삭제할까요? 되돌릴 수 없으며 작업 기록에 남습니다.`)) return;
+  async function deleteRow(rowid: number) {
+    if (!await confirmAction(`${table} #${rowid} 행을 삭제할까요? 되돌릴 수 없으며 작업 기록에 남습니다.`)) return;
     void run(() => api(`/api/admin/db/tables/${encodeURIComponent(table)}/rows/${rowid}/delete`, { method: "POST" }),
       "행을 삭제하지 못했습니다.", () => { say(`${table} #${rowid} 행을 삭제했습니다.`); load(); });
   }
 
-  function insertRow(event: FormEvent<HTMLFormElement>) {
+  async function insertRow(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const values = Object.fromEntries(Object.entries(newRow ?? {}).filter(([, input]) => input !== "")
       .map(([name, input]) => [name, parseCell(input, columnOf(name))]));
@@ -102,7 +102,7 @@ export function DatabasePage({ ctx }: { ctx: Ctx }) {
       say("한 개 이상의 열 값을 입력해주세요.", true);
       return;
     }
-    if (!window.confirm(`${table}에 새 행을 추가할까요?`)) return;
+    if (!await confirmAction(`${table}에 새 행을 추가할까요?`)) return;
     void run(() => api(`/api/admin/db/tables/${encodeURIComponent(table)}/rows`, { method: "POST", body: JSON.stringify({ values }) }),
       "행을 추가하지 못했습니다.", () => { setNewRow(null); say(`${table}에 행을 추가했습니다.`); load(); });
   }

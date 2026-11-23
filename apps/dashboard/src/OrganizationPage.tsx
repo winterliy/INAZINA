@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatMoney } from "../../shared/money";
 import { api, appUrl } from "../../shared/api";
-import { Card, Field, type Ctx, BigValue } from "./common";
+import { Card, Field, type Ctx, BigValue, confirmAction } from "./common";
 import "./OrganizationPage.css";
 
 type Size = "sme" | "mid_market" | "large" | null;
@@ -69,7 +69,7 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
     } finally { setSaving(false); }
   };
   const retireIssuance = async (issue: Issuance) => {
-    if (!window.confirm(`${issue.class_name} (${issue.company_code}) 주식 종류를 폐지할까요? 보유자·미체결 주문·계약·미지급 배당이 없어야 하며, 폐지 후 이 거래 코드는 다시 사용할 수 없습니다.`)) return;
+    if (!await confirmAction(`${issue.class_name} (${issue.company_code}) 주식 종류를 폐지할까요? 보유자·미체결 주문·계약·미지급 배당이 없어야 하며, 폐지 후 이 거래 코드는 다시 사용할 수 없습니다.`)) return;
     setSaving(true);
     try {
       const result = await api<string>(`/api/admin/companies/${encodeURIComponent(issue.company_code)}/share-actions`, {
@@ -83,7 +83,7 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
   };
   const issueShares = async (issue: Issuance, payload: { mode: "paid" | "bonus"; quantity: string; issuePrice?: string }) => {
     const modeLabel = payload.mode === "paid" ? "유상증자" : "무상증자";
-    if (!window.confirm(`${issue.class_name} (${issue.company_code}) ${modeLabel} ${payload.quantity}주를 진행할까요? 다른 주식 종류의 수량과 가격은 변경하지 않습니다.`)) return;
+    if (!await confirmAction(`${issue.class_name} (${issue.company_code}) ${modeLabel} ${payload.quantity}주를 진행할까요? 다른 주식 종류의 수량과 가격은 변경하지 않습니다.`)) return;
     setSaving(true);
     try {
       const result = await api<string>(`/api/admin/companies/${encodeURIComponent(issue.company_code)}/share-actions`, {
@@ -106,7 +106,7 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
       return;
     }
     const kind = payload.mode === "유상" ? `유상감자 ${payload.quantity}주, 주당 ${payload.payout} 지급` : `무상감자 ${payload.quantity}주`;
-    if (!window.confirm(`${issue.class_name} (${issue.company_code}) ${kind}를 실행할까요? 주주별 보유 수량에 비례해 주식을 취소합니다.`)) return;
+    if (!await confirmAction(`${issue.class_name} (${issue.company_code}) ${kind}를 실행할까요? 주주별 보유 수량에 비례해 주식을 취소합니다.`)) return;
     setSaving(true);
     try {
       const result = await api<{ message: string; success: boolean }>("/api/admin/commands", {

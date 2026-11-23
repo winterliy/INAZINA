@@ -20,10 +20,10 @@ export function HistoryPage({ orders }: ServiceProps) {
 
   return <div className="svc-history">
     <div className="svc-tabs" role="tablist" aria-label="거래내역" onKeyDown={tabListKeys}>
-      <button type="button" role="tab" tabIndex={tab === "money" ? 0 : -1} aria-selected={tab === "money"} className={tab === "money" ? "active" : ""} onClick={() => setTab("money")}>입출금 {events ? events.length : ""}</button>
-      <button type="button" role="tab" tabIndex={tab === "orders" ? 0 : -1} aria-selected={tab === "orders"} className={tab === "orders" ? "active" : ""} onClick={() => setTab("orders")}>주문 {orders.length}</button>
+      <button type="button" role="tab" id="history-tab-money" aria-controls="history-panel" tabIndex={tab === "money" ? 0 : -1} aria-selected={tab === "money"} className={tab === "money" ? "active" : ""} onClick={() => setTab("money")}>입출금 {events ? events.length : ""}</button>
+      <button type="button" role="tab" id="history-tab-orders" aria-controls="history-panel" tabIndex={tab === "orders" ? 0 : -1} aria-selected={tab === "orders"} className={tab === "orders" ? "active" : ""} onClick={() => setTab("orders")}>주문 {orders.length}</button>
     </div>
-    {tab === "money" && <section className="svc-card">
+    {tab === "money" && <section id="history-panel" role="tabpanel" aria-labelledby="history-tab-money" className="svc-card">
       {events && <p className="svc-hint">최근 {events.length}건 · 입금 {income}건 · 출금 {spend}건</p>}
       {error && <p className="account-error" role="alert">{error}</p>}
       <div className="svc-statement">{(events ?? []).map((item, index) => <div key={`${item.epoch}-${index}`} className="svc-statement-row">
@@ -35,7 +35,7 @@ export function HistoryPage({ orders }: ServiceProps) {
       {events && !events.length && <p className="svc-empty">아직 입출금 내역이 없습니다.</p>}
       {!events && !error && <p className="svc-hint">불러오는 중…</p>}
     </section>}
-    {tab === "orders" && <section className="svc-card">
+    {tab === "orders" && <section id="history-panel" role="tabpanel" aria-labelledby="history-tab-orders" className="svc-card">
       <div className="svc-statement">{orders.map((order) => <div key={order.order_id} className="svc-statement-row">
         <time>#{order.order_id}</time>
         <span className={`svc-kind ${order.side === "buy" ? "transfer_in" : "transfer_out"}`}>{order.side === "buy" ? "매수" : "매도"}</span>

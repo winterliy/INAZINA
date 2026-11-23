@@ -12,6 +12,7 @@
 
 .search-indicator { cursor: pointer; width: 100%; text-align: left; }
 .search-indicator:hover, .search-indicator[aria-expanded="true"] { background: var(--surface2, #f4f6f9); }
+/* !important kept: the rates span sits in a .search-result button whose display rules would otherwise win */
 .search-indicator-rates { display: flex !important; flex: none; align-items: center; gap: 16px; }
 .search-indicator-rates > span { display: grid; justify-items: end; gap: 3px; }
 .search-indicator-rates small { color: var(--ink2); font-size: 11px; white-space: nowrap; }

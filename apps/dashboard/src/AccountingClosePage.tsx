@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
-import { Card, date, errorText, type Ctx } from "./common";
+import { Card, date, errorText, type Ctx, confirmAction } from "./common";
 import "./accounting-close.css";
 
 type Gate = { key: string; label: string; ok: boolean; detail: string };
@@ -27,8 +27,8 @@ export function AccountingClosePage({ ctx }: { ctx: Ctx }) {
   const check = () => void run(() => api<Overview>("/api/admin/accounting-close?check=1"), "점검하지 못했습니다.", setData);
   useEffect(() => { load().catch((cause) => say(errorText(cause, "회계 마감 정보를 불러오지 못했습니다."), true)); }, [load]);
 
-  const act = (body: Record<string, unknown>, fallback: string, confirmText?: string) => {
-    if (confirmText && !window.confirm(confirmText)) return;
+  const act = async (body: Record<string, unknown>, fallback: string, confirmText?: string) => {
+    if (confirmText && !await confirmAction(confirmText)) return;
     void run(() => api<{ message: string }>("/api/admin/accounting-close", { method: "POST", body: JSON.stringify(body) }), fallback,
       (result) => { say(result.message); void load().then(() => undefined); });
   };

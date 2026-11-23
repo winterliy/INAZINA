@@ -1,3 +1,4 @@
+import { confirmAction } from "./common";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
 import type { Ctx } from "./common";
@@ -21,11 +22,11 @@ export function GambleTile({ ctx }: { ctx: Ctx }) {
   }, []);
   useEffect(() => { load().catch(() => undefined); }, [load]);
 
-  function apply() {
+  async function apply() {
     const changes: [string, string][] = [];
     if (Number(chance) !== saved.chance) changes.push(["도박확률", chance]);
     if (Number(payout) !== saved.payout) changes.push(["도박리턴값", payout]);
-    if (!changes.length || !window.confirm(changes.map(([name, value]) => `$${name} ${value}`).join("\n") + "\n\n실행할까요?")) return;
+    if (!changes.length || !await confirmAction(changes.map(([name, value]) => `$${name} ${value}`).join("\n") + "\n\n실행할까요?")) return;
     void run(async () => {
       for (const [command, args] of changes) {
         const result = await api<{ message: string; success: boolean }>("/api/admin/commands", { method: "POST", body: JSON.stringify({ command, arguments: args }) });

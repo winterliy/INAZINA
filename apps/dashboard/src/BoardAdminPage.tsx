@@ -1,6 +1,7 @@
+import { tabPanel } from "./tabKeys";
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
-import { Card, Field, Tabs, date, number, plain, type Ctx } from "./common";
+import { Card, Field, Tabs, date, number, plain, type Ctx, confirmAction } from "./common";
 
 type Category = { category_id: number; name: string; sort_order: number };
 type BoardInfo = { board_id: string; name: string; description: string; admin_only: number; allow_asset: number; sort_order: number; post_count: number; categories: Category[];
@@ -34,17 +35,17 @@ export function BoardAdminPage({ ctx }: { ctx: Ctx }) {
   }, [filter, query]);
   useEffect(() => { load().catch((cause) => say(cause instanceof Error ? cause.message : "게시판을 불러오지 못했습니다.", true)); }, [load]);
 
-  function act(kind: "post" | "comment" | "report", id: number, action: string) {
+  async function act(kind: "post" | "comment" | "report", id: number, action: string) {
     const label = `${kind === "post" ? "글" : kind === "comment" ? "댓글" : "신고"} #${id}`;
     const warning = action === "purge" ? "\n\n댓글·좋아요·싫어요·신고까지 함께 지워지며 되돌릴 수 없습니다." : "";
-    if (!window.confirm(`${label}을(를) ${ACTIONS[action]}할까요?${warning}`)) return;
+    if (!await confirmAction(`${label}을(를) ${ACTIONS[action]}할까요?${warning}`)) return;
     void run(() => api<Result>(`/api/admin/board/${kind}/${id}`, { method: "POST", body: JSON.stringify({ action }) }),
       "처리하지 못했습니다.", async (result) => { say(plain(result.message), !result.success); await load(); });
   }
 
   // Board structure and moving posts: { action, ...fields } to /api/admin/board/{kind}/{id}.
-  function structure(kind: "board" | "category" | "post", id: string | number, body: Record<string, unknown>, question?: string) {
-    if (question && !window.confirm(question)) return;
+  async function structure(kind: "board" | "category" | "post", id: string | number, body: Record<string, unknown>, question?: string) {
+    if (question && !await confirmAction(question)) return;
     void run(() => api<Result>(`/api/admin/board/${kind}/${encodeURIComponent(String(id))}`, { method: "POST", body: JSON.stringify(body) }),
       "처리하지 못했습니다.", async (result) => { say(plain(result.message), !result.success); await load(); });
   }
@@ -75,8 +76,8 @@ export function BoardAdminPage({ ctx }: { ctx: Ctx }) {
     </Card>
 
     <Card title="게시글" caption="최근 200건 · 익명 글도 실제 작성자와 접속 IP가 보입니다. IP는 작성 1년 뒤 자동 파기됩니다. 행을 누르면 본문을 펼칩니다. 상단 검색은 제목·내용·작성자 ID를 찾습니다.">
-      <Tabs label="게시글 상태" value={filter} onChange={(value) => { setFilter(value); setOpen(null); }} options={[["reported", "신고된 글"], ["all", "전체"], ["active", "게시 중"], ["hidden", "숨김"]]} />
-      <div className="scroll-x tall"><table><thead><tr><th>#</th><th>게시판</th><th>제목</th><th>작성자 · IP</th><th>상태</th><th className="r">댓글</th><th className="r">조회</th><th className="r">신고</th><th>작성</th><th /></tr></thead><tbody>
+      <Tabs group="board-posts" label="게시글 상태" value={filter} onChange={(value) => { setFilter(value); setOpen(null); }} options={[["reported", "신고된 글"], ["all", "전체"], ["active", "게시 중"], ["hidden", "숨김"]]} />
+      <div className="scroll-x tall" {...tabPanel("board-posts", filter)}><table><thead><tr><th>#</th><th>게시판</th><th>제목</th><th>작성자 · IP</th><th>상태</th><th className="r">댓글</th><th className="r">조회</th><th className="r">신고</th><th>작성</th><th /></tr></thead><tbody>
         {posts.map((post) => <Fragment key={post.post_id}>
           <tr className={open === post.post_id ? "clickable selected" : "clickable"} tabIndex={0} onClick={() => setOpen(open === post.post_id ? null : post.post_id)} onKeyDown={(event) => { if (event.key === "Enter") setOpen(open === post.post_id ? null : post.post_id); }}>
             <td className="mono">#{post.post_id}</td>
@@ -214,8 +215,8 @@ function TrendingAdmin({ ctx }: { ctx: Ctx }) {
   const [boost, setBoost] = useState("10");
   const load = useCallback(async () => setData(await api<Trending>("/api/admin/board?view=search")), []);
   useEffect(() => { load().catch((cause) => say(cause instanceof Error ? cause.message : "검색어를 불러오지 못했습니다.", true)); }, [load]);
-  const act = (target: string, action: "block" | "unblock" | "reset" | "pin" | "unpin" | "boost", confirmText?: string, extra: Record<string, unknown> = {}) => {
-    if (confirmText && !window.confirm(confirmText)) return;
+  const act = async (target: string, action: "block" | "unblock" | "reset" | "pin" | "unpin" | "boost", confirmText?: string, extra: Record<string, unknown> = {}) => {
+    if (confirmText && !await confirmAction(confirmText)) return;
     void run(() => api<{ message: string; success: boolean }>(`/api/admin/board/search/${encodeURIComponent(target)}`, { method: "POST", body: JSON.stringify({ action, ...extra }) }),
       "검색어를 처리하지 못했습니다.", async (result) => { say(plain(result.message), !result.success); await load(); });
   };

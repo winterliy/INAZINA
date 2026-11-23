@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Money } from "../../shared/money";
 import { api } from "../../shared/api";
-import { Card, Field, date, number, plain, show, type Ctx } from "./common";
+import { Card, Field, date, number, plain, show, type Ctx, confirmAction } from "./common";
 
 type Component = { company_code: string; name: string | null; previous_price: number; total_shares: number };
 type Listing = { code: string; name: string | null; kind: string; share_class: "common" | "preferred" | null; quote_currency: string | null; status: string };
@@ -63,8 +63,8 @@ export function ExchangesPage({ ctx }: { ctx: Ctx }) {
   const draftCurrency = exchanges.find((item) => item.nationality === draft.nationality)?.requirements?.currency || "거래소 통화";
   const visible = exchanges.filter((item) => !query.trim() || `${item.exchange_id} ${item.nationality}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
 
-  function act(id: string, body: Record<string, unknown>, question: string) {
-    if (!window.confirm(question)) return;
+  async function act(id: string, body: Record<string, unknown>, question: string) {
+    if (!await confirmAction(question)) return;
     void run(() => api<Result>(`/api/admin/exchanges/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(body) }),
       "거래소 설정을 바꾸지 못했습니다.", async (result) => { say(plain(result.message), !result.success); if (body.action === "delete") setSelected(""); await load(); });
   }
@@ -146,9 +146,9 @@ export function ExchangesPage({ ctx }: { ctx: Ctx }) {
         <Field label="시장 유형"><select value={draft.marketType} onChange={(event) => setDraft({ ...draft, marketType: event.target.value as "exchange" | "otc" })}><option value="exchange">거래소</option><option value="otc">장외시장</option></select></Field>
         <button className="btn primary" disabled={busy || !draft.id.trim()}>{draft.marketType === "exchange" ? "다음 · 상장요건" : "장외시장 만들기"}</button>
       </form>}
-      {createStep === 2 && <form className="form-grid" onSubmit={(event) => {
+      {createStep === 2 && <form className="form-grid" onSubmit={async (event) => {
         event.preventDefault();
-        if (!window.confirm(`${draft.id} 거래소를 ${draft.nationality} 소속으로 만들까요?\n상장요건: ${requirementLabel({ ...draftRules, currency: draftCurrency })}`)) return;
+        if (!await confirmAction(`${draft.id} 거래소를 ${draft.nationality} 소속으로 만들까요?\n상장요건: ${requirementLabel({ ...draftRules, currency: draftCurrency })}`)) return;
         void run(() => api<Result>(`/api/admin/exchanges/${encodeURIComponent(draft.id.trim())}`, { method: "POST", body: JSON.stringify({ action: "create", nationality: draft.nationality, marketType: "exchange", requirements: draftRules }) }),
           "거래소를 만들지 못했습니다.", async (result) => { say(plain(result.message), !result.success); if (result.success) { setCreateStep(1); setDraft({ ...draft, id: "" }); setDraftRules(NO_REQUIREMENTS); } await load(); });
       }}>

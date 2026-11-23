@@ -1,3 +1,4 @@
+import { promptDialog } from "../../shared/dialogs";
 import { AccountKindPicker } from "./accountKinds";
 import type { Money } from "../../shared/money";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -5,7 +6,7 @@ import type { FormEvent } from "react";
 import { api } from "../../shared/api";
 import { FundPanel } from "./FundPanel";
 import { ShareholderPie, type Shareholders } from "./Donut";
-import { Card, Field, changed, date, number, plain, show, text, type Ctx } from "./common";
+import { Card, Field, changed, date, number, plain, show, text, type Ctx, confirmAction } from "./common";
 
 type KindField = { key: string; label: string; optional: boolean; text: boolean; choices?: Record<string, string>; terms?: Record<string, Record<string, unknown>> };
 type AdvancedField = { key: string; label: string; type: string };
@@ -232,10 +233,10 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
       });
   }
 
-  function handleCustodyInstruction(referenceKey: string, action: "settle" | "cancel" | "reject") {
+  async function handleCustodyInstruction(referenceKey: string, action: "settle" | "cancel" | "reject") {
     const verb = action === "settle" ? "정산" : action === "cancel" ? "취소" : "거절";
     const reasonCode = action === "reject"
-      ? window.prompt("거절 사유 코드: compliance_review, invalid_program, insufficient_custody, operational_error, other", "operational_error")
+      ? await promptDialog({ title: "거절 사유 코드", message: "compliance_review, invalid_program, insufficient_custody, operational_error, other", initial: "operational_error" })
       : null;
     if (action === "reject" && reasonCode === null) return;
     void run(() => api<{ success: boolean; result: unknown }>(
@@ -291,7 +292,7 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
     });
   }
 
-  function save(event: FormEvent<HTMLFormElement>) {
+  async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!editor) return;
     const spec = kindOf(editor.kind)!;
@@ -305,7 +306,7 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
       ? [...Object.entries(fields).map(([key, value]) => `${spec.fields.find((field) => field.key === key)?.label ?? key}: ${show(editor.original?.values[key])} → ${show(value)}`),
          ...Object.entries(advanced).map(([key, value]) => `${key}: ${show(editor.original?.row[key])} → ${show(value)}`)].join("\n")
       : `${spec.label} ${editor.code}`;
-    if (!window.confirm(`${editor.mode === "create" ? "상품을 생성할까요?" : `${editor.code} 상품을 수정할까요?`}\n\n${summary}`)) return;
+    if (!await confirmAction(`${editor.mode === "create" ? "상품을 생성할까요?" : `${editor.code} 상품을 수정할까요?`}\n\n${summary}`)) return;
     void run(() => api<{ message: string; success: boolean }>("/api/admin/products", {
       method: "POST", body: JSON.stringify({ operation: editor.mode, kind: editor.kind, code: editor.code.trim(), fields, advanced }),
     }), "상품을 저장하지 못했습니다.", async (result) => {
@@ -314,23 +315,23 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
     });
   }
 
-  function toggle(item: Product) {
+  async function toggle(item: Product) {
     const active = item.status !== "active";
     const label = item.kind === "els" && !active ? "모집 취소(청약금 환불)" : active ? "재개" : "거래 중지";
-    if (!window.confirm(`${item.name} (${item.code})을 ${label}할까요?`)) return;
+    if (!await confirmAction(`${item.name} (${item.code})을 ${label}할까요?`)) return;
     void run(() => api<{ message: string; success: boolean }>(`/api/admin/products/${encodeURIComponent(item.code)}/status`, { method: "POST", body: JSON.stringify({ active }) }),
       "상태를 바꾸지 못했습니다.", async (result) => { say(plain(result.message), !result.success); await load(); });
   }
 
-  function terminateDr(item: Product) {
+  async function terminateDr(item: Product) {
     if (!item.drProgram) return;
-    if (!window.confirm(`${item.code} DR 프로그램을 영구 종료할까요? 보유·담보·주문·시뮬레이터 예탁분이 남아 있으면 서버가 거부합니다. 종료 후 재활성화할 수 없습니다.`)) return;
+    if (!await confirmAction(`${item.code} DR 프로그램을 영구 종료할까요? 보유·담보·주문·시뮬레이터 예탁분이 남아 있으면 서버가 거부합니다. 종료 후 재활성화할 수 없습니다.`)) return;
     void run(() => api<{ message: string; success: boolean }>(`/api/admin/products/${encodeURIComponent(item.code)}/status`, { method: "POST", body: JSON.stringify({ terminate: true }) }),
       "DR 프로그램을 종료하지 못했습니다.", async (result) => { say(plain(result.message), !result.success); await load(); });
   }
 
-  function purge(item: Product) {
-    if (!window.confirm(`${item.name} (${item.code})을 완전히 삭제할까요?\n\n상품 정의와 시세 기록·차트 선이 지워지고 되돌릴 수 없습니다. 주문·배당 같은 과거 기록은 남습니다. 보유자나 미체결 주문, 계좌·대출 등이 남아 있으면 서버가 거부합니다.`)) return;
+  async function purge(item: Product) {
+    if (!await confirmAction(`${item.name} (${item.code})을 완전히 삭제할까요?\n\n상품 정의와 시세 기록·차트 선이 지워지고 되돌릴 수 없습니다. 주문·배당 같은 과거 기록은 남습니다. 보유자나 미체결 주문, 계좌·대출 등이 남아 있으면 서버가 거부합니다.`)) return;
     void run(() => api<{ message: string; success: boolean }>(`/api/admin/products/${encodeURIComponent(item.code)}/delete`, { method: "POST", body: "{}" }),
       "상품을 삭제하지 못했습니다.", async (result) => { say(plain(result.message), !result.success); if (editor?.code === item.code) setEditor(null); await load(); });
   }
@@ -375,9 +376,9 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
         })}
         <button className="btn primary" disabled={busy}>{busy ? "저장 중…" : editor.mode === "create" ? "생성" : "저장"}</button>
       </form>
-      {editor.mode === "edit" && <RatioPanel key={editor.code} editor={editor} spec={spec} busy={busy} submit={(fields, advanced, summary) => {
+      {editor.mode === "edit" && <RatioPanel key={editor.code} editor={editor} spec={spec} busy={busy} submit={async (fields, advanced, summary) => {
         if (!Object.keys(fields).length && !Object.keys(advanced).length) { say("변경된 비율이 없습니다.", true); return; }
-        if (!window.confirm(`${editor.code} 비율을 바꿀까요?\n\n${summary}`)) return;
+        if (!await confirmAction(`${editor.code} 비율을 바꿀까요?\n\n${summary}`)) return;
         void run(() => api<{ message: string; success: boolean }>("/api/admin/products", { method: "POST", body: JSON.stringify({ operation: "edit", kind: editor.kind, code: editor.code, fields, advanced }) }),
           "비율을 저장하지 못했습니다.", async (result) => { say(plain(result.message), !result.success); if (result.success) { setEditor(null); await load(); } });
       }} />}
