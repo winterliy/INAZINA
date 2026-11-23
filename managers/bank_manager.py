@@ -1083,7 +1083,8 @@ class BankManager:
                     "SELECT 1 FROM country_currencies WHERE nationality=?", (proposed_country,)
                 ).fetchone() else None)
                 from functions.jurisdiction_rules import max_rate_percent as _rule_max_rate
-                rule_legal_max = _rule_max_rate(conn, contract_country, epoch=opened_epoch)  # dated rule; None keeps legal_max_rate
+                from functions.jurisdiction_rules import customer_type_for as _customer_type
+                rule_legal_max = _rule_max_rate(conn, contract_country, customer_type=_customer_type(user_id), epoch=opened_epoch)
                 stress_country = user["nationality"]
                 if not stress_country or not conn.execute(
                     "SELECT 1 FROM country_currencies WHERE nationality=?",
@@ -1443,7 +1444,12 @@ class BankManager:
                 InterestManager.settle_loan_rate_boundary(conn, loan, product, now)
                 extension = float(product['extension_interest_rate'] or 0)
                 applied = extension if extension > 0 else float(loan['contract_rate'] if loan['contract_rate'] is not None else product['interest_rate'])
-                RateManager.require_legal_rate(conn, applied, nationality=loan['rate_nationality'], currency_code=loan['quote_currency'])
+                from functions.jurisdiction_rules import contract_max_rate_percent as _contract_cap
+                _rule_cap = _contract_cap(conn, loan['rate_nationality'], loan['user_id'], loan['created_at'])
+                if _rule_cap is None:
+                    RateManager.require_legal_rate(conn, applied, nationality=loan['rate_nationality'], currency_code=loan['quote_currency'])
+                elif applied > _rule_cap:
+                    raise ValueError(f"상품 연이율 {applied:g}%는 계약일 기준 최고금리 {_rule_cap:g}%를 넘을 수 없습니다.")
                 conn.execute('UPDATE loans SET contract_rate=? WHERE loan_id=?', (applied, loan['loan_id']))
                 after = max(float(before), now)+days*86400
                 conn.execute("UPDATE loans SET maturity_epoch=?,extension_count=extension_count+1,"

@@ -115,6 +115,11 @@ class InterestManager:
         segments = []
         resets = []
 
+        rule_cap = None
+        if apply_legal_max and "user_id" in contract.keys() and "created_at" in contract.keys():
+            from functions.jurisdiction_rules import contract_max_rate_percent
+            rule_cap = contract_max_rate_percent(conn, contract["rate_nationality"], contract["user_id"], contract["created_at"])
+
         def reset_at(scheduled_epoch, current_rate):
             observation = max(
                 0, scheduled_epoch-float(contract["repricing_lag_seconds"] or 0)
@@ -124,7 +129,7 @@ class InterestManager:
                 contract["rate_floor"], contract["rate_cap"], epoch=observation,
                 benchmark_key=contract["benchmark_key"],
                 tenor_days=contract["benchmark_tenor_days"],
-                apply_legal_max=apply_legal_max,
+                apply_legal_max=apply_legal_max, legal_max_override=rule_cap,
             )
             resets.append((current_rate, new_rate, scheduled_epoch, observation))
             return new_rate
@@ -812,6 +817,10 @@ class InterestManager:
             conn, "legal_max_rate", loan["rate_nationality"],
             require_country=bool(loan["rate_nationality"]),
         )
+        from functions.jurisdiction_rules import contract_max_rate_percent
+        rule_cap = contract_max_rate_percent(conn, loan["rate_nationality"], loan["user_id"], loan["created_at"])
+        if rule_cap is not None:                 # the cap in force on the contract date; no rule keeps the current country cap
+            legal = rule_cap
         overdue_rate = min(legal, max(0.0, float(loan["contract_rate"] or 0)
                                      + float(product["delinquency_spread"] or 0)))
         fractional = (from_subminor_units(

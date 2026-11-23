@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 import test_inazina as fixtures
 from functions import jurisdiction_rules as rules
 from functions.money import audit_amount_field_coverage
+from managers.interest_manager import InterestManager
 from web_api import server
 
 DAY = 86400
@@ -113,6 +114,54 @@ class ContractTests(RuleBase):
         with self.db.atomic() as conn:
             self.add(conn, int(time.time()) + 10 * DAY, customer="corporate", max_rate_bps=100)
         self.assertEqual(self.db.accounts.execute_one("SELECT contract_rate FROM loans WHERE product_code='L2'")[0], rate)
+
+
+class DatedRuleOnSignedLoanTests(ContractTests):
+    """Overdue interest and extension use the cap in force on the contract date; without a rule they behave as before."""
+
+    def aged_loan(self, code):
+        self.sign(code)
+        start = time.time() - 10 * DAY
+        self.db.accounts.execute("UPDATE loans SET created_at=datetime(?,'unixepoch'),last_payment_epoch=?,maturity_epoch=? WHERE product_code=?",
+                                 (start, start + 9 * DAY, start + 9 * DAY, code))
+
+    def overdue_growth(self):
+        before = self.db.accounts.execute_one("SELECT outstanding_balance FROM loans")[0]
+        InterestManager(self.db).process_user_interests("citizen", now=time.time())
+        return self.db.accounts.execute_one("SELECT outstanding_balance FROM loans")[0] - before
+
+    def test_overdue_interest_without_a_rule_is_unchanged(self):
+        self.aged_loan("O0")
+        self.assertGreater(self.overdue_growth(), 0)
+
+    def test_overdue_interest_is_capped_by_the_rule_of_the_contract_date(self):
+        self.aged_loan("O1")
+        with self.db.atomic() as conn:
+            self.add(conn, 0, max_rate_bps=0)
+        self.assertEqual(self.overdue_growth(), 0)
+
+    def test_a_rule_that_started_after_the_contract_does_not_cap_it(self):
+        self.aged_loan("O2")
+        with self.db.atomic() as conn:
+            self.add(conn, int(time.time()) - DAY, max_rate_bps=0)    # the loan was signed 10 days ago
+        self.assertGreater(self.overdue_growth(), 0)
+
+    def test_extension_checks_the_rule_of_the_contract_date(self):
+        self.aged_loan("E1")                           # extension rate 20
+        with self.db.atomic() as conn:
+            self.add(conn, 0, max_rate_bps=1500)
+        ok, message = self.bot.bank_mgr.extend_loan("citizen", "E1", now=time.time())
+        self.assertFalse(ok)
+        self.assertIn("최고금리", message)
+
+    def test_a_corporate_rule_does_not_touch_an_individual_loan(self):
+        with self.db.atomic() as conn:
+            self.add(conn, 0, customer="corporate", max_rate_bps=100)
+        self.assertEqual(self.sign("C1"), 10)
+
+    def test_customer_type_follows_the_account_kind(self):
+        self.assertEqual(rules.customer_type_for("company:ACME"), "corporate")
+        self.assertEqual(rules.customer_type_for("u1"), "individual")
 
 
 class AdminApiTests(RuleBase):

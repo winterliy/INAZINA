@@ -76,3 +76,22 @@ def list_rules(conn, nationality=None):
     rows = conn.execute(sql + (" WHERE nationality=?" if nationality else "") + " ORDER BY nationality,effective_epoch DESC,rule_id DESC",
                         (nationality,) if nationality else ()).fetchall()
     return [dict(row) for row in rows]
+
+
+def customer_type_for(user_id):
+    """Company accounts are ``company:<code>``; every other account is an individual."""
+    return "corporate" if str(user_id or "").startswith("company:") else "individual"
+
+
+def contract_max_rate_percent(conn, nationality, user_id, contract_date, *, product_type="loan"):
+    """The rule's maximum annual percent on the contract date (a UTC ``YYYY-MM-DD HH:MM:SS`` text or epoch), or None."""
+    from datetime import datetime, timezone
+    if contract_date is None or not nationality:
+        return None
+    if isinstance(contract_date, str):
+        try:
+            contract_date = datetime.strptime(contract_date, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            return None
+    return max_rate_percent(conn, nationality, customer_type=customer_type_for(user_id), product_type=product_type,
+                            epoch=int(contract_date))
