@@ -6,6 +6,7 @@ import { Logo } from "../../shared/Logo";
 import { navigate } from "./nav";
 import { SsoGate } from "../../shared/SsoGate";
 import { AccountWithdrawal } from "./AccountWithdrawal";
+import { totalInHome } from "./exactTotal";
 import { logoutRedirect, currentReturnTo, ssoLoginUrl } from "../../shared/sso";
 import { guestCanView, loginPanelRequested } from "./guest";
 import "./guest.css";
@@ -817,7 +818,7 @@ export default function App() {
         <dl>
           <div><dt>로그인 아이디</dt><dd>{htsId || "미설정"}</dd></div>
           <div><dt>지갑</dt><dd>{money(portfolio?.cash ?? me.cash, homeDigits)} {homeCurrency}</dd></div>
-          <div><dt>순자산 <RefreshRateButton busy={ratesBusy} onRefresh={() => void refreshRates()} /></dt><dd>{money(inHome(portfolio?.net_worth ?? 0), homeDigits)} {homeCurrency}</dd></div>
+          <div><dt>순자산 <RefreshRateButton busy={ratesBusy} onRefresh={() => void refreshRates()} /></dt><dd>{money(totalInHome(portfolio?.net_worth ?? 0, portfolio, inHome), homeDigits)} {homeCurrency}</dd></div>
           {credit && <div><dt>신용점수</dt><dd>{credit.score}점</dd></div>}
         </dl>
         <button type="button" onClick={() => void logout()}>{me.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button>
@@ -926,8 +927,8 @@ export default function App() {
         <section className={`wallet-tile${locked}`} aria-label="내 지갑" {...lock("로그인하고 내 지갑 보기")}>
           <section className="wallet-summary">
             <span>내 순자산 · {portfolio?.nationality ?? me.nationality} · {homeCurrency}<RefreshRateButton busy={ratesBusy} onRefresh={() => void refreshRates()} /></span>
-            <strong>{compactMoney(inHome(portfolio?.net_worth ?? 0))} <small>{homeCurrency}</small></strong>
-            <p>총자산 {compactMoney(inHome(portfolio?.grand_total ?? 0))} · 현금 {compactMoney(portfolio?.cash ?? me.cash)} {homeCurrency}</p>
+            <strong>{compactMoney(totalInHome(portfolio?.net_worth ?? 0, portfolio, inHome))} <small>{homeCurrency}</small></strong>
+            <p>총자산 {compactMoney(totalInHome(portfolio?.grand_total ?? 0, portfolio, inHome))} · 현금 {compactMoney(portfolio?.cash ?? me.cash)} {homeCurrency}</p>
             {portfolio?.kyc_profile && <p>KYC · {KYC_STATUS[portfolio.kyc_profile.status]} · {KYC_RISK[portfolio.kyc_profile.risk_tier]}{portfolio.kyc_profile.expires_epoch ? ` · 만료 ${date(portfolio.kyc_profile.expires_epoch)}` : ""}</p>}
       {/* 세무거주지는 지금 국적과 동일하게 자동 적용합니다. 직접 바꾸는 화면은 숨겼습니다(서버 기능은 그대로). */}
           </section>
@@ -944,7 +945,7 @@ export default function App() {
             <div className="wallet-row"><span>투자 평가액</span><b>{compactMoney(inHome(portfolio?.stock_total || 0))} {homeCurrency}</b></div>
             <div className="wallet-row"><span>매수 예치금</span><b>{compactMoney(inHome(portfolio?.order_reserved_total || 0))} {homeCurrency}</b></div>
             <div className="wallet-row"><span>대출</span><b>{compactMoney(inHome(portfolio?.loan_total || 0))} {homeCurrency}</b></div>
-            <div className="wallet-row net-worth"><span>순자산</span><b>{compactMoney(inHome(portfolio?.net_worth || 0))} {homeCurrency}</b></div>
+            <div className="wallet-row net-worth"><span>순자산</span><b>{compactMoney(totalInHome(portfolio?.net_worth || 0, portfolio, inHome))} {homeCurrency}</b></div>
             {(portfolio?.accounts ?? []).filter((account) => account.resolution_status === "active").map((account) => <div className="wallet-row account-detail" key={account.number}><span>{account.product_name} · {account.currency_code}<small>{account.number}</small>{account.rate_type === "floating" && account.next_repricing_epoch != null && <small>현재 연 {(account.contract_rate == null ? undefined : Number(account.contract_rate).toFixed(4)) ?? "—"}% · 지표 관측 기준일 {date(Math.max(0, account.next_repricing_epoch - account.repricing_lag_seconds))} · 재산정 예정 {date(account.next_repricing_epoch)} · {RATE_BENCHMARK_LABELS[account.benchmark_key || ""] || account.benchmark_key || "기준금리"} {account.benchmark_tenor_days}일 · 새 금리는 재산정 시 확정</small>}{account.rate_resets.map((reset, index) => <small key={`${reset.applied_epoch}-${index}`}>이전 재산정 {date(reset.applied_epoch)} · {RATE_BENCHMARK_LABELS[reset.benchmark_key] || reset.benchmark_key} {reset.benchmark_tenor_days}일 · 연 {reset.old_rate}% → {reset.new_rate}%</small>)}</span><b>{money(account.balance, account.decimal_places)} {account.currency_code}</b></div>)}
           </section>
           {credit && <section className="data-panel wallet-credit" aria-label="신용점수">

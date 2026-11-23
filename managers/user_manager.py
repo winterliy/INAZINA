@@ -1215,6 +1215,8 @@ class UserManager:
             "futures_collateral": futures_collateral,
             "futures_unrealized": futures_unrealized,
             "grand_total": grand_total,
+            # The cash part of the totals in 기준 통화 (whole units): lets a screen show the cash exactly instead of through this rounding.
+            "cash_value_nwx": cash_value_nwx,
             "loan_total": loan_total,
             # Loans are owed in the home currency; totals are valued in 기준 통화.
             "net_worth": grand_total - loan_total_base,
