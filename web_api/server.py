@@ -944,6 +944,7 @@ def authenticate_password(user_id, password):
             "SELECT salt,password_hash FROM web_auth_credentials WHERE user_id=?", (user_id,),
         ).fetchone()
     if not credential:
+        password_hash(password, _LOGIN_DUMMY_SALT)  # an unknown id costs what a wrong password costs
         return None
     digest = password_hash(password, credential["salt"])
     if not hmac.compare_digest(digest, credential["password_hash"]):
@@ -5567,9 +5568,10 @@ class Handler(BaseHTTPRequestHandler):
                 record_admin_login(user_id, bool(user), payload.get("meta"),
                                    None if user else "account_not_found" if not account_exists else "invalid_credentials")
                 if not user and not account_exists and isinstance(payload.get("password"), str):
-                    # A missing id answers exactly like a wrong password, in the same time, so the login does not
-                    # reveal whether an id exists. The admin login log above still records the real reason.
-                    password_hash(payload["password"], _LOGIN_DUMMY_SALT)
+                    # A missing id answers exactly like a wrong password, in the same time (the same lookups and one
+                    # hash), so the login does not reveal whether an id exists. The admin login log above still
+                    # records the real reason.
+                    authenticate_password("", payload["password"])
                 if not user:
                     self.send_json(401, {"error": "invalid_credentials"})
                 else:

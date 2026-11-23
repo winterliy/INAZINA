@@ -19,9 +19,9 @@ class LoginEnumerationTests(unittest.TestCase):
         with patch.object(server, "INTERNAL_TOKEN", "secret"), \
              patch.object(server, "authenticate_login_identifier", return_value=auth_result), \
              patch.object(server, "record_admin_login") as record, \
-             patch.object(server, "password_hash") as dummy_hash:
+             patch.object(server, "authenticate_password") as dummy_check:
             server.Handler.do_POST(handler)
-        return response, record, dummy_hash
+        return response, record, dummy_check
 
     def test_unknown_id_and_wrong_password_look_identical(self):
         unknown, _, _ = self.login((None, False))
@@ -29,13 +29,30 @@ class LoginEnumerationTests(unittest.TestCase):
         self.assertEqual(unknown, wrong)
         self.assertEqual(unknown, {"status": 401, "value": {"error": "invalid_credentials"}})
 
-    def test_an_unknown_id_still_pays_for_one_password_hash(self):
-        _, _, dummy_hash = self.login((None, False))
-        dummy_hash.assert_called_once_with("pw-guess", server._LOGIN_DUMMY_SALT)
+    def test_an_unknown_id_runs_the_same_credential_check_as_a_wrong_password(self):
+        _, _, dummy_check = self.login((None, False))
+        dummy_check.assert_called_once_with("", "pw-guess")
 
-    def test_a_known_id_is_not_hashed_a_second_time(self):
-        _, _, dummy_hash = self.login((None, True))
-        dummy_hash.assert_not_called()
+    def test_a_known_id_is_not_checked_a_second_time(self):
+        _, _, dummy_check = self.login((None, True))
+        dummy_check.assert_not_called()
+
+    def test_a_missing_credential_row_still_pays_for_one_hash(self):
+        import tempfile
+        from pathlib import Path
+        from database import DatabaseManager
+        from database.db_manager import DBManager
+        previous = DBManager.database_dir
+        with tempfile.TemporaryDirectory() as root:
+            DBManager.database_dir = Path(root)
+            db = DatabaseManager()
+            try:
+                with patch.object(server, "password_hash") as hashed:
+                    self.assertIsNone(server.authenticate_password("no-such-user", "pw-guess"))
+                hashed.assert_called_once_with("pw-guess", server._LOGIN_DUMMY_SALT)
+            finally:
+                db.close()
+                DBManager.database_dir = previous
 
     def test_the_admin_login_log_keeps_the_real_reason(self):
         _, record, _ = self.login((None, False))
