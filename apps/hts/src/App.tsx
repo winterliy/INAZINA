@@ -172,11 +172,11 @@ export default function App() {
   const [settingsMessage, setSettingsMessage] = useState("");
   const [settingsError, setSettingsError] = useState("");
   const [settingsBusy, setSettingsBusy] = useState(false);
-  const [taxResidency, setTaxResidency] = useState<TaxResidency | null>(null);
+  // 세무거주지는 국적과 동일하게 자동 적용하고 화면에서 바꾸지 않습니다(서버 기능은 그대로).
+  const [, setTaxResidency] = useState<TaxResidency | null>(null);
   const [ownershipGraph, setOwnershipGraph] = useState<OwnershipGraphData>();
   const [ownershipLoading, setOwnershipLoading] = useState(() => ["/ownership", "/ownership/"].includes(location.pathname));
-  const [taxResidencyOpen, setTaxResidencyOpen] = useState(false);
-  const [taxResidencyValue, setTaxResidencyValue] = useState("");
+  const [, setTaxResidencyValue] = useState("");
   const [range, setRange] = useState<string>("1d");
   const [chartMode, setChartMode] = useState<"candle" | "line">("candle");
   const [interval, setIntervalSeconds] = useState<number | null>(null);
@@ -321,24 +321,6 @@ export default function App() {
   const refreshAccountQuiet = useCallback(async () => {
     try { await refreshAccount(); lastPollError.current.delete("account"); } catch (cause) { reportPollError("account", cause, "계좌 정보를 불러오지 못했습니다."); }
   }, [refreshAccount, reportPollError]);
-
-  async function saveTaxResidency(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSettingsBusy(true);
-    setSettingsError("");
-    setSettingsMessage("");
-    try {
-      const saved = await api<{ taxResidency: string | null }>("/api/me/tax-residency", {
-        method: "POST", body: JSON.stringify({ residency: taxResidencyValue || null }),
-      });
-      setTaxResidency((current) => current ? { ...current, taxResidency: saved.taxResidency } : current);
-      setSettingsMessage("세무거주지를 저장했습니다. 이후 확정되는 주주명부부터 적용됩니다.");
-    } catch (cause) {
-      setSettingsError(errorText(cause, "세무거주지를 저장하지 못했습니다."));
-    } finally {
-      setSettingsBusy(false);
-    }
-  }
 
   useEffect(() => {
     authAlive.current = true;
@@ -947,16 +929,7 @@ export default function App() {
             <strong>{compactMoney(inHome(portfolio?.net_worth ?? 0))} <small>{homeCurrency}</small></strong>
             <p>총자산 {compactMoney(inHome(portfolio?.grand_total ?? 0))} · 현금 {compactMoney(portfolio?.cash ?? me.cash)} {homeCurrency}</p>
             {portfolio?.kyc_profile && <p>KYC · {KYC_STATUS[portfolio.kyc_profile.status]} · {KYC_RISK[portfolio.kyc_profile.risk_tier]}{portfolio.kyc_profile.expires_epoch ? ` · 만료 ${date(portfolio.kyc_profile.expires_epoch)}` : ""}</p>}
-            {taxResidency && <button type="button" className="text-button" onClick={() => setTaxResidencyOpen((open) => !open)}>세무거주지 · {taxResidency?.taxResidency || `국적(${taxResidency?.nationality ?? me.nationality}) 사용 중`} 변경</button>}
-            {taxResidency && taxResidencyOpen && <form className="account-form tax-residency-form" onSubmit={saveTaxResidency}>
-              <label>세무거주 국가<select value={taxResidencyValue} onChange={(event) => setTaxResidencyValue(event.target.value)}>
-                <option value="">국적 기본값 사용 ({taxResidency?.nationality ?? me.nationality})</option>
-                {(taxResidency?.countries ?? []).map((country) => <option key={country} value={country}>{country}</option>)}
-              </select></label>
-              <p className="account-hint">시뮬레이터 세칙 선택에 사용합니다. 증빙 확인이나 법률상 거주자 판정은 수행하지 않습니다.</p>
-              {settingsMessage && <p className="account-success" role="status">{settingsMessage}</p>}{settingsError && <p className="account-error" role="alert">{settingsError}</p>}
-              <button className="account-save" disabled={settingsBusy}>{settingsBusy ? "저장 중…" : "세무거주지 저장"}</button>
-            </form>}
+      {/* 세무거주지는 지금 국적과 동일하게 자동 적용합니다. 직접 바꾸는 화면은 숨겼습니다(서버 기능은 그대로). */}
           </section>
           <div className="wallet-actions">
             <a href={`/commands/${encodeURIComponent("송금")}`}>송금</a>
