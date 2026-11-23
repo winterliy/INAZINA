@@ -19,7 +19,7 @@ const SETTING_LABELS: Record<string, string> = {
   INAZINA_WL: "위키 뷰어", INAZINA_DOMAIN: "도메인", INAZINA_GUEST_RATE_PER_MINUTE: "비회원 분당 요청 한도",
   INAZINA_READ_CACHE_SECONDS: "읽기 캐시(초)", INAZINA_DB_BACKEND: "데이터베이스",
 };
-const LOG_LABELS: Record<string, string> = { api: "API 서버", bot: "디스코드 봇·데이터 서비스", caddy: "도메인 서버 (Caddy)", hts: "나루 화면", dashboard: "콘솔 화면", site: "공식 사이트 화면", wl: "위키 뷰어" };
+const LOG_LABELS: Record<string, string> = { api: "API 서버 · 데이터 서비스", bot: "디스코드 봇", caddy: "도메인 서버 (Caddy)", hts: "나루 화면", dashboard: "콘솔 화면", site: "공식 사이트 화면", wl: "위키 뷰어" };
 
 /** 서비스: which services answer, the settings that matter and the end of each log (read-only; start_all runs the services in a terminal). */
 export function OpsPage({ ctx }: { ctx: Ctx }) {

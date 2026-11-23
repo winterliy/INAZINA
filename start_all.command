@@ -138,6 +138,8 @@ if [[ ! -f "$api_built" ]] || [[ -n "$(find "$ROOT/apps/api/src" "$ROOT/apps/api
     exit 1
   }
 fi
+# The API reports this value on the console's 서비스 page (screens served by Caddy are "on" without a dev server).
+export INAZINA_FRONTEND="$FRONTEND"
 start api npm run start --workspace @inazina/api
 if [[ "$FRONTEND" != "static" ]]; then
   start dashboard npm run dev:dashboard
