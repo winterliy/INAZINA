@@ -40,6 +40,20 @@ class BaselineReport:
             result.append({"table": table, "label": LABELS.get(table, "기준 상태 표시" if table in STATE_TABLES else table), "rows": count})
         return result
 
+    @classmethod
+    def immutability_findings(cls, conn):
+        """A declared baseline is history we could not prove; if its rows could still be edited or deleted it would be
+        a way to write history. Every baseline table must reject UPDATE and DELETE (a BEFORE trigger for each)."""
+        findings = []
+        for table in cls._tables(conn):
+            kinds = {int(row[0]) & 24 for row in conn.execute(
+                "SELECT t.tgtype FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid "
+                "WHERE c.relname=? AND NOT t.tgisinternal AND (t.tgtype & 2)=2", (table,))}
+            covered = {bit for kind in kinds for bit in (8, 16) if kind & bit}
+            if covered != {8, 16}:
+                findings.append({"table": table, "status": "mutable_baseline"})
+        return findings
+
     @staticmethod
     def wallet_as_of(conn, user_id, currency, epoch):
         """A wallet's balance (minor units) at ``epoch``, rebuilt from the wallet ledger, with how it can be trusted.

@@ -30,3 +30,12 @@ class BaselineReportTests(unittest.TestCase):
         self.assertEqual(before, {"balance": 0, "baselined": False})
         self.assertEqual(after["balance"], current)
         self.assertEqual(current, 10_000)
+
+    def test_every_declared_baseline_rejects_update_and_delete(self):
+        with self.db.readonly() as conn:
+            self.assertEqual(BaselineReport.immutability_findings(conn), [])
+
+    def test_a_baseline_table_without_the_guards_is_reported(self):
+        with self.db.atomic() as conn:
+            conn.execute("CREATE TABLE scratch_baseline (k TEXT)")
+            self.assertEqual(BaselineReport.immutability_findings(conn), [{"table": "scratch_baseline", "status": "mutable_baseline"}])

@@ -4697,6 +4697,7 @@ def accounting_close_overview(check=False):
         residuals = FxResiduals.report(conn)
         history = FxResiduals.history(conn)
         baselines = BaselineReport.collect(conn)
+        baseline_findings = BaselineReport.immutability_findings(conn)
         fx_check = FxRevaluation.close_check(conn)
         revaluation = {"preview": FxRevaluation.preview(conn), "history": FxRevaluation.history(conn),
                        "period": fx_check['period'], "closeCheck": fx_check,
@@ -4706,7 +4707,9 @@ def accounting_close_overview(check=False):
     fx_findings = revaluation["closeCheck"]["findings"]
     gates = [{"key": "fx_residual", "label": "환전 반올림 잔여 정리", "ok": pending == 0, "detail": f"정리할 통화 {pending}개"},
              {"key": "fx_revaluation", "label": "외환 포지션 평가", "ok": not fx_findings,
-              "detail": f"이번 기간 평가 이상 {len(fx_findings)}건"}]
+              "detail": f"이번 기간 평가 이상 {len(fx_findings)}건"},
+             {"key": "baseline_immutable", "label": "기준선 수정 방지", "ok": not baseline_findings,
+              "detail": f"수정 가능한 기준선 {len(baseline_findings)}개"}]
     close_ready = None
     if report is not None:
         coverage = report.get("amount_field_coverage") or {}
@@ -4716,9 +4719,9 @@ def accounting_close_overview(check=False):
             {"key": "coverage", "label": "금액 필드 분류", "ok": coverage.get("status") == "matched",
              "detail": f"미분류 {len(coverage.get('unclassified') or [])}건"},
         ] + gates
-        close_ready = bool(report.get("close_ready")) and pending == 0 and not fx_findings
+        close_ready = bool(report.get("close_ready")) and pending == 0 and not fx_findings and not baseline_findings
     return {"gates": gates, "checked": report is not None, "closeReady": close_ready, "residuals": residuals, "history": history,
-            "revaluation": revaluation, "baselines": baselines}
+            "revaluation": revaluation, "baselines": baselines, "baselineFindings": baseline_findings}
 
 
 def accounting_close_action(actor, payload):

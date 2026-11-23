@@ -59,3 +59,52 @@ class CloseIntegrationTests(unittest.TestCase):
         self.assertEqual(self.counts(), before)
         self.products.pay_corporate_bond_coupons(now=now)
         self.assertEqual(self.counts()[0], before[0] + 1)
+
+
+class PayoutRollbackTests(unittest.TestCase):
+    """Rollback matrix: a failing exchange record leaves every payout path exactly as it was, and a retry succeeds once."""
+    setUp = fixtures.MarketFeatureTests.setUp
+    tearDown = fixtures.MarketFeatureTests.tearDown
+    issue = fixtures.MarketFeatureTests.issue
+    issue_future = fixtures.MarketFeatureTests.issue_future
+    _foreign_future_trader = fixtures.MarketFeatureTests._foreign_future_trader
+    _nwx_units = fixtures.MarketFeatureTests._nwx_units
+    USER = "foreign-future"
+    from tests.test_payouts import PayoutChoiceTests as _P
+    _close_position_without_an_nwx_account = _P._close_position_without_an_nwx_account
+    _pending = _P._pending
+
+    def snapshot(self):
+        with self.db.readonly() as conn:
+            return (conn.execute("SELECT COUNT(*) FROM cash_fx_settlements").fetchone()[0],
+                    conn.execute("SELECT COUNT(*) FROM business_cash_events").fetchone()[0],
+                    [tuple(r) for r in conn.execute("SELECT payout_id,status,decided_epoch FROM payout_requests ORDER BY payout_id")],
+                    int(conn.execute("SELECT SUM(cash_minor) FROM users").fetchone()[0]))
+
+    def fail_then_retry(self, action):
+        from managers.payout_manager import PayoutManager
+        before = self.snapshot()
+        with patch.object(CurrencyManager, "record_fx_settlement", side_effect=RuntimeError("fx record failure")):
+            with self.assertRaises(RuntimeError):
+                with self.db.atomic() as conn:
+                    action(conn, PayoutManager)
+        self.assertEqual(self.snapshot(), before)
+        with self.db.atomic() as conn:
+            action(conn, PayoutManager)
+        self.assertNotEqual(self.snapshot(), before)
+        self.assertEqual(self.snapshot()[0], before[0] + 1)
+
+    def test_convert_rolls_back_whole(self):
+        self._close_position_without_an_nwx_account()
+        payout = self._pending()[0]
+        self.fail_then_retry(lambda conn, manager: manager.convert(conn, self.USER, payout["payout_id"], now=payout["created_epoch"] + 10))
+
+    def test_expiry_return_rolls_back_whole(self):
+        from managers.payout_manager import DAY, HOLD_DAYS
+        self._close_position_without_an_nwx_account()
+        payout = self._pending()[0]
+        late = payout["created_epoch"] + HOLD_DAYS * DAY + 1
+        with self.db.atomic() as conn:       # the payer is paid back in its own currency; make it a foreign home so an exchange happens
+            conn.execute("UPDATE payout_requests SET payer_id=? WHERE payout_id=?", (self.USER, payout["payout_id"]))
+            conn.execute("UPDATE payout_requests SET user_id='alice' WHERE payout_id=?", (payout["payout_id"],))
+        self.fail_then_retry(lambda conn, manager: manager.expire_due(conn, late))
