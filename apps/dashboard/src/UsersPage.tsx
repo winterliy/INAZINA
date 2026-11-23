@@ -39,7 +39,7 @@ export function UsersPage({ ctx, currentUserId }: { ctx: Ctx; currentUserId: str
   useEffect(() => { loadCountries().catch((cause) => ctx.say(cause instanceof Error ? cause.message : "국가를 불러오지 못했습니다.", true)); }, [loadCountries]);
   return <>
     <Tabs group="users" label="사용자 종류" value={tab} onChange={setTab} options={[["users", "사용자"], ["companies", "법인"], ["countries", "국가"]]} />
-    <div {...tabPanel("users", tab)}>
+    <div className="tab-pass" {...tabPanel("users", tab)}>
       {tab === "countries" ? <CountryTab ctx={ctx} countries={countries} reload={loadCountries} />
         : <UserTab key={tab} ctx={ctx} countries={countries} currentUserId={currentUserId} companies={tab === "companies"} />}
     </div>

@@ -627,8 +627,11 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
 
 /* ---- Bento: every titled card takes the full row, so tiles on a tab line up edge to edge. ---- */
 .content > * { min-width: 0; }
-.content > .glass.card { margin-bottom: 16px; padding: 28px 32px; border-radius: 28px; }
-.content > .glass.card .card-head h2 { font-size: 24px; letter-spacing: -.015em; }
+/* A tabpanel wrapper around whole cards takes no box of its own; its children behave as direct children of .content. */
+.tab-pass { display: contents; }
+.tab-pass > * { min-width: 0; }
+:is(.content, .tab-pass) > .glass.card { margin-bottom: 16px; padding: 28px 32px; border-radius: 28px; }
+:is(.content, .tab-pass) > .glass.card .card-head h2 { font-size: 24px; letter-spacing: -.015em; }
 
 /* The ownership pie is a donut: slices with hairline gaps around the share count. */
 .holders svg path { stroke: var(--surface); stroke-width: 3; }

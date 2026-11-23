@@ -120,7 +120,7 @@ export function AlmPage({ ctx }: { ctx: Ctx }) {
       {report && <span className="cap">{report.jurisdiction} 관할 · 기준통화 {report.currency}</span>}
     </div>
     <Tabs group="alm" value={tab} onChange={setTab} label="자금 · ALM 화면" options={[["metrics", "규제 지표"], ["funding", "도매조달"]]} />
-    <div {...tabPanel("alm", tab)}>
+    <div className="tab-pass" {...tabPanel("alm", tab)}>
     {tab === "funding" ? (bankId ? <FundingPanel ctx={ctx} bankId={bankId} currency={report?.currency ?? "NWX"} /> : <p className="cap">은행을 고르면 조달 내역을 불러옵니다.</p>)
       : !report ? <p className="cap">은행을 고르면 지표를 계산합니다.</p> : <>
       <div className="alm-two">

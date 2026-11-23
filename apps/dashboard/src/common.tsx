@@ -37,8 +37,9 @@ export type Ctx = {
   openCommand: (name: string, args: string, national?: boolean) => void;
 };
 
-export function Card({ title, caption, actions, children, className = "" }: { title: string; caption?: ReactNode; actions?: ReactNode; children?: ReactNode; className?: string }) {
-  return <section className={`glass card mb rise ${className}`}>
+/** `panel`: role/id/aria attributes for a tabpanel, put on the card itself so it stays a direct child of its container (the layout CSS depends on that). */
+export function Card({ title, caption, actions, children, className = "", panel }: { title: string; caption?: ReactNode; actions?: ReactNode; children?: ReactNode; className?: string; panel?: Record<string, unknown> }) {
+  return <section className={`glass card mb rise ${className}`} {...panel}>
     <div className="card-head"><div><h2>{title}</h2>{caption && <p className="cap">{caption}</p>}</div>{actions && <div className="actions">{actions}</div>}</div>
     <div className="card-body">{children}</div>
   </section>;

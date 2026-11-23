@@ -71,7 +71,7 @@ export function DocumentsPage({ ctx }: { ctx: Ctx }) {
         <b>{item.title}</b><small>{item.shown}{item.legal ? " · 공지 후 적용" : " · 즉시 적용"}</small>{item.pendingEffectiveEpoch ? <small className="doc-pending-tag">개정 예정 · {date(item.pendingEffectiveEpoch)} 적용</small> : null}<small className="mono">{number(item.size)}B · {item.updatedEpoch ? date(item.updatedEpoch) : "—"}</small>
       </button>)}</div>
     </Card>
-    {document && <div {...tabPanel("documents", selected)}><Card title={document.title} caption={<><span className="mono">{document.path}</span> · {document.shown}</>}
+    {document && <Card panel={tabPanel("documents", selected)} title={document.title} caption={<><span className="mono">{document.path}</span> · {document.shown}</>}
       actions={<><button className="soft" type="button" disabled={busy || !dirty} onClick={() => { setDraft(document.base); setPreview(null); }}>되돌리기</button>
         <button className="soft" type="button" disabled={busy} onClick={async () => { if (!dirty || await confirmAction("수정한 내용을 버리고 다시 불러올까요?")) void run(() => open(selected), "다시 불러오지 못했습니다."); }}>다시 불러오기</button>
         <button className="btn primary small" type="button" disabled={busy || !dirty} onClick={check}>변경 내용 확인</button></>}>
@@ -92,6 +92,6 @@ export function DocumentsPage({ ctx }: { ctx: Ctx }) {
           <button className="btn primary" type="button" disabled={busy || !preview.changed || preview.blocking} onClick={save}>{document.legal ? "확정 · 개정 공지" : "확정 저장"}</button></div>
       </div>}
       {document.history.length > 0 && <details className="help"><summary>보관된 이전 판 {document.history.length}개</summary><ul className="doc-history">{document.history.map((item) => <li key={item.name} className="mono">{item.name} · {number(item.size)}B</li>)}</ul><p className="hint">서버의 database/document_history/{document.id}/ 폴더에 있습니다.</p></details>}
-    </Card></div>}
+    </Card>}
   </>;
 }
