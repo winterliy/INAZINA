@@ -1,4 +1,16 @@
-BOOTSTRAP_ADMIN_IDS = frozenset({"1076861147560542278"})
+import os
+
+# Accounts that are administrators before the database says so (first start). The default keeps the original account;
+# INAZINA_BOOTSTRAP_ADMIN_IDS (comma separated) replaces it. An empty value is ignored so a typo cannot lock everyone out.
+DEFAULT_BOOTSTRAP_ADMIN_IDS = "1076861147560542278"
+
+
+def bootstrap_admin_ids(environ=os.environ):
+    raw = (environ.get("INAZINA_BOOTSTRAP_ADMIN_IDS") or "").strip()
+    return frozenset(item.strip() for item in (raw or DEFAULT_BOOTSTRAP_ADMIN_IDS).split(",") if item.strip())
+
+
+BOOTSTRAP_ADMIN_IDS = bootstrap_admin_ids()
 
 
 def resolve_user_role(user_id, user_data):

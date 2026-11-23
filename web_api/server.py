@@ -26,18 +26,8 @@ DATABASE = Path(os.environ.get("INAZINA_DB_PATH", ROOT / "database" / "inazina.d
 INTERNAL_TOKEN = os.environ.get("INAZINA_INTERNAL_TOKEN", "")
 PORT = int(os.environ.get("INAZINA_PYTHON_PORT", "4313"))
 MAX_HTTP_THREADS = max(1, min(int(os.environ.get("INAZINA_MAX_HTTP_THREADS", "16")), 64))
-# Accounts that are administrators before the database says so (first start). The default keeps the original account;
-# INAZINA_BOOTSTRAP_ADMIN_IDS (comma separated) replaces it. An empty value is ignored so a typo cannot lock everyone out.
-_DEFAULT_BOOTSTRAP_ADMIN_IDS = "1076861147560542278"
-
-
-def bootstrap_admin_ids(environ=os.environ):
-    raw = (environ.get("INAZINA_BOOTSTRAP_ADMIN_IDS") or "").strip()
-    return {item.strip() for item in (raw or _DEFAULT_BOOTSTRAP_ADMIN_IDS).split(",") if item.strip()}
-
-
-BOOTSTRAP_ADMIN_IDS = bootstrap_admin_ids()
 sys.path.insert(0, str(ROOT))
+from functions.admin_access import BOOTSTRAP_ADMIN_IDS, bootstrap_admin_ids   # one definition shared with the bot (INAZINA_BOOTSTRAP_ADMIN_IDS)
 from database.unified import sql as unified_sql, UnifiedConnection
 from database.pool import pooled
 from functions.exact_money import native_value

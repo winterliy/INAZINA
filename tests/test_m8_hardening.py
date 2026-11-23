@@ -51,6 +51,8 @@ def test_no_database_error_handler_puts_the_exception_into_a_response():
 
 
 def test_bootstrap_admins_come_from_configuration_with_the_old_default():
+    from functions import admin_access
+    assert server.bootstrap_admin_ids is admin_access.bootstrap_admin_ids and server.BOOTSTRAP_ADMIN_IDS == admin_access.BOOTSTRAP_ADMIN_IDS
     assert server.bootstrap_admin_ids({}) == {"1076861147560542278"}
     assert server.bootstrap_admin_ids({"INAZINA_BOOTSTRAP_ADMIN_IDS": "  "}) == {"1076861147560542278"}
     assert server.bootstrap_admin_ids({"INAZINA_BOOTSTRAP_ADMIN_IDS": "11, 22 ,,33"}) == {"11", "22", "33"}
