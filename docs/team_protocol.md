@@ -14,6 +14,7 @@
 4. 공유 작업 폴더에서 다른 세션의 미커밋 변경을 파괴하는 git 명령을 쓰지 않는다: `git stash`, `git checkout -- <파일>`, `git restore`, `git reset --hard`, `git clean`, `git rebase`, 강제 푸시 금지. `git add -A`와 `git commit -a`도 금지(남의 변경이 딸려 간다).
 5. 변경은 반드시 **`tools/land_commit.py`로 착륙**한다(사용법은 그 파일 머리말). 잠금, 변경 조각 선택, 깨끗한 체크아웃에서 컴파일·시험을 한 뒤에만 master가 움직인다. 다른 세션이 같이 편집하는 공유 파일은 `--files`가 아니라 `--hunks 경로=키워드`로 자기 조각만 올린다. 키워드는 자기 변경에만 나오는 단어로 고른다.
 6. 시험용 DB·포트·임시 파일은 에이전트 이름이 들어간 고유한 이름을 쓰고, 끝나면 지운다(`dropdb`).
+7. 임시 스크립트로 `DatabaseManager` 등을 만들 때는 반드시 `INAZINA_PG_DSN`을 자기 복사본 DB로 지정한다. 지정하지 않으면 기본값인 운영 DB(`inazina`)에 접속해 스키마 동기화가 실행된다(2026-11-25 사고). pytest는 conftest가 격리해 주므로 안전하다.
 
 ## 공유 파일 (여러 영역이 만진다 → `--hunks`로만 착륙)
 `web_api/server.py`, `apps/api/src/index.ts`, `apps/dashboard/src/App.tsx`, `apps/dashboard/src/nav.ts`, `database/currency_db.py`, `docs/controls_laplace.md`, `docs/roadmap_laplace.md`, `docs/architecture.md`, `tests/test_architecture.py`, `docs/team_protocol.md`
