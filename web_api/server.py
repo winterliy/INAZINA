@@ -5201,6 +5201,17 @@ class Handler(BaseHTTPRequestHandler):
                     audit_admin_access(user["userId"], "funding.read", {
                         "bank_id": bank_id, "draws": len(report["draws"]), "overdue": report["overdue_count"]})
                     self.send_json(200, report)
+            elif path == "/internal/admin/product-rate-schedule":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    with connect_readonly() as plain:
+                        rows = [dict(row) for row in LegacyNames(plain).execute(
+                            "SELECT product_type,product_code,schedule_json,enabled,updated_by,updated_epoch FROM product_rate_schedules "
+                            "ORDER BY product_type,product_code").fetchall()]
+                    audit_admin_access(user["userId"], "product_rate_schedule.read", {"result_count": len(rows)})
+                    self.send_json(200, {"schedules": rows})
             elif path == "/internal/admin/rate-rules":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -5981,6 +5992,25 @@ class Handler(BaseHTTPRequestHandler):
                     "user_id": payload["userId"], "event_key": payload["eventKey"], "proceeds_minor_units": payload["proceedsMinorUnits"],
                     "allocations": result["allocations"], "duplicate": result["duplicate"]})
                 self.send_json(200, {"success": True, "result": result})
+                return
+            if path == "/internal/admin/product-rate-schedule":
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                    return
+                from managers.rate_schedule_contracts import set_product_schedule
+                if (set(payload) != {"action", "productType", "productCode", "schedule", "enabled"} or payload["action"] != "set"
+                        or not isinstance(payload["productCode"], str) or not 1 <= len(payload["productCode"]) <= 100
+                        or type(payload["enabled"]) is not bool or not isinstance(payload["schedule"], dict)
+                        or set(payload["schedule"]) - {"segments", "floor", "cap", "max_change_per_reset", "rounding_step"}
+                        or not isinstance(payload["schedule"].get("segments"), list) or len(payload["schedule"]["segments"]) > 20
+                        or any(not isinstance(item, dict) or set(item) - {"from_day", "kind", "rate", "spread"} for item in payload["schedule"]["segments"])):
+                    raise ValueError("invalid_product_rate_schedule_payload")
+                with domain().db.atomic() as connection:
+                    stored = set_product_schedule(connection, product_type=payload["productType"], product_code=payload["productCode"],
+                                                  schedule=payload["schedule"], enabled=payload["enabled"], actor=user["userId"], now=int(time.time()))
+                audit_admin_access(user["userId"], "product_rate_schedule.set", {
+                    "product_type": payload["productType"], "product_code": payload["productCode"], "enabled": payload["enabled"], "schedule": stored})
+                self.send_json(200, {"success": True})
                 return
             if path == "/internal/admin/rate-rules":
                 if user["role"] != "admin":

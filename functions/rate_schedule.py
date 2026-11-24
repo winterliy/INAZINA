@@ -79,6 +79,10 @@ class RateSchedule:
         """Contract days on which the applicable segment changes (a reset is due on each)."""
         return [day for day, _, _ in self._segments]
 
+    def kind_at(self, contract_day):
+        """``fixed`` or ``floating`` for the segment in force on ``contract_day``."""
+        return self._segment(contract_day)[1]
+
     def _segment(self, contract_day):
         if isinstance(contract_day, bool) or not isinstance(contract_day, int) or contract_day < 0:
             raise ValueError("계약 경과일은 0 이상의 정수여야 합니다.")

@@ -134,10 +134,41 @@ class InterestManager:
             resets.append((current_rate, new_rate, scheduled_epoch, observation))
             return new_rate
 
+        from managers.rate_schedule_contracts import snapshot as _schedule_snapshot
+        keys = contract.keys()
+        held = (_schedule_snapshot(conn, "loan", contract["loan_id"]) if "loan_id" in keys
+                else _schedule_snapshot(conn, "account", contract["account_number"]) if "account_number" in keys else None)
+
+        def advance(epoch):
+            return epoch+reset_cycle
+
+        if held is not None:          # contract signed under an optional rate schedule: its own reset epochs and rates
+            schedule, start = held
+            boundaries = [start+day*86400 for day in schedule.segment_boundaries() if day > 0]
+
+            def reset_at(scheduled_epoch, current_rate):
+                observation = max(0, scheduled_epoch-float(contract["repricing_lag_seconds"] or 0))
+                day = int((scheduled_epoch-start)//86400)
+                reference = (RateManager.market_rate(conn, contract["rate_nationality"], contract["benchmark_key"] or "policy",
+                                                     contract["benchmark_tenor_days"], epoch=observation)
+                             if schedule.kind_at(day) == "floating" else None)
+                new_rate = float(schedule.reset(current_rate, day, reference_rate=reference))
+                if apply_legal_max:
+                    cap = rule_cap if rule_cap is not None else RateManager.rate_at(conn, "legal_max_rate", contract["rate_nationality"], observation)
+                    new_rate = min(new_rate, float(cap))
+                resets.append((current_rate, new_rate, scheduled_epoch, observation))
+                return new_rate
+
+            def advance(epoch):
+                later = [b for b in boundaries if b > epoch]
+                if schedule.kind_at(max(0, int((epoch-start)//86400))) == "floating":
+                    later.append(epoch+reset_cycle)
+                return min(later) if later else None
+
         while last < end:
             if rate_type == "floating" and next_reset is not None and next_reset <= last:
                 rate = reset_at(next_reset, rate)
-                next_reset += reset_cycle
+                next_reset = advance(next_reset)
                 continue
             boundary = min(end, next_reset) if rate_type == "floating" and next_reset is not None else end
             periods = cls._due_periods(boundary-last, cycle)
@@ -149,7 +180,7 @@ class InterestManager:
             if (rate_type == "floating" and next_reset is not None
                     and last >= next_reset):
                 rate = reset_at(next_reset, rate)
-                next_reset += reset_cycle
+                next_reset = advance(next_reset)
             if paid_until < boundary:
                 break
         return segments, rate, next_reset, resets

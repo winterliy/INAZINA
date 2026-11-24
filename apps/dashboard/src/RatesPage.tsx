@@ -56,6 +56,45 @@ function InsurancePreview({ ctx }: { ctx: Ctx }) {
   </Card>;
 }
 
+type ScheduleRow = { product_type: "loan" | "deposit"; product_code: string; schedule_json: string; enabled: number; updated_by: string; updated_epoch: number };
+const EXAMPLE = JSON.stringify({ segments: [{ from_day: 0, kind: "fixed", rate: "12" }, { from_day: 365, kind: "floating", spread: "1" }], floor: "2", cap: "20", max_change_per_reset: "1", rounding_step: "0.25" }, null, 1);
+
+/** 상품별 금리 일정: optional mixed/stepped schedules, off unless enabled here; only contracts signed afterwards follow them. */
+function ScheduleCard({ ctx }: { ctx: Ctx }) {
+  const { busy, run, say } = ctx;
+  const [rows, setRows] = useState<ScheduleRow[] | null>(null);
+  const [form, setForm] = useState({ type: "loan", code: "", json: EXAMPLE });
+  const load = useCallback(() => { api<{ schedules: ScheduleRow[] }>("/api/admin/product-rate-schedule").then((d) => setRows(d.schedules)).catch((cause) => say(errorText(cause, "금리 일정을 불러오지 못했습니다."), true)); }, []);
+  useEffect(load, []);
+  const summary = (json: string) => { try { const d = JSON.parse(json) as { segments: { from_day: number; kind: string; rate?: string; spread?: string }[]; floor: string | null; cap: string | null };
+    return `${d.segments.map((x) => `${x.from_day}일~ ${x.kind === "fixed" ? `고정 ${x.rate}%` : `변동 지표+${x.spread}`}`).join(" → ")} · 하한/상한 ${d.floor ?? "—"} / ${d.cap ?? "—"}`; } catch { return "—"; } };
+  function save(code: string, type: string, json: string, enabled: boolean) {
+    let schedule: unknown;
+    try { schedule = JSON.parse(json); } catch { say("금리 일정 JSON 형식을 확인해주세요.", true); return; }
+    if (!code.trim()) { say("상품 코드를 입력해주세요.", true); return; }
+    const text = enabled ? `${code} 상품에 금리 일정을 켭니다. 이후 새로 체결하는 ${type === "loan" ? "대출" : "예금"} 계약부터 이 일정이 적용되고 기존 계약은 바뀌지 않습니다. 계속할까요?` : `${code} 상품의 금리 일정을 끕니다. 이미 체결한 계약은 자기 일정을 유지합니다. 계속할까요?`;
+    if (!window.confirm(text)) return;
+    void run(() => api<{ success: boolean }>("/api/admin/product-rate-schedule", { method: "POST", body: JSON.stringify({ action: "set", productType: type, productCode: code.trim(), schedule, enabled }) }),
+      "금리 일정을 저장하지 못했습니다.", () => { say(enabled ? "금리 일정을 켰습니다." : "금리 일정을 껐습니다."); load(); });
+  }
+  if (!rows) return <p className="cap">불러오는 중…</p>;
+  return <Card title="상품별 금리 일정" caption="고정→변동 전환, 하한·상한, 1회 변동폭 제한. 기본은 꺼짐이며 켠 뒤 새로 체결하는 계약에만 적용됩니다.">
+    <div className="scroll-x"><table><thead><tr><th>상품</th><th>종류</th><th>일정</th><th>상태</th><th>수정</th><th /></tr></thead><tbody>
+      {rows.length === 0 ? <tr><td colSpan={6} className="cap">설정된 금리 일정이 없습니다. 모든 상품은 기존 금리 방식을 따릅니다.</td></tr> : rows.map((row) => <tr key={`${row.product_type}${row.product_code}`}>
+        <td>{row.product_code}</td><td>{row.product_type === "loan" ? "대출" : "예금"}</td><td>{summary(row.schedule_json)}</td>
+        <td>{row.enabled ? <span className="tag ok">켜짐</span> : <span className="tag warn">꺼짐</span>}</td><td>{row.updated_by} · {day(row.updated_epoch)}</td>
+        <td><button type="button" className="outline" disabled={busy} onClick={() => save(row.product_code, row.product_type, row.schedule_json, !row.enabled)}>{row.enabled ? "끄기" : "켜기"}</button></td></tr>)}
+    </tbody></table></div>
+    <div className="alm-edit">
+      <select aria-label="종류" value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value })}><option value="loan">대출</option><option value="deposit">예금</option></select>
+      <input aria-label="상품 코드" placeholder="상품 코드" value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value })} />
+      <textarea aria-label="금리 일정(JSON)" rows={8} cols={46} value={form.json} onChange={(event) => setForm({ ...form, json: event.target.value })} />
+      <button type="button" className="btn primary" disabled={busy} onClick={() => save(form.code, form.type, form.json, true)}>일정 저장하고 켜기</button>
+    </div>
+    <p className="alm-note">일정 구간은 계약 체결일 기준 일수로 시작하며, 변동 구간은 상품의 지표금리에 스프레드를 더합니다. 최고금리 규칙과 법정최고이자가 항상 상한으로 적용됩니다.</p>
+  </Card>;
+}
+
 /** 금리 · 한도 · 정리: dated country rules (maximum rate, APR display, tax). Rules apply by contract date and are never edited, only superseded. */
 export function RatesPage({ ctx }: { ctx: Ctx }) {
   const { busy, run, say } = ctx;
@@ -87,6 +126,7 @@ export function RatesPage({ ctx }: { ctx: Ctx }) {
 
   if (!data) return <p className="cap">불러오는 중…</p>;
   return <>
+    <ScheduleCard ctx={ctx} />
     <Card title="국가별 규칙" caption="최고금리, APR 표시, 세금. 계약일 기준 규칙이 적용됩니다. 규칙이 없으면 국가의 법정최고이자가 그대로 적용됩니다.">
       <div className="scroll-x"><table><thead><tr><th>국가</th><th>고객</th><th>상품</th><th className="alm-num">최고금리</th><th>APR 표시</th><th className="alm-num">세율</th><th>적용일</th><th>메모</th><th>등록</th></tr></thead><tbody>
         {data.rules.length === 0 ? <tr><td colSpan={9} className="cap">등록된 규칙이 없습니다. 국가별 법정최고이자({data.countries.map((c) => `${c.nationality} ${c.legal_max_rate}%`).join(" · ") || "—"})가 적용됩니다.</td></tr> : data.rules.map((row) => <tr key={row.rule_id}>

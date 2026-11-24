@@ -387,6 +387,12 @@ class BankManager:
                         description=f"Deposit account {account_number} opened",
                         now=opened_epoch,
                     )
+                from managers.rate_schedule_contracts import plan_new_contract as _plan_schedule, attach as _attach_schedule
+                _owner = conn.execute("SELECT nationality FROM users.users WHERE user_id=?", (str(user_id),)).fetchone()
+                _country = product['rate_nationality'] or (_owner['nationality'] if _owner else None)
+                schedule_plan = _plan_schedule(conn, 'deposit', product_code, _country, opened_epoch)
+                if schedule_plan is not None:        # optional rate schedule (off unless enabled on the product)
+                    _attach_schedule(conn, 'account', account_number, schedule_plan, _country, opened_epoch)
                 if product['product_kind'] == 'wrap':
                     # The named manager trades this account; fees accrue from opening.
                     conn.execute("UPDATE accounts.accounts SET managed_by=?,fee_paid_epoch=? WHERE account_number=?",
@@ -1178,6 +1184,13 @@ class BankManager:
                     ) if contract_country else RateManager.legal_max_for_currency(conn, home)[0])
                     legal = rule_legal_max if rule_legal_max is not None else legal
                     contract_rate = min(contract_rate, legal)
+                from managers.rate_schedule_contracts import plan_new_contract as _plan_schedule
+                schedule_plan = _plan_schedule(
+                    conn, 'loan', product_code, contract_country, opened_epoch,
+                    legal_cap=(rule_legal_max if rule_legal_max is not None else RateManager.from_connection(
+                        conn, 'legal_max_rate', contract_country, require_country=True)) if contract_country else None)
+                if schedule_plan is not None:        # optional rate schedule (off unless enabled on the product)
+                    contract_rate = schedule_plan['rate']
                 # Recheck affordability against the signed price after bank and
                 # borrower spreads have been applied to the initial scorecard.
                 underwriting = self._underwriting_metrics(
@@ -1310,6 +1323,9 @@ class BankManager:
                      int(product['prepayment_fee_decline_days'] or 0)),
                 )
                 loan_id = int(inserted.lastrowid)
+                if schedule_plan is not None:
+                    from managers.rate_schedule_contracts import attach as _attach_schedule
+                    _attach_schedule(conn, 'loan', loan_id, schedule_plan, contract_country, opened_epoch)
                 conn.execute(
                     "UPDATE accounts.loans SET underwriting_fx_stress_shock_percent=? "
                     "WHERE loan_id=?", (fx_stress_shock_percent, loan_id),

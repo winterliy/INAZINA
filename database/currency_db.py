@@ -1630,6 +1630,7 @@ class CurrencyDB(DBManager):
         ensure_prudential_parameters(self.execute)
         ensure_ftp_rate_applications(self.execute)
         ensure_jurisdiction_rate_rules(self.execute)
+        ensure_contract_rate_schedules(self.execute)
         ensure_accounting_line_repairs(self.execute)
         ensure_wallet_baseline_adjustments(self.execute)
         ensure_primary_recipient_overrides(self.execute)
@@ -3794,6 +3795,23 @@ def ensure_jurisdiction_rate_rules(execute):
         execute(f"""CREATE TRIGGER IF NOT EXISTS trg_jurisdiction_rate_rules_{operation.lower()}
             BEFORE {operation} ON jurisdiction_rate_rules
             BEGIN SELECT RAISE(ABORT,'jurisdiction rate rules are append-only'); END""")
+
+
+def ensure_contract_rate_schedules(execute):
+    """Optional mixed/stepped rate schedules (M7). A product carries one only when an administrator enables it; each contract
+    signed under it keeps its own append-only snapshot, so later product edits never touch a signed contract."""
+    execute("""CREATE TABLE IF NOT EXISTS product_rate_schedules (
+        product_type TEXT NOT NULL CHECK(product_type IN ('loan','deposit')), product_code TEXT NOT NULL,
+        schedule_json TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+        updated_by TEXT NOT NULL, updated_epoch INTEGER NOT NULL, PRIMARY KEY(product_type,product_code))""")
+    execute("""CREATE TABLE IF NOT EXISTS contract_rate_schedules (
+        contract_type TEXT NOT NULL CHECK(contract_type IN ('loan','account')), contract_id TEXT NOT NULL,
+        schedule_json TEXT NOT NULL, start_epoch INTEGER NOT NULL, created_epoch INTEGER NOT NULL,
+        PRIMARY KEY(contract_type,contract_id))""")
+    for operation in ("UPDATE", "DELETE"):
+        execute(f"""CREATE TRIGGER IF NOT EXISTS trg_contract_rate_schedules_{operation.lower()}
+            BEFORE {operation} ON contract_rate_schedules
+            BEGIN SELECT RAISE(ABORT,'contract rate schedules are append-only'); END""")
 
 
 def ensure_accounting_line_repairs(execute):
