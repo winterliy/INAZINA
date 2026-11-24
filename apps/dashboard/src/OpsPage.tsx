@@ -41,7 +41,7 @@ export function OpsPage({ ctx }: { ctx: Ctx }) {
   if (!ops) return <p className="cap">불러오는 중…</p>;
   const settings = ops.settings;
   return <>
-    <Card title="서비스 상태" caption="각 서비스의 포트가 응답하는지 확인합니다. 켜고 끄는 일은 터미널의 start_all 에서 합니다." actions={<button className="btn" disabled={busy} onClick={() => void refresh()}>{busy ? "확인 중…" : "새로고침"}</button>}>
+    <Card title="서비스 상태" caption="각 서비스의 포트가 응답하는지 확인합니다. 켜고 끄는 일은 터미널의 start_all 에서 합니다." actions={<button className="soft small" type="button" disabled={busy} onClick={() => void refresh()}>{busy ? "확인 중…" : "새로고침"}</button>}>
       <div className="scroll-x"><table><thead><tr><th>서비스</th><th>포트</th><th>상태</th></tr></thead><tbody>
         {ops.services.map((row) => { const state = serviceState(row, settings); return <tr key={row.name}><td>{serviceLabel(row.name)}</td><td className="mono">{row.port}</td>
           <td><span className={`ops-dot ${state.ok ? "on" : "off"}`} aria-hidden="true" /> {state.text}</td></tr>; })}
