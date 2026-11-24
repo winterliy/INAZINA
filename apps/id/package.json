@@ -8,6 +8,10 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
+    "@fontsource/archivo": "^5.3.0",
+    "@fontsource/dm-sans": "^5.3.0",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@fontsource/ibm-plex-sans-kr": "^5.3.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "three": "0.186.0"

@@ -1,3 +1,8 @@
+// Fonts are bundled (no request to Google: the privacy policy says no visitor data leaves).
+import "@fontsource/rethink-sans/400.css";
+import "@fontsource/rethink-sans/500.css";
+import "@fontsource/rethink-sans/600.css";
+import "@fontsource/rethink-sans/700.css";
 import React, { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";

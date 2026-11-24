@@ -1,6 +1,5 @@
 /* /portfolio and /heatmap — reference: "Straightforward Brand Guidelines" (Figma Sites community).
    Sticky numbered sidebar, gradient hero, big black headline beside grey copy, "01 Title" sections with an orange number. */
-@import url("https://fonts.googleapis.com/css2?family=Rethink+Sans:wght@400;500;600;700&display=swap");
 
 .portfolio-page-shell, .heatmap-page-shell {
   --bg-ink: #040404; --bg-gray: #575757; --bg-soft: #a3a3a3; --bg-line: #e5e5e5; --bg-panel: #e8ebef;
