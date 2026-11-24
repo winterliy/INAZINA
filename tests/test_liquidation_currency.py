@@ -59,6 +59,36 @@ class LiquidationCurrencyTests(unittest.TestCase):
                          int(payment['paid_amount']) - int(payment['tax_amount']))
         self.assertEqual(self.db.currency.execute_one("SELECT COUNT(*) FROM cash_fx_settlements")[0], 0)
 
+    def test_a_failed_exchange_record_rolls_the_whole_liquidation_back_and_the_retry_pays_once(self):
+        from unittest.mock import patch
+        from managers.currency_manager import CurrencyManager
+        self._foreign_holder()
+        self.stock()
+        self.command('상품생성', 'PR stock 우선주 게임 100000 10 100 EX 1 {"share_class":"preferred",'
+                     '"parent_company_code":"ST","dividend_funding":"issuer","liquidation_value_per_share":1000}')
+        self.db.assets.add_user_asset('scd', 'PR', 1, unit_cost=100)
+        CorporateActionsManager(self.bot).fund_issuer('admin', 'ST', 'add', 1000)
+
+        def state():
+            return (int(self.db.users.execute_one("SELECT cash_minor FROM users WHERE user_id='scd'")[0]),
+                    self.db.corporate.execute_one("SELECT COUNT(*) FROM corporate_liquidation_payments")[0],
+                    self.db.currency.execute_one("SELECT COUNT(*) FROM cash_fx_settlements")[0],
+                    self.db.assets.execute_one("SELECT COALESCE(SUM(quantity),0) FROM user_assets WHERE user_id='scd'")[0])
+        before = state()
+        with patch.object(CurrencyManager, 'record_fx_settlement', side_effect=RuntimeError('fx record failure')):
+            try:
+                result = CorporateActionsManager(self.bot).liquidate('admin', 'ST', 'liquidate-rollback')
+                self.assertFalse(result[0], result)
+            except RuntimeError:
+                pass
+        self.assertEqual(state(), before)
+        result = CorporateActionsManager(self.bot).liquidate('admin', 'ST', 'liquidate-rollback')
+        self.assertTrue(result[0], result)
+        after = state()
+        self.assertEqual((after[1], after[2]), (before[1] + 1, before[2] + 1))
+        CorporateActionsManager(self.bot).liquidate('admin', 'ST', 'liquidate-rollback')   # same key: no second payment
+        self.assertEqual(state(), after)
+
 
 if __name__ == '__main__':
     unittest.main()

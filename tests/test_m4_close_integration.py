@@ -108,3 +108,37 @@ class PayoutRollbackTests(unittest.TestCase):
             conn.execute("UPDATE payout_requests SET payer_id=? WHERE payout_id=?", (self.USER, payout["payout_id"]))
             conn.execute("UPDATE payout_requests SET user_id='alice' WHERE payout_id=?", (payout["payout_id"],))
         self.fail_then_retry(lambda conn, manager: manager.expire_due(conn, late))
+
+    def test_withdrawal_fee_record_failure_rolls_the_withdrawal_back(self):
+        from fractions import Fraction
+        from managers.currency_exchange_manager import CurrencyExchangeManager
+        from managers.payout_manager import PayoutManager
+        self._close_position_without_an_nwx_account()
+        payout = self._pending()[0]
+        opened = payout["created_epoch"] + 10
+        with self.db.atomic() as conn:
+            PayoutManager.open_temp(conn, self.USER, payout["payout_id"], now=opened)
+        self.db.products.execute(
+            "INSERT OR IGNORE INTO saving(product_code,name,interest_rate,quote_currency,product_kind,status) "
+            "VALUES ('FX_NWX','NWX 외환통장',0,'NWX','saving','active')")
+        number = CurrencyExchangeManager(self.db).open_account(self.USER, "FX_NWX")
+        fee = PayoutManager.fee_minor_units(int(payout["amount"]))
+        real = CurrencyManager.receive
+
+        def receive(conn, user_id, currency, minor_units):
+            if int(minor_units) == fee and str(user_id) != self.USER:
+                return {"currency": "USD", "decimal_places": 2, "minor_units": 1, "rate": Fraction(1, 1500)}
+            return real(conn, user_id, currency, minor_units)
+
+        def action(conn, manager):
+            manager.withdraw(conn, self.USER, payout["payout_id"], now=opened + 200)
+        before = (self.snapshot(), self._nwx_units(number))
+        with patch.object(CurrencyManager, "receive", receive):
+            with patch.object(CurrencyManager, "record_fx_settlement", side_effect=RuntimeError("fx record failure")):
+                with self.assertRaises(RuntimeError):
+                    with self.db.atomic() as conn:
+                        action(conn, PayoutManager)
+            self.assertEqual((self.snapshot(), self._nwx_units(number)), before)
+            with self.db.atomic() as conn:
+                action(conn, PayoutManager)
+        self.assertEqual(self.snapshot()[0], before[0][0] + 1)

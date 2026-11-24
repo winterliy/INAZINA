@@ -171,6 +171,38 @@ class GameFundingTests(unittest.TestCase):
         self.assertEqual(received, payout['net'] * int(fx['rate_numerator']) * 100 // int(fx['rate_denominator']))
         self.assertNotEqual(received, payout['net'] * 100)
 
+    def test_foreign_winner_payout_rolls_back_when_the_exchange_record_fails_and_retries_once(self):
+        from unittest.mock import patch
+        self._scd_player(1_000_000)
+        self.lottery.purchase('scd-player', 1, '1 2 3 4 5 6', 'rollback-request', source='__wallet__')
+        with self.db.atomic() as conn:
+            conn.execute("UPDATE lottery_rounds SET close_epoch=1,draw_epoch=2,"
+                         "admin_numbers_json='{\"winning\":[1,2,3,4,5,6],\"bonus\":7}'")
+        cash = self._cash_minor('scd-player')
+
+        def counts():
+            with self.db.readonly() as conn:
+                return [conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                        for t in ('lottery_payouts', 'lottery_fx_settlements', 'lottery_pool_ledger')]
+        before = counts()
+        real = LotteryManager._record_fx
+
+        def failing(conn, kind, *args):
+            if kind == 'payout':
+                raise RuntimeError('exchange record failure')
+            return real(conn, kind, *args)
+        with patch.object(LotteryManager, '_record_fx', staticmethod(failing)):
+            try:
+                self.lottery.process_due()
+            except RuntimeError:
+                pass
+        self.assertEqual((self._cash_minor('scd-player'), counts()), (cash, before))
+        self.assertIsNotNone(self.lottery.process_due())
+        self.assertEqual(counts()[0], before[0] + 1)
+        self.assertLess(cash, self._cash_minor('scd-player'))
+        self.assertIsNone(self.lottery.process_due())
+        self.assertEqual(counts()[0], before[0] + 1)
+
     def _lottery_check(self):
         from managers.accounting_journal import AccountingJournal
         with self.db.readonly() as conn:

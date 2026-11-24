@@ -4741,11 +4741,14 @@ def accounting_close_overview(check=False):
     close_ready = None
     if report is not None:
         coverage = report.get("amount_field_coverage") or {}
+        unconnected = (report.get("consumer_coverage") or {}).get("unconnected") or []
         gates = [
             {"key": "reconcile", "label": "통합 원장 대사", "ok": report["status"] == "matched",
              "detail": f"이상 {len(report['findings'])}건"},
             {"key": "coverage", "label": "금액 필드 분류", "ok": coverage.get("status") == "matched",
              "detail": f"미분류 {len(coverage.get('unclassified') or [])}건"},
+            {"key": "lineage", "label": "금액 계보(원장 연결)", "ok": not unconnected,
+             "detail": f"원장에 연결되지 않은 금액 표 {len(unconnected)}개"},
         ] + gates
         close_ready = bool(report.get("close_ready")) and pending == 0 and not fx_findings and not baseline_findings
     return {"gates": gates, "checked": report is not None, "closeReady": close_ready, "residuals": residuals, "history": history,

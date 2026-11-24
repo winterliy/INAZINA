@@ -40,3 +40,25 @@ def test_overview_blocks_close_on_a_mutable_baseline():
         result = server.accounting_close_overview()
     gate = next(item for item in result['gates'] if item['key'] == 'baseline_immutable')
     assert gate['ok'] is False
+
+
+def test_overview_exposes_amount_tables_not_traced_to_the_ledger():
+    conn = SimpleNamespace(execute=lambda *args: [])
+    domain = SimpleNamespace(db=SimpleNamespace(readonly=lambda: nullcontext(conn)))
+    clean = {'period': '2026-01-01', 'status': 'matched', 'findings': []}
+    report = {'status': 'matched', 'findings': [], 'close_ready': False, 'amount_field_coverage': {'status': 'matched', 'unclassified': []},
+              'consumer_coverage': {'unconnected': [{'source_table': 'loan_fees'}]}}
+    with patch.object(server, 'domain', return_value=domain), \
+         patch('managers.fx_residual.FxResiduals.report', return_value=[]), \
+         patch('managers.fx_residual.FxResiduals.history', return_value=[]), \
+         patch('managers.baseline_report.BaselineReport.collect', return_value=[]), \
+         patch('managers.baseline_report.BaselineReport.immutability_findings', return_value=[]), \
+         patch('managers.accounting_journal.AccountingJournal.reconcile_all_financial_ledgers', return_value=report), \
+         patch('managers.fx_revaluation.FxRevaluation.preview', return_value=[]), \
+         patch('managers.fx_revaluation.FxRevaluation.history', return_value=[]), \
+         patch('managers.fx_revaluation.FxRevaluation.corrections', return_value=[]), \
+         patch('managers.fx_revaluation.FxRevaluation.close_check', return_value=clean):
+        result = server.accounting_close_overview(check=True)
+    gate = next(item for item in result['gates'] if item['key'] == 'lineage')
+    assert gate['ok'] is False and '1' in gate['detail']
+    assert result['closeReady'] is False
