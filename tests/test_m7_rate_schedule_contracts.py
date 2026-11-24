@@ -84,6 +84,17 @@ class ScheduleContractTests(unittest.TestCase):
         self.assertAlmostEqual(row["contract_rate"], min(20.0, expected), places=9)
         self.assertGreater(row["outstanding_balance_minor_units"], 100_000)
 
+    def test_the_holder_is_told_once_per_rate_change_and_plain_floating_contracts_are_not(self):
+        self.enable("loan", "LS")
+        self.assertTrue(self.bank.apply_loan("user", "LS", 100_000)[0])
+        start = self.db.accounts.execute_one("SELECT start_epoch FROM contract_rate_schedules")[0]
+        self.db.accounts.execute("UPDATE loans SET last_payment_epoch=?,maturity_epoch=?", (start, start + 365 * DAY))
+        InterestManager(self.db).process_user_interests(now=start + 30 * DAY, user_id="user")
+        rows = [tuple(r) for r in self.db.users.execute("SELECT kind,title FROM notifications WHERE user_id='user' AND kind='rate_schedule'")]
+        self.assertEqual(len(rows), 1)
+        InterestManager(self.db).process_user_interests(now=start + 31 * DAY, user_id="user")
+        self.assertEqual(self.db.users.execute_one("SELECT COUNT(*) FROM notifications WHERE kind='rate_schedule'")[0], 1)
+
     def test_a_deposit_follows_the_schedule_too(self):
         self.enable("deposit", "SS")
         self.assertTrue(self.bank.open_account("user", "SS", "1234", 100_000)[0])

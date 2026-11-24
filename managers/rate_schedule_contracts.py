@@ -77,3 +77,22 @@ def snapshot(conn, contract_type, contract_id):
     row = conn.execute("SELECT schedule_json,start_epoch FROM contract_rate_schedules WHERE contract_type=? AND contract_id=?",
                        (contract_type, str(contract_id))).fetchone()
     return (RateSchedule.from_json(row["schedule_json"]), int(row["start_epoch"])) if row else None
+
+
+def notify_resets(conn, contract_type, contract_id, user_id, resets, kind_label):
+    """Tell the contract holder (bell inbox, once per reset) that a rate schedule changed their rate; no-op without a snapshot."""
+    if not resets or snapshot(conn, contract_type, contract_id) is None:
+        return 0
+    from managers.notification_manager import NotificationManager
+    sent = 0
+    for old_rate, new_rate, scheduled_epoch, _observation in resets:
+        if abs(float(new_rate) - float(old_rate)) < 1e-12:
+            continue
+        added = NotificationManager.add(
+            conn, user_id, "rate_schedule", f"{kind_label} 금리가 바뀌었습니다",
+            f"계약 금리 일정에 따라 연 {float(old_rate):g}% → 연 {float(new_rate):g}%로 변경되었습니다.",
+            payload={"contract_type": contract_type, "contract_id": str(contract_id), "old_rate": float(old_rate),
+                     "new_rate": float(new_rate), "scheduled_epoch": int(scheduled_epoch)},
+            dedupe_key=f"rate-reset:{contract_type}:{contract_id}:{int(scheduled_epoch)}", now=int(scheduled_epoch))
+        sent += 1 if added else 0
+    return sent

@@ -569,6 +569,8 @@ class InterestManager:
                 conn, "account", account["account_number"], account,
                 resets, end,
             )
+            from managers.rate_schedule_contracts import notify_resets
+            notify_resets(conn, "account", account["account_number"], account["user_id"], resets, "예금")
             conn.execute(
                 "UPDATE accounts.accounts SET contract_rate=?,next_repricing_epoch=?,"
                 "contract_effective_rate=? "
@@ -774,6 +776,8 @@ class InterestManager:
                             conn, "loan", loan["loan_id"], loan, resets, end,
                             recast_count,
                         )
+                        from managers.rate_schedule_contracts import notify_resets
+                        notify_resets(conn, "loan", loan["loan_id"], loan["user_id"], resets, "대출")
                         conn.execute(
                             "UPDATE accounts.loans SET contract_rate=?,next_repricing_epoch=?,"
                             "contract_effective_rate=?,contract_apr=? "

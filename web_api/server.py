@@ -5190,6 +5190,19 @@ class Handler(BaseHTTPRequestHandler):
                         "bank_id": bank_id, "currency": currency, "result_count": len(report["cashflows"]),
                     })
                     self.send_json(200, report)
+            elif path == "/internal/admin/bond-risk":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    from managers.bond_portfolio_risk import portfolio_risk
+                    holder = parse_qs(parsed.query).get("holder", [""])[0].strip()
+                    if not holder or len(holder) > 128:
+                        raise ValueError("invalid_bond_risk_filter")
+                    with connect_readonly() as plain:
+                        report = portfolio_risk(LegacyNames(plain), holder, now=time.time())
+                    audit_admin_access(user["userId"], "bond_risk.read", {"holder": holder, "positions": report["positionCount"]})
+                    self.send_json(200, report)
             elif path == "/internal/admin/deposit-insurance-fund":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":

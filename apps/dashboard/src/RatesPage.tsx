@@ -59,6 +59,30 @@ function FundCard({ ctx, bankId }: { ctx: Ctx; bankId: string }) {
   </Card>;
 }
 
+type BondRisk = { holderId: string; positionCount: number; marketValue: string; dv01: string; modifiedDuration: string; macaulayDuration: string; convexity: string;
+  positions: { holdingId: number; productCode: string; quantity: number; marketValue: string; dv01: string; modifiedDuration: number; daysToMaturity: number }[] };
+
+/** 채권 위험지표: read-only portfolio duration, DV01 and convexity of one holder's treasury bonds (model estimate, parallel 1bp shock). */
+function BondRiskCard({ ctx }: { ctx: Ctx }) {
+  const { busy, run } = ctx;
+  const [holder, setHolder] = useState("");
+  const [data, setData] = useState<BondRisk | null>(null);
+  const num = (text: string) => Number(text).toLocaleString("ko-KR", { maximumFractionDigits: 4 });
+  return <Card title="채권 위험지표" caption="보유자(사용자·법인 ID)의 국채 포트폴리오 듀레이션·DV01·컨벡서티. 곡선이 1bp 평행 이동할 때의 모형 추정치이며 회계 평가액이 아닙니다.">
+    <div className="alm-edit">
+      <input aria-label="보유자 ID" placeholder="보유자 ID (예: company:CODE)" value={holder} onChange={(event) => setHolder(event.target.value)} />
+      <button type="button" className="btn primary" disabled={busy || !holder.trim()} onClick={() => void run(() => api<BondRisk>(`/api/admin/bond-risk?holder=${encodeURIComponent(holder.trim())}`), "채권 위험지표를 불러오지 못했습니다.", setData)}>조회</button>
+    </div>
+    {data && <>
+      <div className="alm-tiles"><div><span>보유 종목</span><b>{data.positionCount}</b></div><div><span>시장가치</span><b>{num(data.marketValue)}</b></div><div><span>DV01</span><b>{num(data.dv01)}</b></div>
+        <div><span>수정듀레이션</span><b>{data.modifiedDuration}</b></div><div><span>맥컬리듀레이션</span><b>{data.macaulayDuration}</b></div><div><span>컨벡서티</span><b>{data.convexity}</b></div></div>
+      <div className="scroll-x"><table><thead><tr><th>#</th><th>종목</th><th className="alm-num">수량</th><th className="alm-num">시장가치</th><th className="alm-num">DV01</th><th className="alm-num">수정듀레이션</th><th className="alm-num">잔존일</th></tr></thead><tbody>
+        {data.positions.length === 0 ? <tr><td colSpan={7} className="cap">보유한 국채가 없습니다.</td></tr> : data.positions.map((p) => <tr key={p.holdingId}><td>{p.holdingId}</td><td>{p.productCode}</td>
+          <td className="alm-num">{p.quantity.toLocaleString("ko-KR")}</td><td className="alm-num">{num(p.marketValue)}</td><td className="alm-num">{num(p.dv01)}</td><td className="alm-num">{p.modifiedDuration.toFixed(4)}</td><td className="alm-num">{p.daysToMaturity}</td></tr>)}
+      </tbody></table></div></>}
+  </Card>;
+}
+
 /** 회수 배분 전기: priority recovery across one borrower's charged-off loans, funded from the borrower's home-currency wallet. */
 function WaterfallCard({ ctx }: { ctx: Ctx }) {
   const { busy, run, say } = ctx;
@@ -214,5 +238,6 @@ export function RatesPage({ ctx }: { ctx: Ctx }) {
     </Card>
     <InsurancePreview ctx={ctx} />
     <WaterfallCard ctx={ctx} />
+    <BondRiskCard ctx={ctx} />
   </>;
 }
