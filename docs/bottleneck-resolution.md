@@ -400,3 +400,21 @@ for k, v in sorted(logical_t.items(), key=lambda kv: -kv[1])[:14]:
 - 체결 시 `decimal_places` 반복 조회(24회)는 savepoint 합치기 이후 왕복이 줄어 체결 한 건 약 60ms라 손대지 않았다(연결 단위 메모는 통화 소수 자리가 트랜잭션 중 바뀌면 틀릴 수 있어 보류).
 - 세션: 서버는 요청마다 헤더의 사용자 ID로 `identity()`를 읽는다(문장 5개, 웜 2ms). 별도 세션 저장소 병목은 없다.
 - 은행 읽기: 위의 `/me/loan-schedules`(6문장), `/admin/funding`·`/admin/alm`(파라미터 없는 호출은 400으로 5문장)만 재서 대표 경로로 보기 어렵다. 이자 처리는 12절(3,441→1,202 왕복)에서 다뤘다.
+
+## 14. E 3차: 인증 테이블 점검, 통화 소수 자리 메모, 은행·SSO 경로 (2026-11-25)
+
+**개선 (응답·표 해시 불변)**
+
+| 항목 | 원인 | 조치 | 효과 |
+|---|---|---|---|
+| `/hts/account`와 모든 로그인 경로 | `ensure_auth_table`이 요청마다 `PRAGMA foreign_key_list`를 부르는데 `information_schema` 3중 조인이라 약 20ms | `pg_catalog`(`pg_constraint`)로 같은 질의. 264개 표에서 옛 질의와 비교: 263개 동일(번호만 순서 차이), 1개(`currency_cash_wallet_links`, 복합 외래키)는 옛 질의가 열 쌍을 곱해 9행을 내던 것을 실제 쌍 3행으로 바로잡음 | `/hts/account` 웜 약 19ms → 5ms |
+| 체결 중 `decimal_places` 24회 조회 | `functions.money.currency_precision`이 여러 매니저에서 반복 호출 | 연결(`PgConnection.memoized`)에 **트랜잭션 범위** 메모. `currencies`를 이름에 담은 쓰기, 세이브포인트 롤백, 트랜잭션 시작·커밋·롤백 때 버림. 트랜잭션 밖과 오류는 저장하지 않음 | 체결 논리 문장 433 → 413, 이자 1,197 → 976 |
+
+**통화 소수 자리 메모의 안전성**: `decimal_places`는 통화 생성 때 정해지고(`catalog_manager`) 시작 시 마이그레이션 외에는 바뀌지 않으며 트리거가 0~2로 제한한다. 그래도 `tests/test_pg_executemany.py`가 (a) 같은 트랜잭션에서 값을 바꾸면 바로 새 값, (b) 세이브포인트 롤백 후 이전 값, (c) 트랜잭션 밖에서는 저장하지 않음, (d) 없는 통화 오류는 매번 발생함을 고정한다. 다른 연결이 트랜잭션 도중 값을 커밋하는 경우: 쓰기 트랜잭션은 같은 어드바이저 잠금(4243)을 잡아 직렬화되고, 잠금 없이 직접 고치는 편집은 그 트랜잭션이 끝날 때까지 이전 값을 쓴다(한 트랜잭션 안에서 일관된 값). 이름에 `currencies`가 들어간 다른 표(`country_currencies`)에 쓸 때도 메모를 버린다(안전한 쪽의 과잉 무효화).
+
+**측정했고 문제 없음/의도된 비용** (HTTP 요청별, 웜 중앙값, 문장 수)
+- `/me/stats` 103문장이지만 약 8ms(문장 하나 0.06ms). 종목 종류 확인 질의(`saving`, `liability`, `accounts`, 회사·투자 조회)가 보유 종목마다 반복되지만(`user_manager`·`stats_manager`, E 소유 아님) 얻을 것이 몇 ms라 손대지 않았다.
+- 은행 읽기: `admin/funding` 16문장 2~5ms, `admin/bank-journal` 6문장 5ms, `admin/alm` 109문장 11ms(NPFC는 410문장 약 100ms, 계산량이 큼), `/me/payouts` 6문장 1.5ms, `/me/notifications` 7문장 1.5ms. 모두 충분히 빠르다. `admin/alm` 두 개는 다른 세션의 미커밋 변경(FTP 적용 필드)이 있어 기준과 응답 해시가 다르다(이 변경과 무관, 문장 +3도 그쪽).
+- 로그인: 성공 약 65ms(재로그인)~500ms(첫 로그인, 프로세스·해시 워밍), 틀린 비밀번호 약 50~65ms, **없는 ID 약 50~80ms(c1ee709의 균일 비용 설계대로 틀린 비밀번호와 같은 수준)**. 문장은 30~37개. 시간 대부분은 scrypt다.
+- SSO/OIDC 저장소(`/internal/oidc/store/*`): upsert·find·find_by_uid 모두 10문장 웜 2~3ms. 문제 없음.
+- 측정 도구의 `oidc_upsert`가 처음에 `expires_at`을 int4 범위 밖(4000000000)으로 보내 400이 났다. 2000000000으로 고쳤다.

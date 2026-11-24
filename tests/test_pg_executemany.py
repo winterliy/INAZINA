@@ -159,3 +159,62 @@ class PgCatalogShortcutTests(PgExecuteManyTests):
         keys = pg_backend._integer_keys()
         self.assertEqual(keys.get("market_orders"), "order_id")
         self.assertNotIn("users", keys)
+
+    def test_foreign_key_list_answers_from_the_catalog_and_auth_table_is_not_rebuilt(self):
+        from database import pg_backend
+        from web_api import server
+        with pg_backend.connect() as conn:
+            server.ensure_auth_table(conn)
+            keys = conn.execute("PRAGMA foreign_key_list(web_auth_credentials)").fetchall()
+            self.assertTrue(any(row[2] == "users" and row[3] == "user_id" and row[4] == "user_id" for row in keys))
+            self.assertEqual([row[5:7] for row in keys if row[2] == "users"], [("NO ACTION", "CASCADE")])
+            before = conn.execute("SELECT COUNT(*) FROM web_auth_credentials").fetchone()[0]
+            seen = []
+            conn.set_trace_callback(seen.append)
+            server.ensure_auth_table(conn)
+            conn.set_trace_callback(None)
+            self.assertFalse([sql for sql in seen if sql.lstrip().upper().startswith(("ALTER", "DROP", "INSERT"))])
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM web_auth_credentials").fetchone()[0], before)
+            composite = conn.execute("PRAGMA foreign_key_list(currency_cash_wallet_links)").fetchall()
+            pairs = {(row[0], row[3], row[4]) for row in composite if row[2] == "currency_cash_postings"}
+            self.assertEqual(len({pair[0] for pair in pairs}), 1)
+            self.assertEqual(len(pairs), 3)
+
+    def test_currency_precision_memo_follows_writes_and_transaction_edges(self):
+        from database import pg_backend
+        from functions.money import currency_precision
+        with pg_backend.connect() as conn:
+            conn.execute("BEGIN")
+            code = "ZQT"
+            conn.execute("INSERT INTO currencies(code,name,asset_code,decimal_places) VALUES (?,?,?,?)", (code, "test", "ZQT_ASSET", 2))
+            conn.commit()
+            conn.execute("BEGIN")
+            seen = []
+            conn.set_trace_callback(seen.append)
+            self.assertEqual(currency_precision(conn, code), 2)
+            self.assertEqual(currency_precision(conn, code), 2)
+            self.assertEqual(len([q for q in seen if "decimal_places FROM currencies" in q]), 1)  # the second answer came from the memo
+            # (a) a change inside the same transaction is seen at once
+            conn.execute("UPDATE currencies SET decimal_places=1 WHERE code=?", (code,))
+            self.assertEqual(currency_precision(conn, code), 1)
+            # (b) rolling back to a savepoint brings the old value back
+            conn.execute("SAVEPOINT before_change")
+            conn.execute("UPDATE currencies SET decimal_places=0 WHERE code=?", (code,))
+            self.assertEqual(currency_precision(conn, code), 0)
+            conn.execute("ROLLBACK TO before_change")
+            self.assertEqual(currency_precision(conn, code), 1)
+            # a failed statement's own savepoint also forgets (the failed write may have named the table)
+            conn.rollback()
+            self.assertEqual(currency_precision(conn, code), 2)
+            # outside a transaction nothing is kept
+            conn.set_trace_callback(None)
+            self.assertEqual(conn._memo, {})
+            # an unknown currency is an error every time, never remembered
+            conn.execute("BEGIN")
+            for _ in range(2):
+                with self.assertRaises(ValueError):
+                    currency_precision(conn, "ZZZ")
+            conn.rollback()
+            conn.rollback()
+            conn.execute("DELETE FROM currencies WHERE code=?", (code,))
+            conn.commit()

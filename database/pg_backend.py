@@ -145,13 +145,20 @@ def _pragma(sql):
                 "FROM information_schema.tables WHERE table_schema = 'public'"), ()
     if name == "foreign_key_list" and (argument or match[3]):
         table = target_table((argument or match[3]).strip("'\" "))
-        return ("SELECT row_number() OVER () - 1 AS id, 0 AS seq, ccu.table_name AS \"table\", "
-                "kcu.column_name AS \"from\", ccu.column_name AS \"to\", rc.update_rule AS on_update, "
-                "rc.delete_rule AS on_delete, 'NONE' AS match "
-                "FROM information_schema.referential_constraints rc "
-                "JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = rc.constraint_name "
-                "JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = rc.unique_constraint_name "
-                f"WHERE kcu.table_name = '{table}'"), ()
+        # pg_catalog, not the information_schema constraint views (20ms per call, and ensure_auth_table asks on every login).
+        # Composite keys now list their real column pairs (the views cross-multiplied them); ids follow constraint creation order.
+        return ("SELECT dense_rank() OVER (ORDER BY k.conoid) - 1 AS id, k.ord - 1 AS seq, p.relname AS \"table\", "
+                "fa.attname AS \"from\", pa.attname AS \"to\", "
+                "CASE k.confupdtype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' "
+                "WHEN 'n' THEN 'SET NULL' ELSE 'SET DEFAULT' END AS on_update, "
+                "CASE k.confdeltype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' WHEN 'c' THEN 'CASCADE' "
+                "WHEN 'n' THEN 'SET NULL' ELSE 'SET DEFAULT' END AS on_delete, 'NONE' AS match "
+                "FROM (SELECT con.oid AS conoid, con.conrelid, con.confrelid, con.confupdtype, con.confdeltype, u.f, u.p, u.ord "
+                "FROM pg_constraint con CROSS JOIN LATERAL unnest(con.conkey, con.confkey) WITH ORDINALITY AS u(f, p, ord) "
+                "WHERE con.contype = 'f' AND con.conrelid = (SELECT c.oid FROM pg_class c JOIN pg_namespace n "
+                f"ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = '{table}')) k "
+                "JOIN pg_class p ON p.oid = k.confrelid JOIN pg_attribute fa ON fa.attrelid = k.conrelid AND fa.attnum = k.f "
+                "JOIN pg_attribute pa ON pa.attrelid = k.confrelid AND pa.attnum = k.p"), ()
     if name in _NO_OP_PRAGMAS or name in {"user_version", "schema_version", "data_version"}:
         return "SELECT 0 WHERE false", ()
     return None
@@ -532,6 +539,8 @@ class PgCursor:
         is_write = not text.lstrip().upper().startswith(("SELECT", "WITH", "VALUES"))
         if is_write and connection.isolation_level is not None and not connection.in_transaction:
             connection._begin(immediate=False)  # sqlite3 legacy: implicit BEGIN before DML
+        if is_write and connection._memo:
+            connection._forget(text)
         key = connection._identity(returning) if returning else None
         if key:
             text = f"{text} RETURNING \"{key}\""
@@ -593,6 +602,8 @@ class PgCursor:
         # Inside a transaction a batch is one savepoint and one pipelined executemany instead of three round trips per row.
         # Outside one (autocommit) every row stays its own statement, as before.
         text = self._batch_text(sql) if len(batch) > 1 and connection.in_transaction else None
+        if connection._memo:
+            connection._forget(translate(sql)[0] if text is None else text)
         if text is not None:
             if connection._trace is not None:
                 for _ in batch:
@@ -683,6 +694,7 @@ class PgConnection:
         self.legacy_aliases = True
         self.wide_money = True
         self._in_transaction = False
+        self._memo = {}  # transaction-scoped answers of repeated reads, see memoized()
         self._identities = {}
         self._trace = None
 
@@ -691,7 +703,31 @@ class PgConnection:
     def in_transaction(self):
         return self._in_transaction
 
+    def memoized(self, key, tables, load):
+        """``load()`` once per transaction for ``key``. The answer is dropped when this connection writes to one of ``tables``
+        (a statement that names it), rolls back to a savepoint, or starts, commits or rolls back a transaction; outside a
+        transaction nothing is kept. Errors are never kept. Used for small catalog-like reads that one request repeats (e.g.
+        a currency's decimal places 24 times during one fill)."""
+        if not self._in_transaction:
+            return load()
+        hit = self._memo.get(key)
+        if hit is not None:
+            return hit[1]
+        value = load()
+        self._memo[key] = (tuple(str(t).lower() for t in tables), value)
+        return value
+
+    def _forget(self, text=None):
+        if self._memo:
+            if text is None:
+                self._memo.clear()
+            else:
+                lowered = text.lower()
+                for key in [k for k, (tables, _value) in self._memo.items() if any(t in lowered for t in tables)]:
+                    del self._memo[key]
+
     def _begin(self, immediate):
+        self._forget()
         started = not self._in_transaction
         if started:
             # A snapshot reader must reject writes like SQLite's query_only does, and (as on SQLite) see one
@@ -730,9 +766,11 @@ class PgConnection:
             else:
                 self._raw.execute(f'RELEASE SAVEPOINT "{name}"')
         else:
+            self._forget()
             self._raw.execute(f'ROLLBACK TO SAVEPOINT "{name}"')
 
     def commit(self):
+        self._forget()
         if self._in_transaction:
             try:
                 self._raw.execute("COMMIT")
@@ -742,6 +780,7 @@ class PgConnection:
                 self._in_transaction = False
 
     def rollback(self):
+        self._forget()
         if self._in_transaction:
             self._raw.execute("ROLLBACK")
             self._in_transaction = False

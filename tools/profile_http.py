@@ -9,7 +9,7 @@ reports ms, the number of statements and round trips the request made (the child
 `INAZINA_PROFILE_COUNTERS` hook below), and a digest of each response body (volatile fields masked) so two code versions can be compared.
 Refuses any DSN that is not a scratch `inazina_profile_*` database.
 """
-import hashlib, json, os, re, statistics, subprocess, sys, tempfile, time, urllib.request, urllib.error
+import hashlib, json, os, re, statistics, subprocess, sys, tempfile, time, urllib.parse, urllib.request, urllib.error
 
 root, label = sys.argv[1], sys.argv[2]
 port = int(sys.argv[3]) if len(sys.argv) > 3 else 5460
@@ -112,9 +112,19 @@ def main():
             ("admin_overview", "GET", "/internal/admin/overview", ADMIN, None),
             ("admin_instruments", "GET", "/internal/admin/instruments", ADMIN, None),
             ("admin_users", "GET", "/internal/admin/users", ADMIN, None),
-            ("admin_funding", "GET", "/internal/admin/funding", ADMIN, None),
+            ("admin_funding", "GET", "/internal/admin/funding?bank_id=NWKNQB101", ADMIN, None),
+            ("admin_funding_npfc", "GET", "/internal/admin/funding?bank_id=NPFC", ADMIN, None),
             ("admin_liquidity", "GET", "/internal/admin/liquidity", ADMIN, None),
-            ("admin_alm", "GET", "/internal/admin/alm", ADMIN, None),
+            ("admin_alm", "GET", "/internal/admin/alm?bank_id=NWKNQB101", ADMIN, None),
+            ("admin_alm_npfc", "GET", "/internal/admin/alm?bank_id=NPFC", ADMIN, None),
+            ("admin_bank_journal", "GET", "/internal/admin/bank-journal?issuer=" + urllib.parse.quote("낙원시민은행"), ADMIN, None),
+            ("me_payouts", "GET", "/internal/me/payouts", USER, None),
+            ("me_notifications", "GET", "/internal/me/notifications", USER, None),
+            ("login_unknown_id", "POST", "/internal/auth/login", None, {"loginId": "nobody_zz", "password": "nope"}),
+            ("oidc_upsert", "POST", "/internal/oidc/store/upsert", None,
+             {"model": "Session", "id": "profile-s1", "payload": {"a": 1}, "expires_at": 2000000000, "uid": "profile-u1"}),
+            ("oidc_find", "POST", "/internal/oidc/store/find", None, {"model": "Session", "id": "profile-s1"}),
+            ("oidc_find_by_uid", "POST", "/internal/oidc/store/find_by_uid", None, {"model": "Session", "uid": "profile-u1"}),
         ]
         report = {"label": label, "repeat": REPEAT, "requests": {}}
         for name, method, path, user, body in requests:
@@ -130,14 +140,12 @@ def main():
         child.wait(timeout=30)
     try:
         log = json.load(open(env["PROFILE_COUNTERS"]))
-        by_path = {}
-        for path, statements, ms in log:
-            by_path.setdefault(path.split("?")[0], []).append(statements)
-        for name, method, path, user, body in requests:
-            counts = by_path.get(path.split("?")[0], [])
-            if counts and name in report["requests"]:
-                report["requests"][name]["statements_cold"] = counts[0]
-                report["requests"][name]["statements_warm"] = statistics.median(counts[1:]) if len(counts) > 1 else counts[0]
+        # requests were sent in order, 1 + REPEAT calls each; the log's tail is exactly those calls (health polling came before)
+        tail = log[len(log) - len(requests) * (1 + REPEAT):]
+        for number, (name, method, path, user, body) in enumerate(requests):
+            counts = [statements for _path, statements, _ms in tail[number * (1 + REPEAT):(number + 1) * (1 + REPEAT)]]
+            report["requests"][name]["statements_cold"] = counts[0]
+            report["requests"][name]["statements_warm"] = statistics.median(counts[1:])
     except Exception as exc:
         report["counter_error"] = repr(exc)
     print(json.dumps(report, ensure_ascii=False, indent=1))

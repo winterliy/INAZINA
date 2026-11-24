@@ -50,16 +50,21 @@ def round_money(value, decimal_places=0):
 
 
 def currency_precision(conn, currency_code):
-    row = conn.execute(
-        "SELECT decimal_places FROM currencies WHERE code=?",
-        (str(currency_code or "").upper(),),
-    ).fetchone()
-    if not row:
-        raise ValueError(f"통화를 확인해주세요: {currency_code}")
-    places = int(row[0])
-    if not 0 <= places <= 6:
-        raise ValueError("통화 소수 자릿수는 0~6이어야 합니다.")
-    return places
+    def load():
+        row = conn.execute(
+            "SELECT decimal_places FROM currencies WHERE code=?",
+            (str(currency_code or "").upper(),),
+        ).fetchone()
+        if not row:
+            raise ValueError(f"통화를 확인해주세요: {currency_code}")
+        places = int(row[0])
+        if not 0 <= places <= 6:
+            raise ValueError("통화 소수 자릿수는 0~6이어야 합니다.")
+        return places
+    # One order fill asks 24 times; inside a transaction the answer is kept until something writes to ``currencies``.
+    if not isinstance(getattr(conn, "_memo", None), dict):
+        return load()
+    return conn.memoized(("currency_precision", str(currency_code or "").upper()), ("currencies",), load)
 
 
 def convert_minor_units(units, decimal_places, rate, target_decimal_places):
