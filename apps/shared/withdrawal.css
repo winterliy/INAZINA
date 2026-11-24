@@ -5,6 +5,7 @@
 .account-withdrawal[open] summary::after { transform: rotate(45deg); }
 .account-withdrawal-panel { display: grid; gap: 10px; max-width: 620px; margin-top: 14px; padding: 18px; border-radius: 16px; background: var(--surface); }
 .account-withdrawal-panel h3 { margin: 0; font-size: 15px; }
-.account-withdrawal-panel p { margin: 0; color: var(--ink2); font-size: 13px; line-height: 1.6; }
-.account-withdrawal-link { justify-self: start; color: var(--accent); font-size: 13px; font-weight: 600; text-decoration: none; }
-.account-withdrawal-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+.account-withdrawal-panel ul { display: grid; gap: 6px; margin: 0; padding-left: 18px; color: var(--ink2); font-size: 13px; line-height: 1.6; }
+.account-withdrawal-error { margin: 0; color: #c62828; font-size: 13px; line-height: 1.5; }
+.account-withdrawal-button { justify-self: start; padding: 9px 18px; border: 0; border-radius: 999px; background: #c62828; color: #fff; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.account-withdrawal-button:disabled { opacity: .55; cursor: default; }

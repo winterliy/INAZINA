@@ -5600,6 +5600,19 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.send_json(200, choose_payout(user["userId"], action, payload.get("payoutId")))
                 return
+            if path == "/internal/me/withdraw":
+                # Self-service withdrawal: everything passes to the nationality's treasury (managers/withdrawal_manager.py).
+                user = identity(verified_id)
+                if not user or user["role"] != "user" or _DELEGATION.by:
+                    self.send_json(403, {"error": "active_user_required"})
+                    return
+                if payload != {"confirm": True}:
+                    raise ValueError("탈퇴 확인이 필요합니다.")
+                from managers.withdrawal_manager import WithdrawalManager
+                result = WithdrawalManager(domain().bot).withdraw(user["userId"])
+                audit_admin_access(user["userId"], "member.withdraw", {"treasuryId": result["treasuryId"], "tombstoneId": result["tombstoneId"]})
+                self.send_json(200, {"success": True})
+                return
             if path == "/internal/me/tax-residency":
                 user = identity(verified_id)
                 if not user or user["role"] != "user":

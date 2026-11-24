@@ -719,6 +719,22 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  // Self-service withdrawal: the member's property passes to the national treasury, then this session and the single sign-on end.
+  if (request.method === "POST" && url.pathname === "/api/me/withdraw") {
+    if (principal.by) {
+      send(response, 403, { error: "active_user_required" });
+      return;
+    }
+    const result = await internalRequest("POST", "/internal/me/withdraw", principal.userId, await requestJson(request));
+    if (result.status !== 200) {
+      send(response, result.status, result.body);
+      return;
+    }
+    const logoutUrl = oidc.rp ? await oidc.rp.logoutUrl(request.headers.host ?? "") : undefined;
+    send(response, 200, { success: true, ...(logoutUrl ? { logoutUrl } : {}) }, { "set-cookie": cookieHeader(sessionCookie, "", 0) });
+    return;
+  }
+
   if (url.pathname === "/api/me/tax-residency") {
     const result = request.method === "GET"
       ? await internalGet("/internal/me/tax-residency", principal.userId)
