@@ -21,7 +21,8 @@ type Report = {
   nsfr: { availableStableFunding: string; requiredStableFunding: string; asf: Row[]; rsf: Row[]; ratioPercent: number | null; minimumPercent: number; status: Status };
   rateShock: { shocks: { basisPoints: number; contractualNii: string; depositBetaNii: string; deltaNii: string; contractualEve: string; coreDepositEve: string; deltaEve: string; deltaEvePercentOfTier1: number | null }[];
     behavioralDeposits: string; coreDeposits: string; assumptions: { depositBetaBps: number; coreDepositShareBps: number; coreDepositYears: number }; method: string };
-  ftp: { liquidityPremiumPercent: string; wholesaleWeightedAverageRatePercent: string | null; applied: boolean; method: string;
+  ftp: { applyEnabled: boolean; applications: { app_id: number; product_kind: "loan" | "deposit"; product_code: string; action: "apply" | "revert"; old_rate_bps: number; new_rate_bps: number; ftp_bps: number; margin_bps: number; actor: string; reason: string; recorded_epoch: number; reverted: boolean }[];
+    liquidityPremiumPercent: string; wholesaleWeightedAverageRatePercent: string | null; applied: boolean; method: string;
     curve: { tenorDays: number; ftpPercent: string }[];
     products: { productCode: string; name: string; kind: "loan" | "deposit"; ratePercent: string; tenorDays: number; tenorBasis: string; ftpPercent: string; marginPercent: string }[] } | null;
   forwardCurves: { method: string; curves: { benchmark: string; zero: { tenorDays: number; ratePercent: string }[];
@@ -46,13 +47,13 @@ const PARAMETER: Record<string, string> = {
   asf_equity_bps: "ASF · 자본", asf_retail_stable_bps: "ASF · 개인 안정", asf_retail_less_stable_bps: "ASF · 개인 덜 안정", asf_corporate_bps: "ASF · 법인",
   asf_wholesale_1y_plus_bps: "ASF · 도매 1년 이상", asf_wholesale_6m_to_1y_bps: "ASF · 도매 6개월~1년", asf_wholesale_under_6m_bps: "ASF · 도매 6개월 미만",
   deposit_beta_bps: "금리 충격 · 예금 금리베타", core_deposit_share_bps: "금리 충격 · 핵심예금 비중", core_deposit_years: "금리 충격 · 핵심예금 행동만기(년)",
-  ftp_liquidity_premium_bps: "FTP · 유동성 프리미엄", funding_auto_maturity_flag: "도매조달 자동 만기 처리 (옵트인)",
+  ftp_liquidity_premium_bps: "FTP · 유동성 프리미엄", funding_auto_maturity_flag: "도매조달 자동 만기 처리 (옵트인)", ftp_apply_enabled: "FTP 상품 금리 적용 (옵트인)",
   rsf_cash_bps: "RSF · 현금", rsf_loan_under_1y_bps: "RSF · 대출 1년 미만", rsf_loan_1y_plus_bps: "RSF · 대출 1년 이상", rsf_defaulted_loan_bps: "RSF · 부실 대출",
 };
 
 const pct = (value: number | null | undefined, digits = 2) => value === null || value === undefined ? "—" : `${value.toFixed(digits)}%`;
 const bps = (value: number) => `${(value / 100).toFixed(2)}%`;
-const parameterText = (key: string, value: number) => key === "funding_auto_maturity_flag" ? (value === 1 ? "켜짐" : "꺼짐") : key.endsWith("_bps") ? bps(value) : `${value}년`;
+const parameterText = (key: string, value: number) => key === "funding_auto_maturity_flag" || key === "ftp_apply_enabled" ? (value === 1 ? "켜짐" : "꺼짐") : key.endsWith("_bps") ? bps(value) : `${value}년`;
 const BENCHMARK: Record<string, string> = { funding: "조달금리", bank_bond: "은행채", treasury: "국채" };
 const rate2 = (text: string | null) => text === null ? "—" : `${Number(text).toFixed(2)}%`;
 const tenorLabel = (days: number) => days < 365 ? `${days}일` : `${(days / 365).toFixed(days % 365 ? 1 : 0)}년`;
@@ -70,6 +71,7 @@ export function AlmPage({ ctx }: { ctx: Ctx }) {
   const [bankId, setBankId] = useState("");
   const [report, setReport] = useState<Report | null>(null);
   const [edit, setEdit] = useState({ key: "lcr_min_bps", value: "" });
+  const [ftpForm, setFtpForm] = useState({ margin: "100", reason: "" });
   const [tab, setTab] = useState<"metrics" | "funding">("metrics");
 
   const money = (text: string) => {
@@ -96,6 +98,24 @@ export function AlmPage({ ctx }: { ctx: Ctx }) {
     void run(() => api<{ success: boolean }>("/api/admin/compliance", { method: "POST",
       body: JSON.stringify({ action: "prudential_parameter_set", nationality: report.jurisdiction, key: edit.key, valueBps: value }) }),
     "기준을 저장하지 못했습니다.", () => { say("기준을 저장했습니다."); setEdit({ ...edit, value: "" }); loadReport(bankId); });
+  }
+
+  async function applyFtp(row: NonNullable<Report["ftp"]>["products"][number]) {
+    const margin = Number(ftpForm.margin), reason = ftpForm.reason.trim();
+    if (!Number.isInteger(margin) || margin < 0 || margin > 5000 || !reason) { say("마진은 0~5000bp 정수, 사유는 필수입니다.", true); return; }
+    const target = Number(row.ftpPercent) + (row.kind === "loan" ? margin : -margin) / 100;
+    if (!await confirmAction(`${row.name}(${row.productCode})의 제안 금리를 ${Number(row.ratePercent).toFixed(2)}%에서 약 ${target.toFixed(2)}%(FTP ${row.kind === "loan" ? "+" : "−"} 마진 ${margin}bp)로 바꿀까요? 신규 계약에만 적용되며 기존 계약 금리는 그대로입니다. 적용 이력에 남고 되돌릴 수 있습니다.`)) return;
+    void run(() => api<{ success: boolean }>("/api/admin/compliance", { method: "POST",
+      body: JSON.stringify({ action: "ftp_rate_apply", bankId, kind: row.kind, productCode: row.productCode, marginBps: margin, reason }) }),
+    "FTP 금리를 적용하지 못했습니다.", () => { say("신규 계약 제안 금리에 적용했습니다."); loadReport(bankId); });
+  }
+  async function revertFtp(appId: number) {
+    const reason = ftpForm.reason.trim();
+    if (!reason) { say("되돌리는 사유를 입력해주세요.", true); return; }
+    if (!await confirmAction(`적용 #${appId}을(를) 되돌려 이전 제안 금리로 복원할까요? 이력에는 되돌림 행이 추가됩니다.`)) return;
+    void run(() => api<{ success: boolean }>("/api/admin/compliance", { method: "POST",
+      body: JSON.stringify({ action: "ftp_rate_revert", bankId, applicationId: appId, reason }) }),
+    "되돌리지 못했습니다.", () => { say("되돌렸습니다."); loadReport(bankId); });
   }
 
   const gauge = (key: "cet1" | "tier1" | "total", label: string) => {
@@ -151,11 +171,20 @@ export function AlmPage({ ctx }: { ctx: Ctx }) {
       </Card>
 
       {report.ftp && <Card title="FTP(자금이전가격) 미리보기" caption={`조달 곡선 + 유동성 프리미엄 ${rate2(report.ftp.liquidityPremiumPercent)}. 참고: 도매조달 가중평균 ${rate2(report.ftp.wholesaleWeightedAverageRatePercent)}. 미리보기일 뿐 상품 금리는 바뀌지 않습니다.`}>
-        <div className="scroll-x"><table><thead><tr><th>상품</th><th>구분</th><th className="alm-num">상품 금리</th><th className="alm-num">FTP 만기</th><th className="alm-num">FTP</th><th className="alm-num">마진</th></tr></thead>
+        <div className="scroll-x"><table><thead><tr><th>상품</th><th>구분</th><th className="alm-num">상품 금리</th><th className="alm-num">FTP 만기</th><th className="alm-num">FTP</th><th className="alm-num">마진</th>{report.ftp.applyEnabled && <th />}</tr></thead>
           <tbody>{report.ftp.products.length === 0 ? <tr><td colSpan={6} className="cap">이 은행의 상품이 없습니다.</td></tr> : report.ftp.products.map((row) => <tr key={`${row.kind}-${row.productCode}`}>
             <td>{row.name} <span className="cap">{row.productCode}</span></td><td>{row.kind === "loan" ? "대출" : "예금"}</td><td className="alm-num">{rate2(row.ratePercent)}</td>
             <td className="alm-num">{tenorLabel(row.tenorDays)} <span className="cap">({row.tenorBasis === "contract term" ? "계약" : row.tenorBasis === "behavioural maturity assumption" ? "행동만기 가정" : "기본 365일"})</span></td>
-            <td className="alm-num">{rate2(row.ftpPercent)}</td><td className="alm-num"><b className={Number(row.marginPercent) < 0 ? "alm-neg" : ""}>{rate2(row.marginPercent)}</b></td></tr>)}</tbody></table></div>
+            <td className="alm-num">{rate2(row.ftpPercent)}</td><td className="alm-num"><b className={Number(row.marginPercent) < 0 ? "alm-neg" : ""}>{rate2(row.marginPercent)}</b></td>
+            {report.ftp?.applyEnabled && <td><button type="button" className="outline" disabled={busy} onClick={() => void applyFtp(row)}>적용</button></td>}</tr>)}</tbody></table></div>
+        {report.ftp.applyEnabled ? <div className="alm-edit">
+          <input inputMode="numeric" aria-label="목표 마진(bp)" placeholder="목표 마진 bp" value={ftpForm.margin} onChange={(event) => setFtpForm({ ...ftpForm, margin: event.target.value })} />
+          <input aria-label="사유" placeholder="사유 (필수)" value={ftpForm.reason} onChange={(event) => setFtpForm({ ...ftpForm, reason: event.target.value })} />
+        </div> : <p className="alm-note"><span className="tag warn">적용 꺼짐</span> 관할 기준 ‘FTP 상품 금리 적용’을 켜면 신규 계약 제안 금리에 적용할 수 있습니다.</p>}
+        {report.ftp.applications.length > 0 && <div className="scroll-x"><table><thead><tr><th>#</th><th>상품</th><th>동작</th><th className="alm-num">이전 → 이후</th><th>행위자</th><th>사유</th><th /></tr></thead>
+          <tbody>{report.ftp.applications.map((a) => <tr key={a.app_id}><td>{a.app_id}</td><td>{a.product_code}</td><td>{a.action === "apply" ? (a.reverted ? "적용(되돌려짐)" : "적용") : "되돌림"}</td>
+            <td className="alm-num">{bps(a.old_rate_bps)} → {bps(a.new_rate_bps)}</td><td>{a.actor}</td><td>{a.reason}</td>
+            <td>{a.action === "apply" && !a.reverted && <button type="button" className="outline" disabled={busy} onClick={() => void revertFtp(a.app_id)}>되돌리기</button>}</td></tr>)}</tbody></table></div>}
         <p className="alm-note">{report.ftp.method}</p>
       </Card>}
 
@@ -207,7 +236,7 @@ export function AlmPage({ ctx }: { ctx: Ctx }) {
             <select aria-label="기준 항목" value={edit.key} onChange={(event) => setEdit({ ...edit, key: event.target.value })}>
               {Object.keys(report.parameters.values).map((key) => <option key={key} value={key}>{PARAMETER[key] ?? key}</option>)}
             </select>
-            <input inputMode="numeric" aria-label="값(베이시스포인트)" placeholder={edit.key.endsWith("_bps") ? "bp (100 = 1%)" : edit.key === "funding_auto_maturity_flag" ? "0 = 끔, 1 = 켬" : "년(정수)"} value={edit.value} onChange={(event) => setEdit({ ...edit, value: event.target.value })} />
+            <input inputMode="numeric" aria-label="값(베이시스포인트)" placeholder={edit.key.endsWith("_bps") ? "bp (100 = 1%)" : edit.key === "funding_auto_maturity_flag" || edit.key === "ftp_apply_enabled" ? "0 = 끔, 1 = 켬" : "년(정수)"} value={edit.value} onChange={(event) => setEdit({ ...edit, value: event.target.value })} />
             <button type="button" className="btn primary" disabled={busy || !edit.value} onClick={saveParameter}>기준 저장</button>
           </div>
         </Card>

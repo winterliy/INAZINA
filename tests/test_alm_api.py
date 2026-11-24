@@ -103,5 +103,92 @@ class AlmParameterActionTests(unittest.TestCase):
                 self.assertIsNone(conn.execute("SELECT 1 FROM prudential_parameters").fetchone())
 
 
+    def test_new_assumption_keys_go_through_the_api_and_out_of_range_values_do_not(self):
+        base = {'action': 'prudential_parameter_set', 'nationality': '낙원'}
+        for key, value in (('deposit_beta_bps', 7000), ('funding_auto_maturity_flag', 1), ('ftp_apply_enabled', 1), ('core_deposit_years', 5)):
+            with self.subTest(stored=key), self.db.atomic() as conn:
+                response, audit = self.post(dict(base, key=key, valueBps=value), connection=conn)
+                self.assertEqual(response['status'], 200, response)
+                self.assertEqual(audit.call_args.args[1], 'prudential_parameter.set')
+                self.assertEqual(conn.execute("SELECT value_bps FROM prudential_parameters WHERE param_key=?", (key,)).fetchone()[0], value)
+        for key, value in (('funding_auto_maturity_flag', 2), ('funding_auto_maturity_flag', True), ('deposit_beta_bps', 10001),
+                           ('ftp_apply_enabled', 2), ('core_deposit_years', 31)):
+            with self.subTest(rejected=(key, value)), self.db.atomic() as conn:
+                response, audit = self.post(dict(base, key=key, valueBps=value), connection=conn)
+                self.assertEqual(response['status'], 400, response)
+                audit.assert_not_called()
+                stored = conn.execute("SELECT value_bps FROM prudential_parameters WHERE param_key=?", (key,)).fetchone()
+                self.assertTrue(stored is None or type(value) is bool or stored[0] != value)      # the valid value stored above is untouched
+
+
+class AlmFtpRateActionTests(unittest.TestCase):
+    """The FTP apply / revert actions: admin only, exact payload, switch off by default, audited."""
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from database import DatabaseManager
+        from database.db_manager import DBManager
+        self.old_dir = DBManager.database_dir
+        self.tempdir = tempfile.TemporaryDirectory()
+        DBManager.database_dir = Path(self.tempdir.name)
+        self.db = DatabaseManager()
+        self.db.currency.execute(
+            "INSERT INTO financial_institutions(institution_id,issuer,nationality,equity_capital,retained_earnings,deposit_insurance_limit) "
+            "VALUES ('BNK1','Bank','낙원',1000,0,300)")
+        self.db.products.execute(
+            "INSERT INTO liability(product_code,name,interest_rate,loan_limit,maturity_days,interest_cycle,min_credit_score,issuer,quote_currency) "
+            "VALUES ('L1','loan',6,10000,730,86400,0,'Bank','NWX')")
+        self.db.currency.execute("DELETE FROM market_rate_curve WHERE nationality='낙원' AND benchmark_key='funding'")
+        for tenor, rate in ((365, 2.0), (730, 3.0)):
+            self.db.currency.execute("INSERT INTO market_rate_curve VALUES ('낙원','funding',?,?,0.75,0)", (tenor, rate))
+
+    def tearDown(self):
+        from database.db_manager import DBManager
+        self.db.close()
+        DBManager.database_dir = self.old_dir
+        self.tempdir.cleanup()
+
+    post = AlmApiTests.post
+    apply_payload = {'action': 'ftp_rate_apply', 'bankId': 'BNK1', 'kind': 'loan', 'productCode': 'L1', 'marginBps': 150, 'reason': 'test'}
+
+    def count(self, conn):
+        return conn.execute("SELECT COUNT(*) FROM ftp_rate_applications").fetchone()[0]
+
+    def test_non_admin_is_refused(self):
+        with self.db.atomic() as conn:
+            response, audit = self.post(self.apply_payload, role='user', connection=conn)
+            self.assertEqual(response['status'], 403)
+            audit.assert_not_called()
+
+    def test_switch_off_and_bad_shapes_are_rejected_without_write_or_audit(self):
+        good = self.apply_payload
+        for bad in (good, {k: v for k, v in good.items() if k != 'reason'}, dict(good, extra=1), dict(good, marginBps='150'),
+                    dict(good, bankId='NOPE'), {'action': 'ftp_rate_revert', 'bankId': 'BNK1', 'applicationId': 1}):
+            with self.subTest(payload=bad), self.db.atomic() as conn:
+                response, audit = self.post(bad, connection=conn)
+                self.assertEqual(response['status'], 400, response)         # the first one fails because the switch is off
+                audit.assert_not_called()
+                self.assertEqual(self.count(conn), 0)
+        self.assertEqual(self.db.products.execute("SELECT interest_rate FROM liability WHERE product_code='L1'")[0][0], 6)
+
+    def test_apply_then_revert_are_stored_and_audited_with_the_actor(self):
+        with self.db.atomic() as conn:
+            response, _ = self.post({'action': 'prudential_parameter_set', 'nationality': '낙원', 'key': 'ftp_apply_enabled', 'valueBps': 1}, connection=conn)
+            self.assertEqual(response['status'], 200)
+            response, audit = self.post(self.apply_payload, connection=conn)
+            self.assertEqual(response['status'], 200, response)
+            self.assertEqual(audit.call_args.args[1], 'ftp_rate.apply')
+            self.assertEqual(audit.call_args.args[2]['newRateBps'], 480)
+            app_id = response['value']['result']['applicationId']
+            self.assertEqual(conn.execute("SELECT actor FROM ftp_rate_applications WHERE app_id=?", (app_id,)).fetchone()[0], 'a')
+            response, audit = self.post({'action': 'ftp_rate_revert', 'bankId': 'BNK1', 'applicationId': app_id, 'reason': 'undo'}, connection=conn)
+            self.assertEqual(response['status'], 200, response)
+            self.assertEqual(audit.call_args.args[1], 'ftp_rate.revert')
+            self.assertEqual(self.count(conn), 2)
+            response, audit = self.post({'action': 'ftp_rate_revert', 'bankId': 'BNK1', 'applicationId': app_id, 'reason': 'again'}, connection=conn)
+            self.assertEqual(response['status'], 400)
+            audit.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -35,10 +35,12 @@ PRUDENTIAL_DEFAULTS = {
     # Funds-transfer-pricing preview: liquidity premium added to the funding curve. And the opt-in (0 = off, 1 = on) for repaying
     # matured wholesale funding automatically: repayment interest is a bank expense, so an administrator must switch it on.
     "ftp_liquidity_premium_bps": 30, "funding_auto_maturity_flag": 0,
+    # Opt-in (0 = off) for an administrator to set a product's offer rate from its FTP (new contracts only; see apply_ftp_rate).
+    "ftp_apply_enabled": 0,
 }
 # Largest value an administrator may store for a name (everything else: 100000). Shares and betas stop at 100%, years at 30.
 PARAMETER_MAX = {"deposit_beta_bps": 10000, "core_deposit_share_bps": 10000, "core_deposit_years": 30,
-                 "ftp_liquidity_premium_bps": 10000, "funding_auto_maturity_flag": 1}
+                 "ftp_liquidity_premium_bps": 10000, "funding_auto_maturity_flag": 1, "ftp_apply_enabled": 1}
 CURVE_TENORS_DAYS = (30, 90, 180, 365, 730, 1095, 1825, 3650)
 CURVE_KEYS = ("funding", "bank_bond", "treasury")
 SHOCKS_BPS = (-200, -100, 0, 100, 200)
@@ -160,6 +162,110 @@ class ALMManager:
                            "maturity; no hedges, basis risk, prepayment or wholesale funding rollover. The assumptions can be set per jurisdiction")}
 
     @classmethod
+    def ftp_applications(cls, conn, issuer, limit=20):
+        """Newest FTP rate applications and reversals of a bank (append-only history); empty when nothing was ever applied."""
+        reverted = {int(row["reverts_app_id"]) for row in conn.execute(
+            "SELECT reverts_app_id FROM ftp_rate_applications WHERE issuer=? AND reverts_app_id IS NOT NULL", (issuer,))}
+        return [{**{k: row[k] for k in row.keys()}, "reverted": row["action"] == "apply" and int(row["app_id"]) in reverted}
+                for row in conn.execute("SELECT * FROM ftp_rate_applications WHERE issuer=? ORDER BY app_id DESC LIMIT ?",
+                                        (issuer, int(limit)))]
+
+    @classmethod
+    def _ftp_product(cls, conn, issuer, kind, product_code):
+        table = {"loan": "liability", "deposit": "saving"}.get(kind)
+        if table is None:
+            raise ValueError("invalid_ftp_product_kind")
+        row = conn.execute(f"SELECT product_code,interest_rate,COALESCE(rate_type,'fixed') rate_type FROM {table} WHERE product_code=? AND issuer=?",
+                           (str(product_code), issuer)).fetchone()
+        if not row:
+            raise ValueError("ftp_product_not_found")
+        if row["rate_type"] != "fixed":
+            raise ValueError("ftp_apply_requires_fixed_rate_product")
+        # A contract without its own rate snapshot would follow the product rate: refuse rather than reprice it.
+        unpinned = conn.execute("SELECT COUNT(*) FROM " + ("loans" if kind == "loan" else "accounts")
+                                + " WHERE product_code=? AND contract_rate IS NULL", (str(product_code),)).fetchone()[0]
+        if unpinned:
+            raise ValueError("existing_contracts_without_rate_snapshot")
+        return table, row
+
+    @classmethod
+    def _set_product_rate(cls, conn, table, product_code, rate_bps):
+        conn.execute(f"UPDATE {table} SET interest_rate=? WHERE product_code=?", (rate_bps / 100, str(product_code)))
+
+    @classmethod
+    def apply_ftp_rate(cls, conn, issuer, kind, product_code, margin_bps, *, actor, reason, now):
+        """Set a product's offer rate from its FTP plus (loans) or minus (deposits) a target margin. Off by default.
+
+        Only the product's rate for NEW contracts changes: existing loans and accounts keep the rate they signed (refused if any
+        has no rate snapshot). Fixed-rate products only; a loan may not exceed the jurisdiction's maximum rate on the day. The
+        change is a row in ``ftp_rate_applications`` (append-only) and can be reverted with ``revert_ftp_rate``.
+        """
+        from functions import jurisdiction_rules
+
+        issuer, reason = str(issuer or "").strip(), str(reason or "").strip()
+        if not issuer or not 1 <= len(reason) <= 200:
+            raise ValueError("invalid_ftp_apply_request")
+        if type(margin_bps) is not int or not 0 <= margin_bps <= 5000:
+            raise ValueError("invalid_ftp_margin")
+        now = int(now)
+        nationality = conn.execute("SELECT nationality FROM financial_institutions WHERE issuer=?", (issuer,)).fetchone()
+        nationality = str(nationality["nationality"]) if nationality and nationality["nationality"] else ""
+        param, _ = cls.parameters(conn, nationality)
+        if int(param["ftp_apply_enabled"]) != 1:
+            raise ValueError("ftp_apply_disabled")
+        table, product = cls._ftp_product(conn, issuer, kind, product_code)
+        base = str(RateManager.institution_balance_sheet(conn, issuer)["base_currency"])
+        row = next((p for p in cls.ftp_preview(conn, issuer, nationality, base, param, now)["products"]
+                    if p["productCode"] == str(product_code) and p["kind"] == kind), None)
+        if row is None:
+            raise ValueError("ftp_product_not_found")
+        ftp_bps = int((row["ftpPercent"] * 100).to_integral_value(rounding="ROUND_HALF_UP"))
+        new_bps = ftp_bps + margin_bps if kind == "loan" else ftp_bps - margin_bps
+        old_bps = int((cls._dec(product["interest_rate"]) * 100).to_integral_value(rounding="ROUND_HALF_UP"))
+        if new_bps < 0 or new_bps > 10000:
+            raise ValueError("ftp_rate_out_of_range")
+        if kind == "loan":
+            limit = jurisdiction_rules.max_rate_percent(conn, nationality, product_type="loan", epoch=now)
+            if limit is None:
+                country = conn.execute("SELECT legal_max_rate FROM country_currencies WHERE nationality=?", (nationality,)).fetchone()
+                limit = float(country["legal_max_rate"]) if country and country["legal_max_rate"] is not None else None
+            if limit is not None and Decimal(new_bps) > Decimal(str(limit)) * 100:
+                raise ValueError("ftp_rate_above_legal_maximum")
+        if new_bps == old_bps:
+            raise ValueError("ftp_rate_unchanged")
+        cls._set_product_rate(conn, table, product_code, new_bps)
+        cursor = conn.execute(
+            "INSERT INTO ftp_rate_applications(issuer,product_kind,product_code,action,old_rate_bps,new_rate_bps,ftp_bps,margin_bps,"
+            "actor,reason,recorded_epoch) VALUES (?,?,?,'apply',?,?,?,?,?,?,?)",
+            (issuer, kind, str(product_code), old_bps, new_bps, ftp_bps, margin_bps, str(actor), reason, now))
+        app_id = conn.execute("SELECT MAX(app_id) FROM ftp_rate_applications WHERE issuer=?", (issuer,)).fetchone()[0]
+        return {"applicationId": int(app_id), "productCode": str(product_code), "kind": kind, "oldRateBps": old_bps,
+                "newRateBps": new_bps, "ftpBps": ftp_bps, "marginBps": margin_bps}
+
+    @classmethod
+    def revert_ftp_rate(cls, conn, issuer, app_id, *, actor, reason, now):
+        """Put a product's rate back to what it was before one application. Allowed while the switch is off; once per application,
+        and only while the product still carries the applied rate (a later change is not overwritten)."""
+        issuer, reason = str(issuer or "").strip(), str(reason or "").strip()
+        if not issuer or not 1 <= len(reason) <= 200 or type(app_id) is not int:
+            raise ValueError("invalid_ftp_revert_request")
+        applied = conn.execute("SELECT * FROM ftp_rate_applications WHERE app_id=? AND issuer=? AND action='apply'", (app_id, issuer)).fetchone()
+        if not applied:
+            raise ValueError("ftp_application_not_found")
+        if conn.execute("SELECT 1 FROM ftp_rate_applications WHERE reverts_app_id=?", (app_id,)).fetchone():
+            raise ValueError("ftp_application_already_reverted")
+        table, product = cls._ftp_product(conn, issuer, applied["product_kind"], applied["product_code"])
+        if int((cls._dec(product["interest_rate"]) * 100).to_integral_value(rounding="ROUND_HALF_UP")) != int(applied["new_rate_bps"]):
+            raise ValueError("product_rate_changed_since_apply")
+        cls._set_product_rate(conn, table, applied["product_code"], int(applied["old_rate_bps"]))
+        conn.execute(
+            "INSERT INTO ftp_rate_applications(issuer,product_kind,product_code,action,old_rate_bps,new_rate_bps,ftp_bps,margin_bps,"
+            "reverts_app_id,actor,reason,recorded_epoch) VALUES (?,?,?,'revert',?,?,?,?,?,?,?,?)",
+            (issuer, applied["product_kind"], applied["product_code"], applied["new_rate_bps"], applied["old_rate_bps"],
+             applied["ftp_bps"], applied["margin_bps"], app_id, str(actor), reason, int(now)))
+        return {"revertedApplicationId": app_id, "productCode": applied["product_code"], "restoredRateBps": int(applied["old_rate_bps"])}
+
+    @classmethod
     def forward_curves(cls, conn, nationality, *, now):
         """Implied forward rates between standard tenors from the jurisdiction's zero curves (read-only, explanatory).
 
@@ -210,10 +316,13 @@ class ALMManager:
         profile = FundingManager.profile(conn, issuer, now=now)["currencies"].get(base)
         if profile:
             wholesale = Decimal(profile["weighted_average_rate_bps"]) / 100
-        return {"liquidityPremiumPercent": premium, "wholesaleWeightedAverageRatePercent": wholesale,
+        table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ftp_rate_applications'").fetchone()
+        return {"applyEnabled": int(param["ftp_apply_enabled"]) == 1,
+                "applications": cls.ftp_applications(conn, issuer) if table else [],
+                "liquidityPremiumPercent": premium, "wholesaleWeightedAverageRatePercent": wholesale,
                 "curve": [{"tenorDays": d, "ftpPercent": ftp(d)} for d in CURVE_TENORS_DAYS], "products": products,
                 "applied": False,
-                "method": ("preview only; no product rate is changed. FTP = funding curve + liquidity premium; loans: margin = rate - FTP, "
+                "method": ("a preview: nothing is changed by viewing it (an administrator may apply it, off by default, to new contracts only). FTP = funding curve + liquidity premium; loans: margin = rate - FTP, "
                            "deposits: margin = FTP - rate; the wholesale weighted average is shown for reference, not blended in; "
                            "behavioural maturity and the premium are explanatory assumptions set per jurisdiction")}
 

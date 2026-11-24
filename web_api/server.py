@@ -6208,6 +6208,22 @@ class Handler(BaseHTTPRequestHandler):
                         result = {"nationality": str(payload["nationality"]).strip(), "key": payload["key"],
                                   "valueBps": payload["valueBps"]}
                         audit_admin_access(user["userId"], "prudential_parameter.set", result)
+                    elif action in ("ftp_rate_apply", "ftp_rate_revert"):
+                        from functions.banks import bank_issuer
+                        from managers.alm_manager import ALMManager
+                        shapes = {"ftp_rate_apply": {"action", "bankId", "kind", "productCode", "marginBps", "reason"},
+                                  "ftp_rate_revert": {"action", "bankId", "applicationId", "reason"}}
+                        if set(payload) != shapes[action]:
+                            raise ValueError("invalid_ftp_rate_payload")
+                        issuer = bank_issuer(connection, str(payload["bankId"]))
+                        if action == "ftp_rate_apply":
+                            result = ALMManager.apply_ftp_rate(connection, issuer, payload["kind"], payload["productCode"], payload["marginBps"],
+                                                               actor=user["userId"], reason=payload["reason"], now=int(time.time()))
+                            audit_admin_access(user["userId"], "ftp_rate.apply", {"bank_id": payload["bankId"], **result, "reason": payload["reason"]})
+                        else:
+                            result = ALMManager.revert_ftp_rate(connection, issuer, payload["applicationId"], actor=user["userId"],
+                                                                reason=payload["reason"], now=int(time.time()))
+                            audit_admin_access(user["userId"], "ftp_rate.revert", {"bank_id": payload["bankId"], **result, "reason": payload["reason"]})
                     elif action == "loan_charge_off":
                         allowed = {"action", "loanId", "eventKey", "memo"}
                         if set(payload) - allowed or not {"action", "loanId", "eventKey"}.issubset(payload):

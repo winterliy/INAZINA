@@ -1628,6 +1628,7 @@ class CurrencyDB(DBManager):
         ensure_business_cash_links(self.execute)
         ensure_institution_funding(self.execute)
         ensure_prudential_parameters(self.execute)
+        ensure_ftp_rate_applications(self.execute)
         ensure_jurisdiction_rate_rules(self.execute)
         ensure_accounting_line_repairs(self.execute)
         ensure_wallet_baseline_adjustments(self.execute)
@@ -3756,6 +3757,23 @@ def ensure_prudential_parameters(execute):
         value_bps INTEGER NOT NULL CHECK(typeof(value_bps)='integer' AND value_bps BETWEEN 0 AND 100000),
         updated_by TEXT NOT NULL, updated_epoch INTEGER NOT NULL,
         PRIMARY KEY(nationality,param_key))""")
+
+
+def ensure_ftp_rate_applications(execute):
+    """Append-only history of product offer rates set from FTP (M6). A revert is a new row that points at the application it undoes.
+    Rates are integer basis points (policy values, not ledger amounts)."""
+    execute("""CREATE TABLE IF NOT EXISTS ftp_rate_applications (
+        app_id INTEGER PRIMARY KEY AUTOINCREMENT, issuer TEXT NOT NULL,
+        product_kind TEXT NOT NULL CHECK(product_kind IN ('loan','deposit')), product_code TEXT NOT NULL,
+        action TEXT NOT NULL CHECK(action IN ('apply','revert')),
+        old_rate_bps INTEGER NOT NULL, new_rate_bps INTEGER NOT NULL, ftp_bps INTEGER NOT NULL, margin_bps INTEGER NOT NULL,
+        reverts_app_id INTEGER UNIQUE REFERENCES ftp_rate_applications(app_id),
+        actor TEXT NOT NULL, reason TEXT NOT NULL, recorded_epoch INTEGER NOT NULL)""")
+    execute("CREATE INDEX IF NOT EXISTS idx_ftp_rate_applications_issuer ON ftp_rate_applications(issuer,app_id)")
+    for operation in ("UPDATE", "DELETE"):
+        execute(f"""CREATE TRIGGER IF NOT EXISTS trg_ftp_rate_applications_{operation.lower()}
+            BEFORE {operation} ON ftp_rate_applications
+            BEGIN SELECT RAISE(ABORT,'ftp rate applications are append-only'); END""")
 
 
 def ensure_jurisdiction_rate_rules(execute):
