@@ -4887,6 +4887,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             parsed = urlsplit(self.path)
             path = parsed.path
+            _REQUEST.path = path
             if path == "/internal/health":
                 with connect_readonly() as connection:
                     connection.execute("SELECT 1").fetchone()
@@ -5618,6 +5619,7 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 raise ValueError("invalid_payload")
             path = urlsplit(self.path).path
+            _REQUEST.path = path
             verified_id = internal_user_id(self)
             if path == "/internal/auth/login":
                 user_id = str(payload.get("loginId", payload.get("userId", ""))).strip()
