@@ -37,10 +37,12 @@ PRUDENTIAL_DEFAULTS = {
     "ftp_liquidity_premium_bps": 30, "funding_auto_maturity_flag": 0,
     # Opt-in (0 = off) for an administrator to set a product's offer rate from its FTP (new contracts only; see apply_ftp_rate).
     "ftp_apply_enabled": 0,
+    # Size of the parallel exchange-rate move used in the currency risk view (1000 = 10%).
+    "fx_shock_bps": 1000,
 }
 # Largest value an administrator may store for a name (everything else: 100000). Shares and betas stop at 100%, years at 30.
 PARAMETER_MAX = {"deposit_beta_bps": 10000, "core_deposit_share_bps": 10000, "core_deposit_years": 30,
-                 "ftp_liquidity_premium_bps": 10000, "funding_auto_maturity_flag": 1, "ftp_apply_enabled": 1}
+                 "ftp_liquidity_premium_bps": 10000, "funding_auto_maturity_flag": 1, "ftp_apply_enabled": 1, "fx_shock_bps": 10000}
 CURVE_TENORS_DAYS = (30, 90, 180, 365, 730, 1095, 1825, 3650)
 CURVE_KEYS = ("funding", "bank_bond", "treasury")
 SHOCKS_BPS = (-200, -100, 0, 100, 200)
@@ -83,7 +85,8 @@ class ALMManager:
         amount = Decimal(amount)
         if amount == 0 or currency == base:
             return amount
-        return Decimal(CurrencyManager.convert(conn, int(amount * SCALE), currency, base)) / SCALE
+        converted = Decimal(CurrencyManager.convert(conn, int(abs(amount) * SCALE), currency, base)) / SCALE   # convert refuses negatives
+        return converted if amount > 0 else -converted
 
     @staticmethod
     def _status(value_percent, requirement_percent, warn_margin_percent=1):
@@ -264,6 +267,75 @@ class ALMManager:
             (issuer, applied["product_kind"], applied["product_code"], applied["new_rate_bps"], applied["old_rate_bps"],
              applied["ftp_bps"], applied["margin_bps"], app_id, str(actor), reason, int(now)))
         return {"revertedApplicationId": app_id, "productCode": applied["product_code"], "restoredRateBps": int(applied["old_rate_bps"])}
+
+    @classmethod
+    def currency_breakdown(cls, conn, issuer, base, param, cet1, *, now):
+        """Loans, deposits and wholesale funding by currency, and the open foreign-currency position they leave (read-only).
+
+        Per currency: assets = loans net of the latest expected credit loss; liabilities = customer deposits + active wholesale
+        funding; net = assets - liabilities in the currency's own units. The cash and reserves plug and equity are held in the
+        base currency, so a foreign currency's net is what the bank is long (net > 0) or short (net < 0) against the base.
+        Open position in base = net at the current exchange rate (whole base units, as the app converts). The FX shock moves every
+        foreign currency by ``fx_shock_bps`` against the base at once; the gross worst case moves each against the position.
+        Explanatory, not a regulatory market-risk figure: no hedges, derivatives or securities.
+        """
+        shock = Decimal(param["fx_shock_bps"]) / BPS
+        rows = {}
+
+        def entry(currency):
+            return rows.setdefault(currency, {"loans": Decimal(0), "allowance": Decimal(0), "deposits": Decimal(0), "wholesale": Decimal(0)})
+
+        for loan in conn.execute(
+            "SELECT l.quote_currency,l.outstanding_balance,(SELECT e.expected_loss FROM loan_ecl_assessments e WHERE e.loan_id=l.loan_id "
+            "ORDER BY e.as_of_day DESC,e.assessment_id DESC LIMIT 1) expected_loss FROM loans l JOIN liability p ON p.product_code=l.product_code "
+            "WHERE p.issuer=? AND l.status IN ('active','defaulted') AND l.outstanding_balance>0", (issuer,)):
+            row = entry(str(loan["quote_currency"] or base))
+            row["loans"] += max(Decimal(0), cls._dec(loan["outstanding_balance"]))
+            row["allowance"] += max(Decimal(0), cls._dec(loan["expected_loss"]))
+        for query in (
+            "SELECT a.quote_currency,SUM(MAX(0,CASE WHEN a.account_type='currency_saving' THEN a.balance_units/1000000.0 ELSE a.balance END)) amount "
+            "FROM accounts a JOIN saving s ON s.product_code=a.product_code WHERE s.issuer=? AND a.account_type IN ('saving','currency_saving') "
+            "AND a.resolution_status='active' GROUP BY a.quote_currency",
+            "SELECT a.quote_currency,SUM(MAX(0,a.balance)) amount FROM accounts a JOIN liability l ON l.product_code=a.product_code "
+            "WHERE l.issuer=? AND a.account_type='loan_payout' GROUP BY a.quote_currency"):
+            for row in conn.execute(query, (issuer,)):
+                entry(str(row["quote_currency"] or base))["deposits"] += cls._dec(row["amount"])
+        for row in conn.execute("SELECT currency_code,decimal_places,principal_minor_units FROM institution_funding "
+                                "WHERE issuer=? AND status='active' AND start_epoch<=?", (issuer, int(now))):
+            entry(str(row["currency_code"]))["wholesale"] += Decimal(int(row["principal_minor_units"])) / (10 ** int(row["decimal_places"]))
+
+        def to_base(amount, currency):
+            return cls._to_base(conn, amount, currency, base)
+
+        currencies, long_total, short_total, net_total, gross = [], Decimal(0), Decimal(0), Decimal(0), Decimal(0)
+        for currency, row in sorted(rows.items(), key=lambda item: (item[0] != base, item[0])):
+            assets = max(Decimal(0), row["loans"] - row["allowance"])
+            liabilities = row["deposits"] + row["wholesale"]
+            net = assets - liabilities
+            is_base = currency == base
+            net_base = net if is_base else to_base(net, currency)
+            if not is_base:
+                long_total += max(net_base, Decimal(0))
+                short_total += max(-net_base, Decimal(0))
+                net_total += net_base
+                gross += abs(net_base)
+            currencies.append({"currency": currency, "isBase": is_base, "loans": row["loans"], "allowance": row["allowance"], "netLoans": assets,
+                               "deposits": row["deposits"], "wholesale": row["wholesale"], "liabilities": liabilities, "net": net,
+                               "netInBase": net_base, "decimalPlaces": currency_precision(conn, currency)})
+        total_liabilities = sum((to_base(c["liabilities"], c["currency"]) for c in currencies), Decimal(0))
+        foreign_liabilities = sum((to_base(c["liabilities"], c["currency"]) for c in currencies if not c["isBase"]), Decimal(0))
+        open_position = max(long_total, short_total)
+        return {"currencies": currencies, "base": base,
+                "foreignLiabilityShare": cls._percent(foreign_liabilities, total_liabilities),
+                "longPosition": long_total, "shortPosition": short_total, "netOpenPosition": open_position,
+                "netOpenPositionPercentOfCet1": cls._percent(open_position, cet1),
+                "shockBps": int(param["fx_shock_bps"]),
+                "scenarios": {"foreignDown": -shock * net_total, "foreignUp": shock * net_total, "grossWorstCase": -shock * gross},
+                "worstCasePercentOfCet1": cls._percent(shock * gross, cet1),
+                "method": ("explanatory, not a regulatory market-risk figure: per currency net = loans net of expected loss - deposits - active "
+                           "wholesale funding; cash, reserves and equity are in the base currency, so a foreign net is an open position; every foreign "
+                           "currency moves by the shock against the base (foreignDown / foreignUp), or each against its position (grossWorstCase); "
+                           "no hedges, derivatives or securities; converted at the current rate in whole base units")}
 
     @classmethod
     def forward_curves(cls, conn, nationality, *, now):
@@ -511,6 +583,7 @@ class ALMManager:
                              "wholesaleFunding": wholesale, "equity": equity, "fundingGap": funding_gap},
             "capital": capital, "leverage": leverage, "lcr": lcr, "nsfr": nsfr,
             "rateShock": cls.rate_shock(conn, issuer, base, param, tier1, now=now),
+            "currencyRisk": cls.currency_breakdown(conn, issuer, base, param, cet1, now=now),
             "ftp": cls.ftp_preview(conn, issuer, nationality, base, param, now) if nationality else None,
             "forwardCurves": cls.forward_curves(conn, nationality, now=now) if nationality else None,
             "parameters": {"values": param, "overriddenForJurisdiction": overridden},

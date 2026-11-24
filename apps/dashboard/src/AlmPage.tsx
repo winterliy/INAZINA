@@ -21,6 +21,9 @@ type Report = {
   nsfr: { availableStableFunding: string; requiredStableFunding: string; asf: Row[]; rsf: Row[]; ratioPercent: number | null; minimumPercent: number; status: Status };
   rateShock: { shocks: { basisPoints: number; contractualNii: string; depositBetaNii: string; deltaNii: string; contractualEve: string; coreDepositEve: string; deltaEve: string; deltaEvePercentOfTier1: number | null }[];
     behavioralDeposits: string; coreDeposits: string; assumptions: { depositBetaBps: number; coreDepositShareBps: number; coreDepositYears: number }; method: string };
+  currencyRisk: { base: string; foreignLiabilityShare: number | null; longPosition: string; shortPosition: string; netOpenPosition: string; netOpenPositionPercentOfCet1: number | null;
+    shockBps: number; worstCasePercentOfCet1: number | null; method: string; scenarios: { foreignDown: string; foreignUp: string; grossWorstCase: string };
+    currencies: { currency: string; isBase: boolean; netLoans: string; deposits: string; wholesale: string; net: string; netInBase: string; decimalPlaces: number }[] };
   ftp: { applyEnabled: boolean; applications: { app_id: number; product_kind: "loan" | "deposit"; product_code: string; action: "apply" | "revert"; old_rate_bps: number; new_rate_bps: number; ftp_bps: number; margin_bps: number; actor: string; reason: string; recorded_epoch: number; reverted: boolean }[];
     liquidityPremiumPercent: string; wholesaleWeightedAverageRatePercent: string | null; applied: boolean; method: string;
     curve: { tenorDays: number; ftpPercent: string }[];
@@ -47,7 +50,7 @@ const PARAMETER: Record<string, string> = {
   asf_equity_bps: "ASF · 자본", asf_retail_stable_bps: "ASF · 개인 안정", asf_retail_less_stable_bps: "ASF · 개인 덜 안정", asf_corporate_bps: "ASF · 법인",
   asf_wholesale_1y_plus_bps: "ASF · 도매 1년 이상", asf_wholesale_6m_to_1y_bps: "ASF · 도매 6개월~1년", asf_wholesale_under_6m_bps: "ASF · 도매 6개월 미만",
   deposit_beta_bps: "금리 충격 · 예금 금리베타", core_deposit_share_bps: "금리 충격 · 핵심예금 비중", core_deposit_years: "금리 충격 · 핵심예금 행동만기(년)",
-  ftp_liquidity_premium_bps: "FTP · 유동성 프리미엄", funding_auto_maturity_flag: "도매조달 자동 만기 처리 (옵트인)", ftp_apply_enabled: "FTP 상품 금리 적용 (옵트인)",
+  ftp_liquidity_premium_bps: "FTP · 유동성 프리미엄", funding_auto_maturity_flag: "도매조달 자동 만기 처리 (옵트인)", ftp_apply_enabled: "FTP 상품 금리 적용 (옵트인)", fx_shock_bps: "환위험 · 환율 충격 크기",
   rsf_cash_bps: "RSF · 현금", rsf_loan_under_1y_bps: "RSF · 대출 1년 미만", rsf_loan_1y_plus_bps: "RSF · 대출 1년 이상", rsf_defaulted_loan_bps: "RSF · 부실 대출",
 };
 
@@ -168,6 +171,23 @@ export function AlmPage({ ctx }: { ctx: Ctx }) {
             <td className="alm-num">{signed(row.contractualEve, money)}</td><td className="alm-num">{signed(row.coreDepositEve, money)}</td><td className="alm-num"><b>{signed(row.deltaEve, money)}</b></td>
             <td className="alm-num">{pct(row.deltaEvePercentOfTier1, 1)}</td></tr>)}</tbody></table></div>
         <p className="alm-note">{report.rateShock.method}</p>
+      </Card>
+
+      <Card title="통화별 ALM · 환위험" caption={`통화별 대출(충당금 차감)·예금·도매조달과 순포지션(자산−부채). 현금·자본은 기준통화(${report.currencyRisk.base})이므로 외화 순포지션이 환위험 노출입니다. 환율 충격 ±${bps(report.currencyRisk.shockBps)}. 설명용 값이며 규제 시장위험 수치가 아닙니다.`}>
+        <div className="scroll-x"><table><thead><tr><th>통화</th><th className="alm-num">대출(순)</th><th className="alm-num">예금</th><th className="alm-num">도매조달</th><th className="alm-num">순포지션</th><th className="alm-num">기준통화 환산</th></tr></thead>
+          <tbody>{report.currencyRisk.currencies.map((row) => {
+            const fmt = (text: string) => Number(text).toLocaleString("ko-KR", { minimumFractionDigits: row.decimalPlaces, maximumFractionDigits: row.decimalPlaces });
+            return <tr key={row.currency}><td>{row.currency}{row.isBase && <span className="cap"> (기준)</span>}</td><td className="alm-num">{fmt(row.netLoans)}</td><td className="alm-num">{fmt(row.deposits)}</td>
+              <td className="alm-num">{fmt(row.wholesale)}</td><td className="alm-num"><b>{signed(row.net, fmt)}</b></td><td className="alm-num">{row.isBase ? "—" : signed(row.netInBase, money)}</td></tr>;
+          })}</tbody></table></div>
+        <div className="alm-tiles">
+          <div><span>순 개방 포지션</span><b>{money(report.currencyRisk.netOpenPosition)}</b><span>CET1의 {pct(report.currencyRisk.netOpenPositionPercentOfCet1, 1)}</span></div>
+          <div><span>외화 부채 비중</span><b>{pct(report.currencyRisk.foreignLiabilityShare, 1)}</b></div>
+          <div><span>외화 일제 하락</span><b>{signed(report.currencyRisk.scenarios.foreignDown, money)}</b></div>
+          <div><span>외화 일제 상승</span><b>{signed(report.currencyRisk.scenarios.foreignUp, money)}</b></div>
+          <div><span>최악(각각 불리)</span><b>{signed(report.currencyRisk.scenarios.grossWorstCase, money)}</b><span>CET1의 {pct(report.currencyRisk.worstCasePercentOfCet1, 1)}</span></div>
+        </div>
+        <p className="alm-note">{report.currencyRisk.method}</p>
       </Card>
 
       {report.ftp && <Card title="FTP(자금이전가격) 미리보기" caption={`조달 곡선 + 유동성 프리미엄 ${rate2(report.ftp.liquidityPremiumPercent)}. 참고: 도매조달 가중평균 ${rate2(report.ftp.wholesaleWeightedAverageRatePercent)}. 미리보기일 뿐 상품 금리는 바뀌지 않습니다.`}>
