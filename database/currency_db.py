@@ -1631,6 +1631,7 @@ class CurrencyDB(DBManager):
         ensure_ftp_rate_applications(self.execute)
         ensure_jurisdiction_rate_rules(self.execute)
         ensure_contract_rate_schedules(self.execute)
+        ensure_deposit_insurance_fund(self.execute)
         ensure_accounting_line_repairs(self.execute)
         ensure_wallet_baseline_adjustments(self.execute)
         ensure_primary_recipient_overrides(self.execute)
@@ -3104,6 +3105,7 @@ class CurrencyDB(DBManager):
             ('credit_loss_recovery_income','신용손실회수수익','revenue','credit'),
             ('impairment_reversal','손상환입수익','revenue','credit'),
             ('interest_expense','이자비용','expense','debit'),
+            ('deposit_insurance_premium_expense','예금보험료비용','expense','debit'),
             ('impairment_expense','손상차손','expense','debit'),
             ('credit_loss_expense','신용손실비용','expense','debit'),
             ('dividend_expense','배당비용','expense','debit'),
@@ -3812,6 +3814,21 @@ def ensure_contract_rate_schedules(execute):
         execute(f"""CREATE TRIGGER IF NOT EXISTS trg_contract_rate_schedules_{operation.lower()}
             BEFORE {operation} ON contract_rate_schedules
             BEGIN SELECT RAISE(ABORT,'contract rate schedules are append-only'); END""")
+
+
+def ensure_deposit_insurance_fund(execute):
+    """Deposit insurance fund ledger (M7): premiums collected from banks and payouts to covered depositors, append-only, integer minor units.
+    Nothing writes here unless an administrator runs a premium collection or a payout recording."""
+    execute("""CREATE TABLE IF NOT EXISTS deposit_insurance_fund_events (
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT, event_key TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL CHECK(kind IN ('premium','payout')), issuer TEXT NOT NULL, currency_code TEXT NOT NULL,
+        amount_minor_units INTEGER NOT NULL CHECK(typeof(amount_minor_units)='integer' AND amount_minor_units>0),
+        reference TEXT NOT NULL DEFAULT '', actor_id TEXT NOT NULL, created_epoch INTEGER NOT NULL)""")
+    execute("CREATE INDEX IF NOT EXISTS idx_deposit_insurance_fund_events_issuer ON deposit_insurance_fund_events(issuer,kind,currency_code)")
+    for operation in ("UPDATE", "DELETE"):
+        execute(f"""CREATE TRIGGER IF NOT EXISTS trg_deposit_insurance_fund_events_{operation.lower()}
+            BEFORE {operation} ON deposit_insurance_fund_events
+            BEGIN SELECT RAISE(ABORT,'deposit insurance fund events are append-only'); END""")
 
 
 def ensure_accounting_line_repairs(execute):

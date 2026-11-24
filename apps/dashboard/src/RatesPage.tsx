@@ -18,6 +18,47 @@ type Insurance = { currencyCode: string; decimalPlaces: number; limitMinorUnits:
   coveredMinorUnits: number; uninsuredMinorUnits: number; premiumBps: number; assessedPremiumMinorUnits: number; allocations: Record<string, number>; shortfalls: Record<string, number>; unallocatedMinorUnits: number };
 const CLAIMS: [string, string, number][] = [["insurer_subrogation", "보험 대위(보험금을 낸 만큼)", 1], ["uninsured_depositors", "비보험 예금자", 2], ["general_creditors", "일반 채권", 3]];
 
+type FundReport = { fund: Record<string, { premiumsMinorUnits: number; payoutsMinorUnits: number; balanceMinorUnits: number; shortfallMinorUnits: number; decimalPlaces: number }>;
+  problems: unknown[]; events: { event_id: number; kind: "premium" | "payout"; issuer: string; currency_code: string; amount_minor_units: number; reference: string; created_epoch: number }[] };
+
+/** 예금보험기금: ledger of premiums collected from banks and payouts recorded from resolved claims (admin-triggered only). */
+function FundCard({ ctx, bankId }: { ctx: Ctx; bankId: string }) {
+  const { busy, run, say } = ctx;
+  const [data, setData] = useState<FundReport | null>(null);
+  const [premium, setPremium] = useState("0.5");
+  const load = useCallback(() => { api<FundReport>("/api/admin/deposit-insurance-fund").then(setData).catch((cause) => say(errorText(cause, "기금 정보를 불러오지 못했습니다."), true)); }, []);
+  useEffect(load, []);
+  const units = (value: number, places: number) => (value / 10 ** places).toLocaleString("ko-KR", { minimumFractionDigits: places, maximumFractionDigits: places });
+  const post = (body: Record<string, unknown>, fallback: string, done: string) =>
+    run(() => api<{ success: boolean }>("/api/admin/deposit-insurance-fund", { method: "POST", body: JSON.stringify({ bankId, ...body }) }), fallback, () => { say(done); load(); });
+  function collect() {
+    const bps = Math.round(Number(premium) * 100);
+    if (!bankId || !Number.isInteger(bps) || bps < 1 || bps > 10000) { say("보험료율은 0.01~100% 범위로 입력해주세요.", true); return; }
+    if (!window.confirm(`${bankId} 은행에 보험 대상 예금의 ${premium}%를 보험료로 징수할까요? 은행 분개에 보험료 비용이 기록되고 기금에 보험료가 쌓입니다.`)) return;
+    void post({ action: "collect_premium", premiumBps: bps, eventKey: `ui-${crypto.randomUUID()}` }, "보험료를 징수하지 못했습니다.", "보험료를 징수했습니다.");
+  }
+  function record() {
+    if (!window.confirm(`${bankId} 은행의 정리 청구 가운데 아직 기금에 기록하지 않은 보험금 지급을 기금 원장에 기록할까요?`)) return;
+    void post({ action: "record_payouts" }, "지급을 기록하지 못했습니다.", "지급을 기록했습니다.");
+  }
+  if (!data) return <p className="cap">불러오는 중…</p>;
+  const currencies = Object.entries(data.fund);
+  return <Card title="예금보험기금" caption="보험료를 모아 한도 안에서 지급합니다. 기능은 관리자가 실행할 때만 작동하며 자동으로 징수·지급하지 않습니다.">
+    {currencies.length === 0 ? <p className="cap">기금 거래가 없습니다.</p> : <div className="alm-tiles">{currencies.map(([code, f]) => <div key={code}>
+      <span>기금 잔액 · {code}</span><b>{units(f.balanceMinorUnits, f.decimalPlaces)}</b><span>{f.shortfallMinorUnits > 0 ? `부족 ${units(f.shortfallMinorUnits, f.decimalPlaces)}` : `보험료 ${units(f.premiumsMinorUnits, f.decimalPlaces)} · 지급 ${units(f.payoutsMinorUnits, f.decimalPlaces)}`}</span></div>)}</div>}
+    {data.problems.length > 0 && <p><span className="tag danger">대사 불일치 {data.problems.length}건</span></p>}
+    <div className="scroll-x"><table><thead><tr><th>#</th><th>종류</th><th>은행</th><th>통화</th><th className="alm-num">금액(최소단위)</th><th>비고</th><th>시각</th></tr></thead><tbody>
+      {data.events.length === 0 ? <tr><td colSpan={7} className="cap">기록이 없습니다.</td></tr> : data.events.map((e) => <tr key={e.event_id}><td>{e.event_id}</td><td>{e.kind === "premium" ? "보험료" : "지급"}</td><td>{e.issuer}</td><td>{e.currency_code}</td>
+        <td className="alm-num">{e.amount_minor_units.toLocaleString("ko-KR")}</td><td>{e.reference}</td><td>{day(e.created_epoch)}</td></tr>)}
+    </tbody></table></div>
+    <div className="alm-edit">
+      <input inputMode="decimal" aria-label="보험료율(%)" placeholder="보험료율 %" value={premium} onChange={(event) => setPremium(event.target.value)} />
+      <button type="button" className="btn primary" disabled={busy || !bankId} onClick={collect}>선택한 은행에 보험료 징수</button>
+      <button type="button" className="outline" disabled={busy || !bankId} onClick={record}>정리 청구 지급 기록</button>
+    </div>
+  </Card>;
+}
+
 /** 예금보험 · 정리 미리보기: read-only coverage, assessed premium and priority allocation of one bank. */
 function InsurancePreview({ ctx }: { ctx: Ctx }) {
   const { busy, run, say } = ctx;
@@ -35,7 +76,7 @@ function InsurancePreview({ ctx }: { ctx: Ctx }) {
     void run(() => api<Insurance>(`/api/admin/deposit-insurance?bank_id=${encodeURIComponent(form.bank)}&premium_bps=${premium}&proceeds=${form.proceeds}&general_claims=${form.general}`), "미리보기를 불러오지 못했습니다.", setResult);
   }
   const places = result?.decimalPlaces ?? 0;
-  return <Card title="예금보험 · 정리 배분 미리보기" caption="은행의 보험 한도 안 예금과 가정한 회수금의 우선순위 배분을 계산합니다. 실제 전기는 하지 않으며 보험기금 원장은 아직 없어 기금 잔액은 표시하지 않습니다.">
+  return <><Card title="예금보험 · 정리 배분 미리보기" caption="은행의 보험 한도 안 예금과 가정한 회수금의 우선순위 배분을 계산합니다. 실제 전기는 하지 않으며 보험기금 원장은 아직 없어 기금 잔액은 표시하지 않습니다.">
     <div className="alm-edit">
       <select aria-label="은행" value={form.bank} onChange={(event) => setForm({ ...form, bank: event.target.value })}>{banks.map((bank) => <option key={bank.id} value={bank.id}>{bank.name ? `${bank.name} (${bank.id})` : bank.id}</option>)}</select>
       <input inputMode="decimal" aria-label="보험료율(%)" placeholder="보험료율 %" value={form.premium} onChange={(event) => setForm({ ...form, premium: event.target.value })} />
@@ -53,7 +94,7 @@ function InsurancePreview({ ctx }: { ctx: Ctx }) {
         <tr className="alm-total"><td /><td>남은 회수금</td><td /><td className="alm-num">{units(result.unallocatedMinorUnits, places)}</td><td /></tr>
       </tbody></table></div>
       <p className="alm-note">통화 {result.currencyCode}. 금액은 은행 기준통화 최소단위로 계산한 미리보기입니다.</p></>}
-  </Card>;
+  </Card><FundCard ctx={ctx} bankId={form.bank} /></>;
 }
 
 type ScheduleRow = { product_type: "loan" | "deposit"; product_code: string; schedule_json: string; enabled: number; updated_by: string; updated_epoch: number };

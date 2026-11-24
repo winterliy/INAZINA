@@ -5163,6 +5163,20 @@ class Handler(BaseHTTPRequestHandler):
                         "bank_id": bank_id, "currency": currency, "result_count": len(report["cashflows"]),
                     })
                     self.send_json(200, report)
+            elif path == "/internal/admin/deposit-insurance-fund":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    from managers import deposit_insurance_fund as insurance_fund
+                    with connect_readonly() as plain:
+                        connection = LegacyNames(plain)
+                        report = {"fund": insurance_fund.fund_overview(connection), "problems": insurance_fund.reconcile(connection),
+                                  "events": [dict(row) for row in connection.execute(
+                                      "SELECT event_id,event_key,kind,issuer,currency_code,amount_minor_units,reference,created_epoch "
+                                      "FROM deposit_insurance_fund_events ORDER BY event_id DESC LIMIT 50").fetchall()]}
+                    audit_admin_access(user["userId"], "deposit_insurance_fund.read", {"events": len(report["events"]), "problems": len(report["problems"])})
+                    self.send_json(200, report)
             elif path == "/internal/admin/deposit-insurance":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -6011,6 +6025,30 @@ class Handler(BaseHTTPRequestHandler):
                 audit_admin_access(user["userId"], "product_rate_schedule.set", {
                     "product_type": payload["productType"], "product_code": payload["productCode"], "enabled": payload["enabled"], "schedule": stored})
                 self.send_json(200, {"success": True})
+                return
+            if path == "/internal/admin/deposit-insurance-fund":
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                    return
+                from functions.banks import bank_issuer
+                from managers import deposit_insurance_fund as insurance_fund
+                action = payload.get("action")
+                shapes = {"collect_premium": {"action", "bankId", "premiumBps", "eventKey"}, "record_payouts": {"action", "bankId"}}
+                if action not in shapes or set(payload) != shapes[action] or not isinstance(payload["bankId"], str) or not 1 <= len(payload["bankId"]) <= 100:
+                    raise ValueError("invalid_deposit_insurance_fund_payload")
+                if action == "collect_premium" and (type(payload["premiumBps"]) is not int or not 1 <= payload["premiumBps"] <= 10000
+                                                    or not isinstance(payload["eventKey"], str)):
+                    raise ValueError("invalid_deposit_insurance_fund_payload")
+                now = int(time.time())
+                with domain().db.atomic() as connection:
+                    issuer = bank_issuer(connection, payload["bankId"].strip().upper())
+                    if action == "collect_premium":
+                        result = insurance_fund.collect_premium(connection, issuer, premium_bps=payload["premiumBps"], event_key=payload["eventKey"],
+                                                                actor_id=user["userId"], now=now)
+                    else:
+                        result = insurance_fund.record_claim_payouts(connection, issuer, actor_id=user["userId"], now=now)
+                audit_admin_access(user["userId"], f"deposit_insurance_fund.{action}", {"bank_id": payload["bankId"], **{k: v for k, v in payload.items() if k in ("premiumBps", "eventKey")}, "result": result})
+                self.send_json(200, {"success": True, "result": result})
                 return
             if path == "/internal/admin/rate-rules":
                 if user["role"] != "admin":

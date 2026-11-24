@@ -5,6 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from managers import deposit_insurance_fund as fund
 from managers.deposit_insurance_fund import preview
 from web_api import server
 import test_alm_manager
@@ -46,6 +47,58 @@ class DepositInsuranceTests(Fixture):
             preview(conn, "Nope", premium_bps=1, proceeds_minor_units=0, general_claims_minor_units=0)
 
 
+class DepositInsuranceFundLedgerTests(Fixture):
+    NOW = 1_800_000_000
+
+    def setUp(self):
+        super().setUp()
+        self.db.users.create_user("admin", "Admin", "낙원", 0, role="admin")
+
+    def collect(self, conn, key="premium-2027-q1", bps=250, actor="admin"):
+        return fund.collect_premium(conn, "Bank", premium_bps=bps, event_key=key, actor_id=actor, now=self.NOW)
+
+    def test_a_premium_is_journaled_recorded_once_and_reconciles(self):
+        with self.db.atomic() as conn:
+            first = self.collect(conn)
+            again = self.collect(conn)
+            self.assertEqual((first["amountMinorUnits"], first["duplicate"], again["duplicate"]), (15, False, True))
+            self.assertEqual(fund.fund_overview(conn)["NWX"]["balanceMinorUnits"], 15)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM bank_journal_entries WHERE event_type='deposit_insurance_premium'").fetchone()[0], 1)
+            self.assertEqual(fund.reconcile(conn), [])
+
+    def test_a_failed_posting_leaves_no_fund_event(self):
+        with self.db.atomic() as conn:
+            with patch("managers.deposit_insurance_fund.BankJournal.post", side_effect=RuntimeError("journal failed")), self.assertRaises(RuntimeError):
+                self.collect(conn)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM deposit_insurance_fund_events").fetchone()[0], 0)
+            self.assertEqual(self.collect(conn)["amountMinorUnits"], 15)             # a retry then works
+
+    def test_non_admin_bad_key_and_zero_premium_are_refused(self):
+        with self.db.atomic() as conn:
+            for kwargs in (dict(actor="u1"), dict(key="short"), dict(bps=0)):
+                with self.assertRaises(ValueError):
+                    self.collect(conn, **kwargs)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM deposit_insurance_fund_events").fetchone()[0], 0)
+
+    def test_claim_payouts_are_recorded_once_and_a_shortfall_is_shown(self):
+        self.db.accounts.execute("INSERT INTO deposit_insurance_claims(issuer,user_id,account_number,covered_amount,uninsured_amount,payout_currency,payout_amount,"
+                                 "payout_amount_minor_units,payout_decimal_places,resolved_epoch) VALUES ('Bank','u1','A1',300,200,'NWX',300,300,0,?)", (self.NOW,))
+        with self.db.atomic() as conn:
+            self.collect(conn)
+            self.assertEqual(fund.record_claim_payouts(conn, "Bank", actor_id="admin", now=self.NOW)["recorded"], 1)
+            self.assertEqual(fund.record_claim_payouts(conn, "Bank", actor_id="admin", now=self.NOW)["recorded"], 0)
+            overview = fund.fund_overview(conn)["NWX"]
+            self.assertEqual((overview["balanceMinorUnits"], overview["shortfallMinorUnits"]), (-285, 285))
+            self.assertEqual(fund.reconcile(conn), [])
+
+    def test_the_fund_events_are_append_only(self):
+        with self.db.atomic() as conn:
+            self.collect(conn)
+        for sql in ("UPDATE deposit_insurance_fund_events SET amount_minor_units=1", "DELETE FROM deposit_insurance_fund_events"):
+            with self.assertRaises(Exception), self.db.atomic() as conn:
+                conn.execute(sql)
+
+
 class DepositInsuranceApiTests(Fixture):
     def get(self, query, role="admin"):
         response, audit = {}, Mock()
@@ -76,3 +129,46 @@ class DepositInsuranceApiTests(Fixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DepositInsuranceFundApiTests(Fixture):
+    def setUp(self):
+        super().setUp()
+        self.db.users.create_user("admin", "Admin", "낙원", 0, role="admin")
+
+    def call(self, method, payload=None, role="admin"):
+        body = json.dumps(payload or {}).encode()
+        response, audit = {}, Mock()
+        handler = SimpleNamespace(headers={"x-inazina-internal-token": "secret", "x-inazina-user-id": "admin", "content-length": str(len(body))},
+                                  path="/internal/admin/deposit-insurance-fund", rfile=io.BytesIO(body),
+                                  send_json=lambda status, value: response.update(status=status, value=value))
+        db = self.db
+        with patch.object(server, "INTERNAL_TOKEN", "secret"), patch.object(server, "identity", return_value={"userId": "admin", "role": role}), \
+             patch.object(server, "domain", return_value=SimpleNamespace(db=db)), patch.object(server, "audit_admin_access", audit), \
+             patch.object(server, "connect_readonly", lambda: db.readonly()), patch.object(server, "LegacyNames", lambda c: c), \
+             patch("functions.banks.bank_issuer", lambda c, bank_id: "Bank"):
+            getattr(server.Handler, method)(handler)
+        return response, audit
+
+    PAYLOAD = {"action": "collect_premium", "bankId": "BNK1", "premiumBps": 250, "eventKey": "api-premium-0001"}
+
+    def test_admin_collects_once_and_reads_with_audit(self):
+        response, audit = self.call("do_POST", self.PAYLOAD)
+        self.assertEqual(response["status"], 200, response)
+        self.assertEqual(audit.call_args[0][1], "deposit_insurance_fund.collect_premium")
+        again, _ = self.call("do_POST", self.PAYLOAD)
+        self.assertTrue(again["value"]["result"]["duplicate"])
+        response, audit = self.call("do_GET")
+        self.assertEqual(response["value"]["fund"]["NWX"]["balanceMinorUnits"], 15)
+        self.assertEqual(response["value"]["problems"], [])
+        self.assertEqual(audit.call_args[0][1], "deposit_insurance_fund.read")
+
+    def test_non_admin_and_bad_payloads_are_refused_without_writing_or_audit(self):
+        self.assertEqual(self.call("do_POST", self.PAYLOAD, role="user")[0]["status"], 403)
+        self.assertEqual(self.call("do_GET", role="user")[0]["status"], 403)
+        for bad in (dict(self.PAYLOAD, extra=1), dict(self.PAYLOAD, premiumBps=0), dict(self.PAYLOAD, premiumBps="5"), dict(self.PAYLOAD, premiumBps=True),
+                    dict(self.PAYLOAD, eventKey="short"), dict(self.PAYLOAD, action="x")):
+            response, audit = self.call("do_POST", bad)
+            self.assertEqual(response["status"], 400, bad)
+            audit.assert_not_called()
+        self.assertEqual(self.db.currency.execute_one("SELECT COUNT(*) FROM deposit_insurance_fund_events")[0], 0)
