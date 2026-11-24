@@ -1,7 +1,7 @@
 """Dated lending rules by country, customer type and product type (M7).
 
-A rule applies from its effective epoch. A contract looks up the rule in force on its own contract date, so a later
-rule never changes a contract signed earlier. The most specific rule wins (customer and product both named beats one
+A rule applies from its effective epoch. A contract looks up the rule in force on its own contract date, and only rules registered
+before the contract was signed bind it (a rule dated backwards never changes a signed contract). The most specific rule wins (customer and product both named beats one
 named beats neither), then the latest effective date; each field falls through to the next candidate when a rule leaves
 it empty. With no rule the caller keeps its old behaviour (the country's ``legal_max_rate``). Simulator rules only.
 """
@@ -13,9 +13,9 @@ FIELDS = ("max_rate_bps", "apr_display", "tax_bps")
 def resolve(conn, nationality, *, customer_type="individual", product_type="loan", epoch):
     """The rule values in force on ``epoch`` as ``{field: value or None, "rule_ids": [...]}``, or None when no rule matches."""
     rows = conn.execute(
-        "SELECT * FROM jurisdiction_rate_rules WHERE nationality=? AND effective_epoch<=? "
+        "SELECT * FROM jurisdiction_rate_rules WHERE nationality=? AND effective_epoch<=? AND created_epoch<=? "
         "AND customer_type IN ('*',?) AND product_type IN ('*',?)",
-        (str(nationality), int(epoch), customer_type, product_type)).fetchall()
+        (str(nationality), int(epoch), int(epoch), customer_type, product_type)).fetchall()
     if not rows:
         return None
     rows = sorted(rows, key=lambda r: ((r["customer_type"] != "*") + (r["product_type"] != "*"),
@@ -88,8 +88,11 @@ def contract_max_rate_percent(conn, nationality, user_id, contract_date, *, prod
     from datetime import datetime, timezone
     if contract_date is None or not nationality:
         return None
-    if isinstance(contract_date, str):
+    if isinstance(contract_date, datetime):
+        contract_date = (contract_date if contract_date.tzinfo else contract_date.replace(tzinfo=timezone.utc)).timestamp()
+    elif isinstance(contract_date, str):
         try:
+            contract_date = contract_date.split(".")[0].replace("T", " ")
             contract_date = datetime.strptime(contract_date, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
         except ValueError:
             return None

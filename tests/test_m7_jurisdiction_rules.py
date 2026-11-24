@@ -140,6 +140,23 @@ class DatedRuleOnSignedLoanTests(ContractTests):
             self.add(conn, 0, max_rate_bps=0)
         self.assertEqual(self.overdue_growth(), 0)
 
+    def test_a_backdated_rule_registered_after_signing_never_changes_a_signed_loan(self):
+        self.aged_loan("B1")                 # signed 10 days ago
+        start = time.time() - 10 * DAY
+        with self.db.atomic() as conn:       # dated last year, registered just now
+            rules.add_rule(conn, nationality="낙원", customer_type="*", product_type="*", effective_epoch=int(start) - 365 * DAY,
+                           max_rate_bps=0, actor="admin", now=int(time.time()))
+        self.assertGreater(self.overdue_growth(), 0)
+
+    def test_a_rule_registered_before_signing_binds_a_loan_read_from_the_database(self):
+        with self.db.atomic() as conn:
+            rules.add_rule(conn, nationality="낙원", customer_type="*", product_type="*", effective_epoch=0, max_rate_bps=700,
+                           actor="admin", now=int(time.time()) - 5)
+        self.assertEqual(self.sign("B2"), 7)
+        with self.db.readonly() as conn:
+            row = conn.execute("SELECT user_id,created_at FROM loans WHERE product_code='B2'").fetchone()
+            self.assertEqual(rules.contract_max_rate_percent(conn, "낙원", row["user_id"], row["created_at"]), 7)
+
     def test_a_rule_that_started_after_the_contract_does_not_cap_it(self):
         self.aged_loan("O2")
         with self.db.atomic() as conn:
