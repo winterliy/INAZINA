@@ -254,27 +254,11 @@ class InazinaBot(discord.Client):
                 print(f'[Bot Name Update Error] {exc}')
         if not self._guild_commands_cleaned:
             try:
+                from functions.command_sync import policy_command, sync_slash_commands
                 guilds = list(self.guilds)
-                if not guilds:
-                    # Keep global commands available if the client has not joined
-                    # any guild (or the guild cache is unexpectedly empty).
-                    synced = await self.tree.sync()
-                    print(f"Slash commands registered globally: {len(synced)}")
-                else:
-                    synced_total = 0
-                    for guild in guilds:
-                        # Guild commands update immediately. Replace stale guild
-                        # copies with the current definitions before removing the
-                        # global copies, so commands appear without waiting for
-                        # global-command propagation and are not duplicated long-term.
-                        self.tree.copy_global_to(guild=guild)
-                        synced_total += len(await self.tree.sync(guild=guild))
-                    self.tree.clear_commands(guild=None)
-                    await self.tree.sync()
-                    print(
-                        f"Synced {synced_total} guild slash commands across "
-                        f"{len(guilds)} server(s); removed global copies."
-                    )
+                synced, global_count = await sync_slash_commands(self.tree, guilds, [policy_command()])
+                print(f"Slash commands: {synced} guild commands across {len(guilds)} server(s); {global_count} global "
+                      "(one global command earns the app its Supports Commands badge).")
                 self._guild_commands_cleaned = True
             except discord.HTTPException as exc:
                 print(f"[Guild Slash Command Sync Error] {exc}")
