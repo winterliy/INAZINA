@@ -442,6 +442,8 @@ def board_db():
         if time.time() - _board_ip_purged >= 3600:
             board.purge_expired_ips(connection)
             board.cleanup_files(connection, BOARD_FILES_DIR)
+            from managers.withdrawal_manager import WithdrawalManager
+            WithdrawalManager.purge_expired(connection)  # the Discord ID <-> random ID table is kept one year
             _board_ip_purged = time.time()
         yield connection
 

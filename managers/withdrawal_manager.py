@@ -146,6 +146,7 @@ COLUMN_BUCKETS = {
     'user_assets': {'bucket': 'transfer', 'columns': ['user_id'], 'staff': []},
     'user_realized_pnl': {'bucket': 'rekey', 'columns': ['user_id'], 'staff': []},
     'user_tax_residency_events': {'bucket': 'rekey', 'columns': ['user_id'], 'staff': []},
+    'product_rate_schedules': {'bucket': 'staff', 'columns': [], 'staff': ['updated_by']},
     'users': {'bucket': 'users', 'columns': ['user_id'], 'staff': []},
     'web_auth_credentials': {'bucket': 'delete', 'columns': ['user_id'], 'staff': []},
     'web_bot_jobs': {'bucket': 'staff', 'columns': [], 'staff': ['actor_id']},
@@ -180,6 +181,14 @@ def _has_table(conn, table):
 class WithdrawalManager:
     def __init__(self, bot):
         self.bot, self.db = bot, bot.db
+
+    @staticmethod
+    def purge_expired(conn, now=None):
+        """Delete the Discord ID <-> random ID rows a year after the withdrawal (run from the server's regular sweep). Returns how many."""
+        if not _has_table(conn, "withdrawal_records"):
+            return 0
+        now = int(time.time() if now is None else now)
+        return conn.execute("DELETE FROM withdrawal_records WHERE expires_epoch<=?", (now,)).rowcount
 
     # ---- checks ----------------------------------------------------------------------------------
     def _member(self, conn, user_id):
@@ -245,7 +254,7 @@ class WithdrawalManager:
                 "CREATE TABLE IF NOT EXISTS withdrawal_records (record_id INTEGER PRIMARY KEY AUTOINCREMENT, discord_user_id TEXT NOT NULL, "
                 "tombstone_id TEXT NOT NULL UNIQUE, nationality TEXT, treasury_id TEXT, withdrawn_epoch INTEGER NOT NULL, "
                 "expires_epoch INTEGER NOT NULL, summary TEXT)")
-            conn.execute("DELETE FROM withdrawal_records WHERE expires_epoch<?", (now,))
+            WithdrawalManager.purge_expired(conn, now)
             conn.execute("INSERT INTO withdrawal_records(discord_user_id,tombstone_id,nationality,treasury_id,withdrawn_epoch,expires_epoch,summary) "
                          "VALUES (?,?,?,?,?,?,?)", (user_id, tomb, user["nationality"], treasury, now, now + RETENTION_SECONDS, json.dumps(summary)))
         return {"tombstoneId": tomb, "treasuryId": treasury, **summary}

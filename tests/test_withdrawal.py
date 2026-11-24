@@ -1,5 +1,6 @@
 """Withdrawal: everything the member owns passes to the national treasury, personal data is deleted and the ID is replaced."""
 import re
+import time
 import unittest
 
 import test_inazina as fixtures
@@ -125,6 +126,54 @@ class WithdrawalTests(unittest.TestCase):
         self.assertTrue(self.db.users.register_user('citizen', 'again', '낙원'))
         self.assertEqual(self.db.users.get_user('citizen')['nickname'], 'again')
         self.assertEqual(self.owners('user_assets', 'user_id', 'citizen'), 0, 'the new account starts empty')
+
+    def test_everything_the_member_wrote_on_the_board_is_deleted_and_its_files_are_swept(self):
+        self.prepare()
+        import pathlib, tempfile
+        from web_api import board
+        opens = board.WRITE_OPENS_EPOCH
+        board.WRITE_OPENS_EPOCH = 0
+        self.addCleanup(setattr, board, 'WRITE_OPENS_EPOCH', opens)
+        directory = pathlib.Path(tempfile.mkdtemp())
+        stored = 'a' * 32 + '.png'
+        (directory / stored).write_bytes(b'x')
+        me, other = {'userId': 'citizen', 'role': 'user'}, {'userId': 'admin', 'role': 'admin'}
+        with self.db.atomic() as conn:
+            board.ensure_tables(conn)
+            mine = board.create_post(conn, me, {'board': 'free', 'title': '제목', 'body': '내용'}, '10.0.0.1')
+            theirs = board.create_post(conn, other, {'board': 'free', 'title': '공지', 'body': '내용'}, '10.0.0.2')
+            board.add_comment(conn, me, theirs, {'body': '댓글'}, '10.0.0.1')
+            board.react(conn, me, 'post', theirs, 1)
+            conn.execute("INSERT INTO board_attachments(post_id,uploader_id,kind,name,stored_name,size,sha256,created_epoch) "
+                         "VALUES (?,?,'file','x.png',?,1,'0',1)", (mine, 'citizen', stored))
+            conn.execute("INSERT INTO board_attachments(post_id,uploader_id,kind,name,url,created_epoch) VALUES (NULL,'citizen','link','l','https://example.com',1)")
+
+        tomb = WithdrawalManager(self.bot).withdraw('citizen')['tombstoneId']
+
+        with self.db.atomic() as conn:
+            for table, info in COLUMN_BUCKETS.items():
+                if table.startswith('board_') and info['bucket'] == 'delete':
+                    for column in info['columns']:
+                        for who in ('citizen', tomb):
+                            self.assertIsNone(conn.execute(f"SELECT 1 FROM {table} WHERE {column}=? LIMIT 1", (who,)).fetchone(), f'{table}.{column} {who}')
+            self.assertIsNotNone(conn.execute("SELECT 1 FROM board_posts WHERE post_id=?", (theirs,)).fetchone(), "other people's posts stay")
+            self.assertEqual(board.cleanup_files(conn, directory, now=int(time.time()) + 5, min_age=0), 1, 'the file no attachment points to is removed by the regular sweep')
+        self.assertFalse((directory / stored).exists())
+
+    def test_the_discord_id_table_is_deleted_by_the_regular_sweep_once_a_year_has_passed(self):
+        self.prepare()
+        now = 1_800_000_000
+        tomb = WithdrawalManager(self.bot).withdraw('citizen', now=now)['tombstoneId']
+        with self.db.atomic() as conn:
+            self.assertEqual(WithdrawalManager.purge_expired(conn, now=now + 365 * 86400 - 1), 0, 'still kept just before the year ends')
+            self.assertIsNotNone(conn.execute("SELECT 1 FROM withdrawal_records WHERE tombstone_id=?", (tomb,)).fetchone())
+            self.assertEqual(WithdrawalManager.purge_expired(conn, now=now + 365 * 86400), 1)
+            self.assertIsNone(conn.execute("SELECT 1 FROM withdrawal_records WHERE tombstone_id=?", (tomb,)).fetchone())
+            self.assertEqual(WithdrawalManager.purge_expired(conn, now=now + 365 * 86400), 0, 'and nothing is left to delete afterwards')
+
+    def test_purging_before_any_withdrawal_exists_is_harmless(self):
+        with self.db.atomic() as conn:
+            self.assertEqual(WithdrawalManager.purge_expired(conn), 0)
 
     def test_every_column_that_holds_a_user_id_is_classified(self):
         """A new table with a user column must be put in a bucket, or this fails (so withdrawal never silently skips it)."""
