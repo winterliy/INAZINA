@@ -59,6 +59,29 @@ function FundCard({ ctx, bankId }: { ctx: Ctx; bankId: string }) {
   </Card>;
 }
 
+/** 회수 배분 전기: priority recovery across one borrower's charged-off loans, funded from the borrower's home-currency wallet. */
+function WaterfallCard({ ctx }: { ctx: Ctx }) {
+  const { busy, run, say } = ctx;
+  const [form, setForm] = useState({ user: "", proceeds: "", claims: "" });
+  function submit() {
+    const claims = form.claims.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => { const [loan, rank] = line.split(/[\s,:]+/); return { loanId: Number(loan), rank: Number(rank) }; });
+    if (!form.user.trim() || !/^\d{1,15}$/.test(form.proceeds) || Number(form.proceeds) < 1 || claims.length === 0 || claims.some((c) => !Number.isInteger(c.loanId) || c.loanId < 1 || !Number.isInteger(c.rank) || c.rank < 1)) {
+      say("차주, 회수금(최소단위 정수), 청구 줄(대출번호 순위)을 확인해주세요.", true); return; }
+    if (!window.confirm(`${form.user}의 상각 대출 ${claims.length}건에 회수금 ${form.proceeds}(최소단위)를 순위대로 배분하고 실제로 전기할까요? 차주의 본국 통화 지갑에서 인출되며 되돌릴 수 없습니다.`)) return;
+    void run(() => api<{ success: boolean; result: { allocations: Record<string, number>; unallocatedMinorUnits?: number } }>("/api/admin/recovery-waterfall", { method: "POST",
+      body: JSON.stringify({ action: "post", userId: form.user.trim(), proceedsMinorUnits: Number(form.proceeds), claims, eventKey: `ui-${crypto.randomUUID()}` }) }), "회수 배분을 전기하지 못했습니다.",
+    (response) => { say(`전기했습니다: ${Object.entries(response.result.allocations).map(([loan, amount]) => `#${loan} ${amount}`).join(", ")}`); setForm({ ...form, proceeds: "", claims: "" }); });
+  }
+  return <Card title="회수 배분 전기" caption="한 차주의 상각 대출들에 우선순위(작은 숫자가 먼저, 같은 순위는 비례)로 회수금을 배분하고 실제로 전기합니다. 미리보기가 아니라 지갑 인출과 은행 분개가 일어납니다.">
+    <div className="alm-edit">
+      <input aria-label="차주 사용자 ID" placeholder="차주 사용자 ID" value={form.user} onChange={(event) => setForm({ ...form, user: event.target.value })} />
+      <input inputMode="numeric" aria-label="회수금(최소단위)" placeholder="회수금(최소단위)" value={form.proceeds} onChange={(event) => setForm({ ...form, proceeds: event.target.value })} />
+      <textarea aria-label="청구(대출번호 순위, 한 줄에 하나)" rows={4} cols={30} placeholder={"대출번호 순위\n12 1\n15 2"} value={form.claims} onChange={(event) => setForm({ ...form, claims: event.target.value })} />
+      <button type="button" className="btn primary" disabled={busy} onClick={submit}>배분 전기</button>
+    </div>
+  </Card>;
+}
+
 /** 예금보험 · 정리 미리보기: read-only coverage, assessed premium and priority allocation of one bank. */
 function InsurancePreview({ ctx }: { ctx: Ctx }) {
   const { busy, run, say } = ctx;
@@ -190,5 +213,6 @@ export function RatesPage({ ctx }: { ctx: Ctx }) {
       </div>
     </Card>
     <InsurancePreview ctx={ctx} />
+    <WaterfallCard ctx={ctx} />
   </>;
 }
