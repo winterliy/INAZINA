@@ -5958,6 +5958,28 @@ class Handler(BaseHTTPRequestHandler):
                 audit_admin_access(actor, audit_name, audit_payload)
                 self.send_json(200, {"success": True, "result": result})
                 return
+            if path == "/internal/admin/recovery-waterfall":
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                    return
+                from managers.recovery_waterfall_posting import post_waterfall
+                claims = payload.get("claims")
+                if (set(payload) != {"action", "userId", "proceedsMinorUnits", "claims", "eventKey"} or payload["action"] != "post"
+                        or not isinstance(payload["userId"], str) or not 1 <= len(payload["userId"]) <= 128
+                        or not isinstance(payload["eventKey"], str) or not isinstance(claims, list) or not 1 <= len(claims) <= 50
+                        or any(not isinstance(item, dict) or set(item) != {"loanId", "rank"} for item in claims)):
+                    raise ValueError("invalid_recovery_waterfall_payload")
+                now = int(time.time())
+                with domain().db.atomic() as connection:
+                    result = post_waterfall(
+                        connection, user_id=payload["userId"], proceeds_minor_units=payload["proceedsMinorUnits"],
+                        claims=[(item["loanId"], item["rank"]) for item in claims], event_key=payload["eventKey"],
+                        actor_id=user["userId"], now=now)
+                audit_admin_access(user["userId"], "recovery_waterfall.post", {
+                    "user_id": payload["userId"], "event_key": payload["eventKey"], "proceeds_minor_units": payload["proceedsMinorUnits"],
+                    "allocations": result["allocations"], "duplicate": result["duplicate"]})
+                self.send_json(200, {"success": True, "result": result})
+                return
             if path == "/internal/admin/rate-rules":
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})

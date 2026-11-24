@@ -1130,7 +1130,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   // Product, country, exchange, user-detail, help and bot-job administration.
-  const adminMatch = url.pathname.match(/^\/api\/admin\/((?:products|countries|exchanges|help|bot-jobs|user|companies|organizations|warnings|feedback|court|naturalization|banks|logs|compliance|bank-journal|alm|funding|rate-rules|deposit-insurance|dr|security)(?:\/[^/]+){0,2})$/);
+  const adminMatch = url.pathname.match(/^\/api\/admin\/((?:products|countries|exchanges|help|bot-jobs|user|companies|organizations|warnings|feedback|court|naturalization|banks|logs|compliance|bank-journal|alm|funding|rate-rules|recovery-waterfall|deposit-insurance|dr|security)(?:\/[^/]+){0,2})$/);
   if (adminMatch) {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });

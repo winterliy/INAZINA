@@ -145,6 +145,8 @@ M7 진행(예금보험): `managers/deposit_insurance_fund.py`와 관리자 화�
 
 M7 진행(계약일 규칙 확장): 연체이자 상한, 변동금리 재산정 상한, 대출 연장 금리 검사가 계약일(`loans.created_at`)에 시행 중인 국가 규칙을 따른다. 규칙이 없으면 현재 국가 법정최고이자를 그대로 쓴다. 고객유형은 계정 ID가 `company:`로 시작하면 법인, 아니면 개인으로 신규 대출에 전달한다.
 
+M7 진행(회수 배분 전기): `managers/recovery_waterfall_posting.py`와 관리자 POST `/internal/admin/recovery-waterfall`이 한 차주의 상각 대출 여럿(같은 통화, 은행이 달라도 됨)에 대해 순위·동순위 비례 배분을 실제로 전기한다. 회수금은 차주 본국 통화 지갑에서 나가며 각 다리는 `record_funded_recovery`(은행 분개·사업 현금 연결)를 거친다. 부모 기록은 추가 전용이고 같은 키 재실행은 아무것도 바꾸지 않으며 다리 하나가 실패하면 전부 롤백한다. 다른 채권자의 원장은 만들지 않는다. 파산 절차·보증·회수 기간 곡선과의 연결은 아직 없다.
+
 ### M8 — 보안·준법·완료 검증
 
 M8 진행: 통제-증빙 추적표([controls_laplace.md](controls_laplace.md))를 만들고 각 행의 구현 파일과 증빙 테스트가 실제로 있는지 `tests/test_control_evidence_matrix.py`로 검증한다. 테스트 실행 중 기본 DB 경로를 임시 폴더로 격리해 운영 DB를 열지 않게 했다.
