@@ -719,6 +719,17 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  // Agreeing to a revised document (the DM button does the same): allowed while the member is held, like leaving.
+  if (request.method === "POST" && url.pathname === "/api/me/consent") {
+    if (principal.by) {
+      send(response, 403, { error: "active_user_required" });
+      return;
+    }
+    const result = await internalRequest("POST", "/internal/me/consent", principal.userId, await requestJson(request));
+    send(response, result.status, result.body);
+    return;
+  }
+
   // Self-service withdrawal: the member's property passes to the national treasury, then this session and the single sign-on end.
   if (request.method === "POST" && url.pathname === "/api/me/withdraw") {
     if (principal.by) {

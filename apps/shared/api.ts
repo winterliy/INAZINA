@@ -2,6 +2,9 @@ import type { Money } from "./money";
 const TOKEN_KEY = "inazina.web.token";
 const UNAUTHORIZED_EVENT = "inazina:unauthorized";
 
+/** A revised document (terms, privacy policy) now in force that this member was asked to agree to and has not yet. */
+export type ConsentRequirement = { campaignId: number; documentId: string; title: string; summary: string; effectiveEpoch: number };
+
 export type ApiUser = {
   userId: string;
   nickname: string;
@@ -14,6 +17,8 @@ export type ApiUser = {
   /** Set when an administrator signed in as this country or company account ($login). */
   delegatedBy?: string;
   delegatedByName?: string;
+  /** Set while the member is held until they agree to (or leave over) a revised document. */
+  consentRequired?: ConsentRequirement[];
 };
 
 /** The HTS and the dashboard run on neighbouring ports of the same host. */

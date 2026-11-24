@@ -221,6 +221,11 @@ def _configured_base_currency(connection):
 # An administrator signed in as a country or company account ($login on the web): the API
 # passes the administrator's ID with each request of that session. Set per request thread.
 _DELEGATION = threading.local()
+_REQUEST = threading.local()  # the path being served, so identity() can hold members who have not agreed to a revised document
+
+
+class ConsentRequired(Exception):
+    """A member who was asked to agree to an unfavourable revision (now in force) has not yet: only agreeing, leaving or the session stay open."""
 DELEGABLE_ROLES = {"nation", "company"}
 
 
@@ -236,8 +241,14 @@ def identity(user_id):
         if not admin or admin["role"] != "admin" or not target or target["role"] not in DELEGABLE_ROLES:
             return None
         # The session lives on the administrator's credential: a password change ends it.
-        return {**target, "authVersion": admin["authVersion"], "delegatedBy": admin["userId"], "delegatedByName": admin["nickname"]}
-    return identity_for(user_id)
+        return {**target, "authVersion": admin["authVersion"], "delegatedBy": admin["userId"], "delegatedByName": admin["nickname"],
+                "consentRequired": []}  # an administrator acting as the member is never held for the member's consent
+    user = identity_for(user_id)
+    if user and user["consentRequired"]:
+        from managers.document_consent import DocumentConsent
+        if not DocumentConsent.path_is_exempt(getattr(_REQUEST, "path", "")):
+            raise ConsentRequired()
+    return user
 
 
 def identity_for(user_id, require_credential=True):
@@ -257,6 +268,8 @@ def identity_for(user_id, require_credential=True):
             "SELECT currency_code FROM country_currencies WHERE nationality=?", (row["nationality"],),
         ).fetchone() if row else None
         base_currency = _configured_base_currency(connection)
+        from managers.document_consent import DocumentConsent
+        held = DocumentConsent.outstanding(connection, user_id) if row and str(row["role"] or "user").lower() == "user" else []
     if (not row or row["status"] not in {"active", "nation"} or
             (require_credential and auth_table and credential is None)):
         return None
@@ -272,6 +285,8 @@ def identity_for(user_id, require_credential=True):
         "creditScore": int(row["credit_score"] or 0),
         "role": role,
         "authVersion": int(credential[0]) if credential else 0,
+        "consentRequired": [{"campaignId": item["campaign_id"], "documentId": item["document_id"], "title": item["title"],
+                             "summary": item["summary"], "effectiveEpoch": item["effective_epoch"]} for item in held],
     }
 
 
@@ -463,6 +478,17 @@ def board_get(path, query, user):
                                     first("page", "1"), viewer, first("category") or None, admin)
         return {"post": board.read_post(connection, path.removeprefix("/internal/board/posts/"), viewer,
                                         count_view=first("view") == "1", admin=admin)}
+
+
+def _consent_summary(diff):
+    """The changed lines of a revision, for the consent message sent to members (the full text stays in the published documents)."""
+    lines = []
+    for line in diff:
+        if line.startswith(("+++", "---", "@@")):
+            continue
+        if line.startswith(("+", "-")) and line[1:].strip():
+            lines.append(("＋ " if line[0] == "+" else "－ ") + line[1:].strip())
+    return "\n".join(lines)
 
 
 def _apply_due_documents():
@@ -5570,6 +5596,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, result)
             else:
                 self.send_json(404, {"error": "not_found"})
+        except ConsentRequired:
+            self.send_json(403, {"error": "consent_required"})
         except ValueError as exc:
             self.send_json(400, {"error": str(exc)})
         except (sqlite3.Error, RuntimeError) as exc:
@@ -5626,6 +5654,20 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, change_notifications(user["userId"], action, payload.get("id")))
                 else:
                     self.send_json(200, choose_payout(user["userId"], action, payload.get("payoutId")))
+                return
+            if path == "/internal/me/consent":
+                user = identity(verified_id)
+                if not user or user["role"] != "user" or _DELEGATION.by:
+                    self.send_json(403, {"error": "active_user_required"})
+                    return
+                if set(payload) != {"campaignId"} or isinstance(payload["campaignId"], bool) or not isinstance(payload["campaignId"], int):
+                    raise ValueError("invalid_consent_payload")
+                from managers.document_consent import DocumentConsent
+                with connect_db(timeout=5) as connection:
+                    outcome = DocumentConsent.consent(connection, payload["campaignId"], user["userId"])
+                if outcome == "unknown":
+                    raise ValueError("동의를 요청받지 않았거나 이미 종료된 개정안입니다.")
+                self.send_json(200, {"success": True, "outcome": outcome})
                 return
             if path == "/internal/me/withdraw":
                 # Self-service withdrawal: everything passes to the nationality's treasury (managers/withdrawal_manager.py).
@@ -6346,17 +6388,28 @@ class Handler(BaseHTTPRequestHandler):
                 elif len(parts) == 2 and parts[1] == "cancel":
                     change = documents.cancel(parts[0])
                     with connect_db(timeout=5) as connection:
+                        from managers.document_consent import DocumentConsent
+                        DocumentConsent.cancel(connection, parts[0])  # nobody is held for a revision that was withdrawn
                         _audit_db(connection, user["userId"], "document.cancel", change)
                     self.send_json(200, {"success": True, "message": "✅ 공지한 개정안을 거두었습니다. 지금 문서가 계속 적용됩니다.",
                                          "document": documents.read_document(parts[0])})
                 elif len(parts) == 1:
-                    change = documents.save(parts[0], payload.get("content"), payload.get("baseSha256"), payload.get("confirmed"),
-                                            payload.get("important") is True)
+                    unfavourable = payload.get("important") is True
+                    previewed = documents.preview(parts[0], payload.get("content"), unfavourable)  # its changed lines go into the consent message
+                    change = documents.save(parts[0], payload.get("content"), payload.get("baseSha256"), payload.get("confirmed"), unfavourable)
+                    consent = None
                     with connect_db(timeout=5) as connection:
-                        _audit_db(connection, user["userId"], "document.announce" if change["scheduled"] else "document.save", change)
+                        if change["scheduled"] and unfavourable:
+                            # An unfavourable revision needs each member's agreement: the bot sends the DMs (managers/document_consent.py).
+                            from managers.document_consent import DocumentConsent
+                            consent = DocumentConsent.open_campaign(connection, parts[0], previewed["title"], change["after"],
+                                                                    _consent_summary(previewed["diff"]), change["scheduled"])
+                        _audit_db(connection, user["userId"], "document.announce" if change["scheduled"] else "document.save",
+                                  {**change, **({"consentRecipients": consent["recipients"]} if consent else {})})
                     when = time.strftime("%Y-%m-%d %H:%M", time.gmtime(change["scheduled"] + 9 * 3600)) if change["scheduled"] else None
+                    notice = f" 회원 {consent['recipients']}명에게 Discord DM으로 동의를 요청합니다." if consent else ""
                     self.send_json(200, {"success": True, "document": documents.read_document(parts[0]),
-                                         "message": f"✅ 개정안을 공지했습니다. {when}(한국시간)에 적용됩니다." if when
+                                         "message": f"✅ 개정안을 공지했습니다. {when}(한국시간)에 적용됩니다.{notice}" if when
                                          else f"✅ 저장했습니다. (+{change['added']} / -{change['removed']}줄)"})
                 else:
                     self.send_json(404, {"error": "not_found"})
@@ -6579,6 +6632,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200 if success else 400, {"success": success, "message": message})
             else:
                 self.send_json(404, {"error": "not_found"})
+        except ConsentRequired:
+            self.send_json(403, {"error": "consent_required"})
         except (ValueError, TypeError, OverflowError) as exc:
             self.send_json(400, {"error": str(exc)})
         except sqlite3.IntegrityError as exc:

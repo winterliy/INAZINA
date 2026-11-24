@@ -163,6 +163,16 @@ class InazinaBot(discord.Client):
                 print(f"[Notification Delivery Error] {type(exc).__name__}: {exc}")
             await asyncio.sleep(15)
 
+    async def consent_delivery_loop(self):
+        """Send the consent DMs for revisions the console marked unfavourable (functions/consent_views.py)."""
+        from functions.consent_views import deliver_consent_requests
+        while not self.is_closed():
+            try:
+                await deliver_consent_requests(self)
+            except Exception as exc:
+                print(f"[Consent Delivery Error] {type(exc).__name__}: {exc}")
+            await asyncio.sleep(20)
+
     async def liquidity_loop(self):
         """Algorithmic liquidity companies requote the order book under their own names."""
         from managers.liquidity_manager import LiquidityManager
@@ -210,6 +220,8 @@ class InazinaBot(discord.Client):
 
         self.command_registry = SlashCommandRegistry(self)
         self.command_registry.register()
+        from functions.consent_views import ConsentButton
+        self.add_dynamic_items(ConsentButton)  # the consent DM's button keeps working after a restart
         self.tree.error(self.on_app_command_error)
         print(f"Prepared {len(self.tree.get_commands())} slash commands for guild sync.")
 
@@ -287,6 +299,7 @@ class InazinaBot(discord.Client):
             self.loop.create_task(self.market_update_loop(), name="market-price-worker")
             self.loop.create_task(self.scheduled_loan_payment_loop(), name="scheduled-loan-worker")
             self.loop.create_task(self.notification_delivery_loop(), name="notification-delivery-worker")
+            self.loop.create_task(self.consent_delivery_loop(), name="consent-delivery-worker")
             self.loop.create_task(self.liquidity_loop(), name="liquidity-worker")
             self.loop.create_task(self.fx_reversal_loop(), name="fx-reversal-worker")
             self.loop.create_task(self.funding_maturity_loop(), name="funding-maturity-worker")

@@ -3,6 +3,7 @@ import { api, clearToken, onUnauthorized, signedOut, type ApiUser } from "../../
 import { moneyDivide, type Money } from "../../shared/money";
 import { Logo } from "../../shared/Logo";
 import { navigate } from "./nav";
+import { ConsentGate } from "../../shared/ConsentGate";
 import { SsoGate } from "../../shared/SsoGate";
 import { logoutRedirect, currentReturnTo, ssoLoginUrl } from "../../shared/sso";
 import { guestCanView, loginPanelRequested } from "./guest";
@@ -234,6 +235,7 @@ export default function App() {
     if (leave) { window.location.assign(leave); return; }
     if (location.pathname !== "/") navigate("/");
   };
+  if (user?.consentRequired?.length) return <div className="stage"><Backdrop />{toast}<ConsentGate held={user.consentRequired} onLogout={() => void logout()} /></div>;
   const topbar = (here: "home" | "account" | "services") => <><header className="hts-topbar">
     <a className="brand" href="/" aria-label="나루 홈"><Logo className="brand-logo" /></a>
     <TopSearch state={searchState} selectedCode={selectedCode} homeCurrency={homeCurrency} onChoose={chooseInstrument} onExchangeSelect={setHeatmapExchangeOverride} />

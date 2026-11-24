@@ -1,0 +1,8 @@
+.consent-gate { align-content: start; padding-top: 8vh; }
+.consent-gate p { max-width: 560px; line-height: 1.6; }
+.consent-doc { display: grid; gap: 6px; width: min(640px, 100%); text-align: left; }
+.consent-doc h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.consent-when { margin: 0; font-size: 13px; }
+.consent-summary { max-height: 260px; margin: 0; padding: 14px 16px; overflow: auto; border-radius: 12px; background: rgba(127, 127, 127, .12); font: 13px/1.6 inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+.consent-note { font-size: 13px; }
+.consent-gate .account-withdrawal { width: min(640px, 100%); text-align: left; }

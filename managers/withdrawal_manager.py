@@ -146,6 +146,8 @@ COLUMN_BUCKETS = {
     'user_assets': {'bucket': 'transfer', 'columns': ['user_id'], 'staff': []},
     'user_realized_pnl': {'bucket': 'rekey', 'columns': ['user_id'], 'staff': []},
     'user_tax_residency_events': {'bucket': 'rekey', 'columns': ['user_id'], 'staff': []},
+    'deposit_insurance_fund_events': {'bucket': 'staff', 'columns': [], 'staff': ['actor_id', 'issuer']},
+    'document_consents': {'bucket': 'rekey', 'columns': ['user_id'], 'staff': []},
     'product_rate_schedules': {'bucket': 'staff', 'columns': [], 'staff': ['updated_by']},
     'users': {'bucket': 'users', 'columns': ['user_id'], 'staff': []},
     'web_auth_credentials': {'bucket': 'delete', 'columns': ['user_id'], 'staff': []},

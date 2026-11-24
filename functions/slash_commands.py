@@ -471,6 +471,16 @@ class SlashCommandRegistry:
                 content="⛔ 먼저 `/등록`을 실행해 이용 안내를 확인하고 등록해주세요.",
             )
             raise RegistrationRequired()
+        if command_name not in ("등록", "도움말"):
+            # A revision announced as unfavourable is in force and this member has not agreed: only agreeing (or leaving) is open.
+            from functions.consent_views import consent_embed, consent_view
+            from managers.document_consent import DocumentConsent
+            with self.bot.db.readonly() as conn:
+                held = DocumentConsent.outstanding(conn, user_id)
+            if held:
+                await self._reply(interaction, content="⛔ 개정된 약관에 먼저 동의해 주세요. 동의하기 전에는 명령어를 사용할 수 없습니다.",
+                                  embed=consent_embed(held[0]), view=consent_view(held[0]["campaign_id"]))
+                raise RegistrationRequired()
         return user_id, user_data, resolve_user_role(user_id, user_data)
 
     @staticmethod

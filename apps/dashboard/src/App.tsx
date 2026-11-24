@@ -1,6 +1,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../../shared/api";
+import { ConsentGate } from "../../shared/ConsentGate";
 import { SsoGate } from "../../shared/SsoGate";
 import { errorText, type Ctx } from "./common";
 import type { Audit, Event, Flow, Instrument, Overview } from "./appTypes";
@@ -130,6 +131,7 @@ export default function App() {
       : <p className="loading">불러오는 중…</p>}
   </main></Stage>;
   if (!user) return <Stage>{notice && <div className="center-shell">{noticeBar}</div>}<SsoGate autoRedirect /></Stage>;
+  if (user.consentRequired?.length) return <Stage><ConsentGate held={user.consentRequired} onLogout={logout} /></Stage>;
   if (page === "ownership" && user.role === "admin") return <Stage><Suspense fallback={<main className="center-shell"><p className="loading">조직도를 여는 중…</p></main>}><Lazy.OrganizationOwnershipWindow route={initialRoute.sub} /></Suspense></Stage>;
   if (user.role !== "admin") return <Stage><UserShell user={user} ctx={ctx} notice={noticeBar} onLogout={logout} /></Stage>;
 

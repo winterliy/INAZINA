@@ -82,7 +82,7 @@ export function DocumentsPage({ ctx }: { ctx: Ctx }) {
       <p className="hint">형식: <code># 제목</code> · <code>## 소제목</code> · <code>- 항목</code> · <code>왼쪽 | 오른쪽</code>(표, 첫 줄은 머리글) · 빈 줄은 문단 나눔.{document.legal && " '시행일:' 줄은 적용일로 자동으로 채워지니 직접 고치지 않아도 됩니다."}</p>
       <textarea className="doc-editor" aria-label={`${document.title} 내용`} value={draft} spellCheck={false} onChange={(event) => { setDraft(event.target.value); setPreview(null); }} />
       <p className="hint">{number(draft.length)}자{dirty ? " · 저장하지 않은 수정 있음" : ""}</p>
-      {document.legal && <label className="check"><input type="checkbox" checked={important} onChange={(event) => { setImportant(event.target.checked); setPreview(null); }} />이용자에게 불리하거나 중요한 변경 (공지 {document.importantNoticeDays}일 뒤 적용, 아니면 {document.noticeDays}일)</label>}
+      {document.legal && <label className="check"><input type="checkbox" checked={important} onChange={(event) => { setImportant(event.target.checked); setPreview(null); }} />이용자에게 불리하거나 중요한 변경 (공지 {document.importantNoticeDays}일 뒤 적용, 아니면 {document.noticeDays}일). 체크하고 확정하면 모든 회원에게 Discord DM으로 개정안을 보내 버튼으로 동의를 받습니다.</label>}
       {preview && <div className="doc-preview">
         <h3 className="sub-head">변경 내용 {preview.changed ? `(+${preview.added} / -${preview.removed}줄)` : "— 바뀐 내용 없음"}</h3>
         {preview.notes.map((note) => <p key={note} className="doc-note">ℹ️ {note}</p>)}
