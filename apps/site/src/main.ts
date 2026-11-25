@@ -13,7 +13,7 @@ import "@fontsource/noto-sans-kr/500.css";
 import "@fontsource/noto-sans-kr/700.css";
 import "@fontsource/noto-serif-kr/400.css";
 import "@fontsource/noto-serif-kr/600.css";
-// NACURI official site: "LINK to" documents load from /links/*.txt, and the
+// INAZINA official site: "LINK to" documents load from /links/*.txt, and the
 // Contact/Report forms post to the API, which shows them in the admin dashboard.
 
 const DOCS: Record<string, string> = {
@@ -82,6 +82,9 @@ function renderDocument(source: string): DocumentFragment {
 type Pending = Record<string, { effectiveEpoch: number; announcedEpoch: number }>;
 const day = (epoch: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "long", timeZone: "Asia/Seoul" }).format(epoch * 1000);
 
+// The site may be served from a sub-path (GitHub Pages: /INAZINA/), so document files are found relative to the base.
+const BASE = import.meta.env.BASE_URL;
+
 async function fetchText(path: string): Promise<string> {
   const response = await fetch(path, { cache: "no-cache" });
   if (!response.ok) throw new Error(String(response.status));
@@ -99,8 +102,8 @@ async function openDocument(name: string) {
   dialog.showModal();
   try {
     const [current, pending] = await Promise.all([
-      fetchText(`/links/${name}.txt`),
-      fetch("/links/pending.json", { cache: "no-cache" })
+      fetchText(`${BASE}links/${name}.txt`),
+      fetch(`${BASE}links/pending.json`, { cache: "no-cache" })
         .then((response): Promise<Pending> | Pending => response.ok ? response.json() as Promise<Pending> : {})
         .catch((): Pending => ({})),
     ]);
@@ -119,7 +122,7 @@ async function openDocument(name: string) {
         toggle.className = "btn linkout";
         toggle.addEventListener("click", () => {
           if (revision) { show(current, false); return; }
-          fetchText(`/links/${name}.next.txt`).then((next) => { if (request === documentRequest) show(next, true); })
+          fetchText(`${BASE}links/${name}.next.txt`).then((next) => { if (request === documentRequest) show(next, true); })
             .catch(() => request === documentRequest && body.replaceChildren(element("p", "개정안을 불러오지 못했습니다.")));
         });
         notice.append(toggle);
@@ -206,4 +209,5 @@ document.addEventListener("click", (event) => {
 for (const dialog of document.querySelectorAll("dialog")) {
   dialog.addEventListener("click", (event) => { if (event.target === dialog) dialog.close(); });
 }
-$<HTMLFormElement>("#feedback-form").addEventListener("submit", (event) => void submitForm(event));
+// The display-only build (GitHub Pages) has no Contact/Report form.
+document.querySelector<HTMLFormElement>("#feedback-form")?.addEventListener("submit", (event) => void submitForm(event));

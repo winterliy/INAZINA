@@ -1,0 +1,51 @@
+# Publishes the official site (apps/site) to GitHub Pages as a display-only page: no Contact/Report form, everything bundled (fonts included).
+# The internal site on port 4314 keeps its forms; this build removes them (VITE_DISPLAY_ONLY, see apps/site/vite.config.ts).
+name: Pages
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "apps/site/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - id: pages
+        uses: actions/configure-pages@v5
+      - run: npm ci --workspace=@inazina/site --include-workspace-root
+      - run: npm run build --workspace @inazina/site
+        env:
+          VITE_DISPLAY_ONLY: "1"
+          VITE_BASE: /${{ github.event.repository.name }}/
+          VITE_SITE_URL: ${{ steps.pages.outputs.base_url }}/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/site/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
