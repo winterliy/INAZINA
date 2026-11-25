@@ -1255,10 +1255,8 @@ class EconomyTests(unittest.TestCase):
         view = HelpLinksView()
 
         self.assertEqual(len(view.children), 1)
-        self.assertEqual(
-            view.children[0].url,
-            "https://dramatic-bread-b4a.notion.site/NAKWON-BOTS-3ea27b50c7bf80e0904ef783e0e5dfc4",
-        )
+        from functions.public_links import HELP_URL
+        self.assertEqual(view.children[0].url, HELP_URL)
         self.assertEqual(view.children[0].style, discord.ButtonStyle.link)
         self.assertEqual(view.children[0].label, "도움말 바로가기")
 
@@ -1315,15 +1313,14 @@ class EconomyTests(unittest.TestCase):
         self.assertIsInstance(modal.notice_display, discord.ui.TextDisplay)
         self.assertEqual(modal.notice_display.content, modal.display_content)
         self.assertIn(text, modal.display_content)
-        self.assertIn(
-            f"[📚 상세 약관 바로가기]({HelpLinksView.DOCUMENT_URL})",
-            modal.display_content,
-        )
+        from functions.public_links import PRIVACY_URL, TERMS_URL
+        self.assertIn(f"[📚 상세 약관 바로가기]({TERMS_URL})", modal.display_content)
+        self.assertIn(f"[🔒 개인정보 처리방침]({PRIVACY_URL})", modal.display_content)
         self.assertIn(modal.confirmation_code, modal.display_content)
         self.assertEqual(modal.confirmation_input.max_length, 6)
         components = modal.to_components()
         self.assertEqual(components[0]["type"], 10)  # Read-only Text Display
-        self.assertIn(HelpLinksView.DOCUMENT_URL, components[0]["content"])
+        self.assertIn(TERMS_URL, components[0]["content"])
 
     def test_registration_modal_requires_end_code_then_registers(self):
         import asyncio

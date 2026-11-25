@@ -1,3 +1,4 @@
+import { HELP_URL } from "../../../shared/links";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import type { ServiceProps } from "./ServiceKit";
@@ -54,7 +55,7 @@ function FeedbackCard() {
 export function InfoPage(_props: ServiceProps) {
   return <div className="svc-info">
     <h3 className="svc-section-title">고객센터</h3>
-    <a className="svc-help-link" href="https://dramatic-bread-b4a.notion.site/NAKWON-BOTS-3ea27b50c7bf80e0904ef783e0e5dfc4" target="_blank" rel="noreferrer"><b>📚 도움말 (/도움말)</b><small>봇·나루 이용 안내와 정책 문서</small></a>
+    <a className="svc-help-link" href={HELP_URL} target="_blank" rel="noreferrer"><b>📚 도움말 (/도움말)</b><small>봇·나루 이용 안내와 정책 문서</small></a>
     <FeedbackCard />
   </div>;
 }

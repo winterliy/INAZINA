@@ -1,5 +1,6 @@
 import asyncio
 import copy
+from functions.public_links import HELP_URL, PRIVACY_URL, TERMS_URL
 import discord
 import io
 import hashlib
@@ -39,10 +40,7 @@ def _els_manager(bot):
 class HelpLinksView(discord.ui.View):
     """Help panel links to the bot guide and its public policies."""
 
-    DOCUMENT_URL = (
-        "https://dramatic-bread-b4a.notion.site/"
-        "NAKWON-BOTS-3ea27b50c7bf80e0904ef783e0e5dfc4"
-    )
+    DOCUMENT_URL = HELP_URL
 
     def __init__(self):
         super().__init__(timeout=180)
@@ -71,7 +69,7 @@ class RegistrationModal(discord.ui.Modal):
         self.confirmation_code = secrets.token_hex(3).upper()
         self.display_content = (
             f"{str(notice_text or '').strip()}\n\n"
-            f"[📚 상세 약관 바로가기]({HelpLinksView.DOCUMENT_URL})\n\n"
+            f"[📚 상세 약관 바로가기]({TERMS_URL}) · [🔒 개인정보 처리방침]({PRIVACY_URL})\n\n"
             f"안내를 끝까지 확인한 뒤 아래 코드를 입력하세요: {self.confirmation_code}"
         )
         if not str(notice_text or "").strip():

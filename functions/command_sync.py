@@ -7,7 +7,7 @@ links), which no server has as a guild copy, so nobody sees it twice; it also ke
 import discord
 from discord import app_commands
 
-from functions.consent_views import GUIDE_URL
+from functions.public_links import PRIVACY_URL, TERMS_URL
 
 
 def policy_command():
@@ -15,11 +15,12 @@ def policy_command():
     async def policy(interaction: discord.Interaction):
         embed = discord.Embed(
             title="📜 이용약관과 개인정보 처리방침",
-            description="INAZINA의 이용약관과 개인정보 처리방침은 아래 도움말 문서에서 로그인 없이 볼 수 있습니다. "
+            description="INAZINA의 이용약관과 개인정보 처리방침은 아래 버튼에서 로그인 없이 볼 수 있습니다. "
                         "삭제·탈퇴는 나루 또는 콘솔의 ‘내 계정’에서 할 수 있습니다.",
             color=discord.Color.blurple())
         view = discord.ui.View(timeout=180)
-        view.add_item(discord.ui.Button(label="도움말 바로가기", style=discord.ButtonStyle.link, url=GUIDE_URL, emoji="📚"))
+        view.add_item(discord.ui.Button(label="이용약관", style=discord.ButtonStyle.link, url=TERMS_URL, emoji="📜"))
+        view.add_item(discord.ui.Button(label="개인정보 처리방침", style=discord.ButtonStyle.link, url=PRIVACY_URL, emoji="🔒"))
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
     return policy
 

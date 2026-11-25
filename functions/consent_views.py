@@ -8,10 +8,10 @@ import zoneinfo
 
 import discord
 
+from functions.public_links import document_url
 from managers.document_consent import DocumentConsent
 
 KST = zoneinfo.ZoneInfo("Asia/Seoul")
-GUIDE_URL = "https://dramatic-bread-b4a.notion.site/NAKWON-BOTS-3ea27b50c7bf80e0904ef783e0e5dfc4"  # the bot guide (도움말), which links the full documents
 
 
 def _when(epoch):
@@ -23,14 +23,15 @@ def consent_embed(item):
         f"이용자에게 불리하거나 중요한 변경이 있는 개정안입니다. **{_when(item['effective_epoch'])}(한국시간)**부터 적용됩니다.\n\n"
         f"**변경된 부분**\n{item.get('summary') or '변경된 내용은 도움말의 약관 문서에서 확인할 수 있습니다.'}\n\n"
         "아래 버튼으로 동의해 주세요. 시행일까지 동의하지 않으면, 시행 후에는 동의하거나 탈퇴할 때까지 서비스 이용이 제한됩니다. "
-        "전체 문서는 도움말에서 볼 수 있습니다.")
+        "아래 '전체 문서 보기'에서 전문을 볼 수 있습니다.")
     return discord.Embed(title=f"📢 {item['title']} 개정 동의 요청", description=description[:4096], color=discord.Color.orange())
 
 
-def consent_view(campaign_id):
+def consent_view(campaign_id, document_id=None):
+    """The consent button, and a link to the full text of the document being revised."""
     view = discord.ui.View(timeout=None)
     view.add_item(ConsentButton(campaign_id))
-    view.add_item(discord.ui.Button(label="도움말 보기", style=discord.ButtonStyle.link, url=GUIDE_URL, emoji="📚"))
+    view.add_item(discord.ui.Button(label="전체 문서 보기", style=discord.ButtonStyle.link, url=document_url(document_id), emoji="📚"))
     return view
 
 
@@ -75,7 +76,7 @@ async def deliver_consent_requests(bot, limit=20):
         try:
             user_id = int(item["user_id"])
             recipient = bot.get_user(user_id) or await bot.fetch_user(user_id)
-            await recipient.send(embed=consent_embed(item), view=consent_view(item["campaign_id"]))
+            await recipient.send(embed=consent_embed(item), view=consent_view(item["campaign_id"], item.get("document_id")))
             ok = True
         except (discord.HTTPException, ValueError, TypeError):
             pass

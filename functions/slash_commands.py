@@ -479,7 +479,7 @@ class SlashCommandRegistry:
                 held = DocumentConsent.outstanding(conn, user_id)
             if held:
                 await self._reply(interaction, content="⛔ 개정된 약관에 먼저 동의해 주세요. 동의하기 전에는 명령어를 사용할 수 없습니다.",
-                                  embed=consent_embed(held[0]), view=consent_view(held[0]["campaign_id"]))
+                                  embed=consent_embed(held[0]), view=consent_view(held[0]["campaign_id"], held[0]["document_id"]))
                 raise RegistrationRequired()
         return user_id, user_data, resolve_user_role(user_id, user_data)
 
