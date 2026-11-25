@@ -3,6 +3,7 @@ Any change to the settlement path (e.g. the optional rate-schedule feature) must
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from database import DatabaseManager
 from database.db_manager import DBManager
@@ -48,10 +49,11 @@ class ContractBaselineTests(unittest.TestCase):
         self.db.products.execute("UPDATE liability SET amortization_type='annuity',payment_frequency_days=30 WHERE product_code='LANN'")
         self.product("saving", "SFIX", False)
         self.product("saving", "SFLT", True)
-        for code in ("LFIX", "LFLT", "LANN"):
-            self.assertTrue(bank.apply_loan("user", code, 100_000)[0], code)
-        for code in ("SFIX", "SFLT"):
-            self.assertTrue(bank.open_account("user", code, "1234", 100_000)[0], code)
+        with mock.patch("time.time", return_value=float(T0)):      # contracts are signed at a fixed instant, not today's date
+            for code in ("LFIX", "LFLT", "LANN"):
+                self.assertTrue(bank.apply_loan("user", code, 100_000)[0], code)
+            for code in ("SFIX", "SFLT"):
+                self.assertTrue(bank.open_account("user", code, "1234", 100_000)[0], code)
         self.db.accounts.execute("UPDATE loans SET created_at=datetime(?,'unixepoch'),last_payment_epoch=?,maturity_epoch=?,next_repricing_epoch=?",
                                  (T0, T0, T0 + 365 * DAY, T0 + 2 * DAY))
         self.db.accounts.execute("UPDATE accounts SET created_at=datetime(?,'unixepoch'),last_payment_epoch=?,next_repricing_epoch=CASE WHEN rate_type='floating' THEN ? END",
@@ -66,4 +68,4 @@ class ContractBaselineTests(unittest.TestCase):
         self.assertEqual(loans, {"LANN": ("LANN", 100494, 6.0, 0, 1802592000.0), "LFIX": ("LFIX", 100494, 6.0, 0, 1802592000.0),
                                  "LFLT": ("LFLT", 100541, 6.7, 0, 1802592000.0)})
         self.assertEqual(accounts, {"SFIX": ("SFIX", 100400, 5.0), "SFLT": ("SFLT", 100418, 5.0)})
-        self.assertEqual((schedule[:3], len(schedule)), ([(1, 7466, 493, 0), (2, 7472, 487, 0), (3, 7567, 392, 0)], 13))
+        self.assertEqual((schedule[:3], len(schedule)), ([(1, 7449, 510, 0), (2, 7518, 441, 0), (3, 7540, 419, 0)], 13))
