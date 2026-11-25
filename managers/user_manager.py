@@ -1158,10 +1158,11 @@ class UserManager:
                 for r in conn.execute("SELECT a.*,a.quote_currency AS currency_code,p.name AS product_name,COALESCE(a.contract_rate,p.interest_rate) AS annual_rate FROM accounts a "
                     "LEFT JOIN saving p ON p.product_code=a.product_code WHERE a.user_id=? AND a.account_type='saving' AND a.quote_currency<>? ORDER BY a.quote_currency",(str(user_id),national_currency))]
             currency_total = sum(r['value_nwx'] for r in currency_accounts)
-        foreign_account_total_home = sum(
+        foreign_account_units = sum(
             currency_snapshot.convert(int(r['balance_units']),r['currency_code'],national_currency)
             for r in currency_accounts
-        ) // SCALE
+        )
+        foreign_account_total_home = foreign_account_units // SCALE
         home_account_total_nwx = currency_snapshot.convert(
             abs(account_total_home_units), national_currency, base_currency_code(conn)
         ) // SCALE
@@ -1217,6 +1218,14 @@ class UserManager:
             "grand_total": grand_total,
             # The cash part of the totals in 기준 통화 (whole units): lets a screen show the cash exactly instead of through this rounding.
             "cash_value_nwx": cash_value_nwx,
+            # The totals above are in 기준 통화 (whole units): cash, home-currency accounts, foreign-currency accounts and loans each lose
+            # the part below one unit there. These are those NWX parts and their exact home-currency values, so a screen can take the
+            # NWX parts out and add the exact ones: grand = (grand_total - grand_floor_nwx)/rate + grand_exact_home,
+            # net = (net_worth - grand_floor_nwx + loan_floor_nwx)/rate + grand_exact_home - loan_exact_home.
+            "grand_floor_nwx": cash_value_nwx + home_account_total_nwx + currency_total,
+            "grand_exact_home": format((Decimal(home_cash_units) + Decimal(account_total_home_units) + Decimal(foreign_account_units)) / Decimal(SCALE), "f"),
+            "loan_floor_nwx": loan_total_base,
+            "loan_exact_home": format(Decimal(loan_home_units) / Decimal(SCALE), "f"),
             "loan_total": loan_total,
             # Loans are owed in the home currency; totals are valued in 기준 통화.
             "net_worth": grand_total - loan_total_base,

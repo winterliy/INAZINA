@@ -1,4 +1,4 @@
-import { totalInHome } from "./exactTotal";
+import { netWorthInHome } from "./exactTotal";
 import { SERVICES } from "./services/ServiceKit";
 import { AccountWithdrawal } from "./AccountWithdrawal";
 import { PasswordSection } from "./PasswordSection";
@@ -35,7 +35,7 @@ export function AccountPage({ me, portfolio, credit, homeCurrency, homeDigits, i
     <dl>
       <div><dt>로그인 아이디</dt><dd>{htsId || "미설정"}</dd></div>
       <div><dt>지갑</dt><dd>{money(portfolio?.cash ?? me.cash, homeDigits)} {homeCurrency}</dd></div>
-      <div><dt>순자산 <RefreshRateButton busy={ratesBusy} onRefresh={onRefreshRates} /></dt><dd>{money(totalInHome(portfolio?.net_worth ?? 0, portfolio, inHome), homeDigits)} {homeCurrency}</dd></div>
+      <div><dt>순자산 <RefreshRateButton busy={ratesBusy} onRefresh={onRefreshRates} /></dt><dd>{money(netWorthInHome(portfolio?.net_worth ?? 0, portfolio, inHome), homeDigits)} {homeCurrency}</dd></div>
       {credit && <div><dt>신용점수</dt><dd>{credit.score}점</dd></div>}
     </dl>
     <button type="button" onClick={onLogout}>{me.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button>
