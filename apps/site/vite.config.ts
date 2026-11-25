@@ -10,6 +10,9 @@ import { documentTitle, escapeHtml, renderDocumentHtml } from "./src/docHtml";
 //    links, the link-preview image, robots.txt and sitemap.xml; without it those are left out).
 const root = fileURLToPath(new URL(".", import.meta.url));
 const DOCS = ["help", "privacy", "terms", "operations", "internal"];
+// Site-ownership proofs for search engines (site-verification.json): meta tags added to the home page.
+const proofs: Record<string, string> = (JSON.parse(readFileSync(`${root}site-verification.json`, "utf8")).tags ?? {}) as Record<string, string>;
+const proofTags = Object.entries(proofs).map(([name, content]) => `<meta name="${escapeHtml(name)}" content="${escapeHtml(content)}">`).join("\n  ");
 const SITE = process.env.VITE_SITE_URL ? process.env.VITE_SITE_URL.replace(/\/?$/, "/") : "";
 
 function site(): Plugin {
@@ -27,6 +30,7 @@ function site(): Plugin {
           const title = escapeHtml(documentTitle(text)), description = escapeHtml(lead.slice(0, 150)), body = renderDocumentHtml(text);
           out = out.replaceAll("__TITLE__", () => title).replace("__DESCRIPTION__", () => description).replace("<!--DOC_BODY-->", () => body);
         }
+        out = out.replace("<!--VERIFICATION-->", () => proofTags);
         if (SITE) return out.replaceAll("__SITE__", SITE).replaceAll("https://www.inazina.localhost/", SITE);
         return out.replace(/<link[^>]*data-site-only[^>]*>\s*/g, "").replace(/<script[^>]*data-site-only[^>]*>[\s\S]*?<\/script>\s*/g, "");
       },

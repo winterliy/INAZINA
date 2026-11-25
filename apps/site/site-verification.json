@@ -1,0 +1,4 @@
+{
+  "_help": "Search engines ask you to prove you own the site. Put the meta-tag name and content they give you here, e.g. \"google-site-verification\": \"abc...\", \"naver-site-verification\": \"xyz...\", \"msvalidate.01\": \"...\"; they are added to the home page <head>. File-based proofs (googleXXXX.html) go into public/.",
+  "tags": {}
+}
