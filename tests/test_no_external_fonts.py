@@ -29,6 +29,6 @@ def test_every_font_family_in_use_is_bundled_from_a_package():
         "hts": {"@fontsource/rethink-sans"},
     }
     for app, wanted in packages.items():
-        main = next((ROOT / "apps" / app / "src" / name for name in ("main.tsx", "main.ts") if (ROOT / "apps" / app / "src" / name).exists()))
-        imported = set(re.findall(r'import "(@fontsource/[^/"]+)', main.read_text(encoding="utf-8")))
+        sources = [ROOT / "apps" / app / "src" / name for name in ("main.tsx", "main.ts", "fonts.ts")]
+        imported = set(re.findall(r'import "(@fontsource/[^/"]+)', "\n".join(path.read_text(encoding="utf-8") for path in sources if path.exists())))
         assert wanted <= imported, (app, wanted - imported)

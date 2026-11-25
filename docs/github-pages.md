@@ -1,8 +1,9 @@
 # 공식 사이트 공개 (GitHub Pages)
 
 - 주소: `https://winterliy.github.io/INAZINA/` (저장소 `winterliy/INAZINA`, Pages 소스는 GitHub Actions).
-- 배포: `master`에 `apps/site/**` 또는 `.github/workflows/pages.yml` 변경이 푸시되면 `.github/workflows/pages.yml`이 표시 전용으로 빌드해 올립니다. 수동 실행은 Actions 탭의 "Pages" → Run workflow.
-- 표시 전용 빌드: `VITE_DISPLAY_ONLY=1`이면 `apps/site/index.html`의 `<!--display:hide-->…<!--/display:hide-->` 구간(Contact/Report 양식과 그것을 언급하는 문구)을 지우고 `<!--display:show-->` 구간만 남깁니다. 내부 사이트(4314)는 일반 빌드라 양식이 그대로 있습니다. 문서는 `public/links/*.txt`를 그대로 보여 줍니다.
-- 로컬 확인: `cd apps/site && VITE_DISPLAY_ONLY=1 VITE_BASE=/INAZINA/ npx vite build --outDir /tmp/pages-check`
+- 문서 주소(디스코드 포털 등에 붙일 수 있음): `…/INAZINA/terms/`(이용약관), `/privacy/`(개인정보 처리방침), `/operations/`(운영규칙), `/internal/`(내부규칙), `/help/`(명령어 도움말). 각 페이지에 본문이 빌드 때 들어가므로 로그인이나 스크립트 없이 읽힙니다. 홈의 "LINK to"는 이 페이지를 새 창으로 열고, 문서 페이지 우측 상단 "돌아가기"는 홈으로 돌아갑니다.
+- 문서 내용은 `apps/site/public/links/*.txt`(콘솔 "문서 · 약관"에서 편집하는 파일)이며, 이 파일이 바뀌어 `master`에 푸시되면 사이트가 다시 배포됩니다(`apps/site/**` 변경 시 `.github/workflows/pages.yml` 실행, 수동 실행은 Actions 탭).
+- 정적 사이트입니다. Contact/Report 양식과 서버 API는 없습니다(문의는 이메일). 내부 4314 사이트는 더 이상 실행하지 않습니다.
+- 검색: `robots.txt`가 색인을 허용하고 `sitemap.xml`을 알려 줍니다. 검색 결과에 나오려면 시간이 걸리며, 빨리 하려면 Google Search Console, 네이버 서치어드바이저에 사이트를 등록하고 sitemap을 제출하세요(소유 확인이 필요해 직접 해야 합니다).
+- 로컬 확인: `cd apps/site && VITE_BASE=/INAZINA/ VITE_SITE_URL=https://winterliy.github.io/INAZINA/ npx vite build --outDir /tmp/pages-check`, 개발 서버는 `npm run dev --workspace @inazina/site`(4314, `start_all`은 켜지 않음).
 - 개인정보 처리방침과 약관은 이 사이트가 GitHub(미국)에서 제공된다는 점, 문의가 이메일로만 된다는 점을 적고 있습니다. 호스팅을 바꾸거나 양식·분석 도구를 넣으면 방침도 함께 고쳐야 합니다.
-- 사이트는 `robots.txt`로 검색 색인을 막아 두었습니다(필요하면 `apps/site/public/robots.txt`를 바꾸세요).
