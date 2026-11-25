@@ -1,0 +1,7 @@
+/* 금리 · 한도 · 정리: wider form fields than the shared 120px, readable JSON box */
+.rates-edit input { width: auto; min-width: 150px; }
+.rates-edit input[type="date"] { min-width: 150px; }
+.rates-edit textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; line-height: 1.4; min-width: 280px; resize: vertical; }
+.rates-edit select { min-width: 120px; }
+.rates-field { display: grid; gap: 2px; font-size: 12px; }
+.rates-field > span { opacity: .7; }

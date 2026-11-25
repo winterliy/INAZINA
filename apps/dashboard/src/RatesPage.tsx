@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
 import { Card, errorText, type Ctx, confirmAction } from "./common";
 import "./alm.css";
+import "./rates.css";
 
 type Rule = { rule_id: number; nationality: string; customer_type: string; product_type: string; effective_epoch: number; max_rate_bps: number | null;
   apr_display: "required" | "optional" | null; tax_bps: number | null; note: string; created_by: string; created_epoch: number };
@@ -31,14 +32,14 @@ function FundCard({ ctx, bankId }: { ctx: Ctx; bankId: string }) {
   const units = (value: number, places: number) => (value / 10 ** places).toLocaleString("ko-KR", { minimumFractionDigits: places, maximumFractionDigits: places });
   const post = (body: Record<string, unknown>, fallback: string, done: string) =>
     run(() => api<{ success: boolean }>("/api/admin/deposit-insurance-fund", { method: "POST", body: JSON.stringify({ bankId, ...body }) }), fallback, () => { say(done); load(); });
-  function collect() {
+  async function collect() {
     const bps = Math.round(Number(premium) * 100);
     if (!bankId || !Number.isInteger(bps) || bps < 1 || bps > 10000) { say("보험료율은 0.01~100% 범위로 입력해주세요.", true); return; }
-    if (!window.confirm(`${bankId} 은행에 보험 대상 예금의 ${premium}%를 보험료로 징수할까요? 은행 분개에 보험료 비용이 기록되고 기금에 보험료가 쌓입니다.`)) return;
+    if (!(await confirmAction(`${bankId} 은행에 보험 대상 예금의 ${premium}%를 보험료로 징수할까요? 은행 분개에 보험료 비용이 기록되고 기금에 보험료가 쌓입니다.`))) return;
     void post({ action: "collect_premium", premiumBps: bps, eventKey: `ui-${crypto.randomUUID()}` }, "보험료를 징수하지 못했습니다.", "보험료를 징수했습니다.");
   }
-  function record() {
-    if (!window.confirm(`${bankId} 은행의 정리 청구 가운데 아직 기금에 기록하지 않은 보험금 지급을 기금 원장에 기록할까요?`)) return;
+  async function record() {
+    if (!(await confirmAction(`${bankId} 은행의 정리 청구 가운데 아직 기금에 기록하지 않은 보험금 지급을 기금 원장에 기록할까요?`))) return;
     void post({ action: "record_payouts" }, "지급을 기록하지 못했습니다.", "지급을 기록했습니다.");
   }
   if (!data) return <p className="cap">불러오는 중…</p>;
@@ -51,8 +52,8 @@ function FundCard({ ctx, bankId }: { ctx: Ctx; bankId: string }) {
       {data.events.length === 0 ? <tr><td colSpan={7} className="cap">기록이 없습니다.</td></tr> : data.events.map((e) => <tr key={e.event_id}><td>{e.event_id}</td><td>{e.kind === "premium" ? "보험료" : "지급"}</td><td>{e.issuer}</td><td>{e.currency_code}</td>
         <td className="alm-num">{e.amount_minor_units.toLocaleString("ko-KR")}</td><td>{e.reference}</td><td>{day(e.created_epoch)}</td></tr>)}
     </tbody></table></div>
-    <div className="alm-edit">
-      <input inputMode="decimal" aria-label="보험료율(%)" placeholder="보험료율 %" value={premium} onChange={(event) => setPremium(event.target.value)} />
+    <div className="alm-edit rates-edit">
+      <label className="rates-field"><span>보험료율 %</span><input inputMode="decimal" aria-label="보험료율(%)" placeholder="보험료율 %" value={premium} onChange={(event) => setPremium(event.target.value)} /></label>
       <button type="button" className="btn primary" disabled={busy || !bankId} onClick={collect}>선택한 은행에 보험료 징수</button>
       <button type="button" className="outline" disabled={busy || !bankId} onClick={record}>정리 청구 지급 기록</button>
     </div>
@@ -69,8 +70,8 @@ function BondRiskCard({ ctx }: { ctx: Ctx }) {
   const [data, setData] = useState<BondRisk | null>(null);
   const num = (text: string) => Number(text).toLocaleString("ko-KR", { maximumFractionDigits: 4 });
   return <Card title="채권 위험지표" caption="보유자(사용자·법인 ID)의 국채 포트폴리오 듀레이션·DV01·컨벡서티. 곡선이 1bp 평행 이동할 때의 모형 추정치이며 회계 평가액이 아닙니다.">
-    <div className="alm-edit">
-      <input aria-label="보유자 ID" placeholder="보유자 ID (예: company:CODE)" value={holder} onChange={(event) => setHolder(event.target.value)} />
+    <div className="alm-edit rates-edit">
+      <input aria-label="보유자 ID" placeholder="보유자 ID (예: company:CODE)" style={{ minWidth: 260 }} value={holder} onChange={(event) => setHolder(event.target.value)} />
       <button type="button" className="btn primary" disabled={busy || !holder.trim()} onClick={() => void run(() => api<BondRisk>(`/api/admin/bond-risk?holder=${encodeURIComponent(holder.trim())}`), "채권 위험지표를 불러오지 못했습니다.", setData)}>조회</button>
     </div>
     {data && <>
@@ -87,19 +88,19 @@ function BondRiskCard({ ctx }: { ctx: Ctx }) {
 function WaterfallCard({ ctx }: { ctx: Ctx }) {
   const { busy, run, say } = ctx;
   const [form, setForm] = useState({ user: "", proceeds: "", claims: "" });
-  function submit() {
+  async function submit() {
     const claims = form.claims.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => { const [loan, rank] = line.split(/[\s,:]+/); return { loanId: Number(loan), rank: Number(rank) }; });
     if (!form.user.trim() || !/^\d{1,15}$/.test(form.proceeds) || Number(form.proceeds) < 1 || claims.length === 0 || claims.some((c) => !Number.isInteger(c.loanId) || c.loanId < 1 || !Number.isInteger(c.rank) || c.rank < 1)) {
       say("차주, 회수금(최소단위 정수), 청구 줄(대출번호 순위)을 확인해주세요.", true); return; }
-    if (!window.confirm(`${form.user}의 상각 대출 ${claims.length}건에 회수금 ${form.proceeds}(최소단위)를 순위대로 배분하고 실제로 전기할까요? 차주의 본국 통화 지갑에서 인출되며 되돌릴 수 없습니다.`)) return;
+    if (!(await confirmAction(`${form.user}의 상각 대출 ${claims.length}건에 회수금 ${form.proceeds}(최소단위)를 순위대로 배분하고 실제로 전기할까요? 차주의 본국 통화 지갑에서 인출되며 되돌릴 수 없습니다.`))) return;
     void run(() => api<{ success: boolean; result: { allocations: Record<string, number>; unallocatedMinorUnits?: number } }>("/api/admin/recovery-waterfall", { method: "POST",
       body: JSON.stringify({ action: "post", userId: form.user.trim(), proceedsMinorUnits: Number(form.proceeds), claims, eventKey: `ui-${crypto.randomUUID()}` }) }), "회수 배분을 전기하지 못했습니다.",
     (response) => { say(`전기했습니다: ${Object.entries(response.result.allocations).map(([loan, amount]) => `#${loan} ${amount}`).join(", ")}`); setForm({ ...form, proceeds: "", claims: "" }); });
   }
   return <Card title="회수 배분 전기" caption="한 차주의 상각 대출들에 우선순위(작은 숫자가 먼저, 같은 순위는 비례)로 회수금을 배분하고 실제로 전기합니다. 미리보기가 아니라 지갑 인출과 은행 분개가 일어납니다.">
-    <div className="alm-edit">
-      <input aria-label="차주 사용자 ID" placeholder="차주 사용자 ID" value={form.user} onChange={(event) => setForm({ ...form, user: event.target.value })} />
-      <input inputMode="numeric" aria-label="회수금(최소단위)" placeholder="회수금(최소단위)" value={form.proceeds} onChange={(event) => setForm({ ...form, proceeds: event.target.value })} />
+    <div className="alm-edit rates-edit">
+      <input aria-label="차주 사용자 ID" placeholder="차주 사용자 ID" style={{ minWidth: 200 }} value={form.user} onChange={(event) => setForm({ ...form, user: event.target.value })} />
+      <label className="rates-field"><span>회수금(최소단위)</span><input inputMode="numeric" aria-label="회수금(최소단위)" placeholder="회수금 (최소단위)" style={{ minWidth: 190 }} value={form.proceeds} onChange={(event) => setForm({ ...form, proceeds: event.target.value })} /></label>
       <textarea aria-label="청구(대출번호 순위, 한 줄에 하나)" rows={4} cols={30} placeholder={"대출번호 순위\n12 1\n15 2"} value={form.claims} onChange={(event) => setForm({ ...form, claims: event.target.value })} />
       <button type="button" className="btn primary" disabled={busy} onClick={submit}>배분 전기</button>
     </div>
@@ -124,11 +125,11 @@ function InsurancePreview({ ctx }: { ctx: Ctx }) {
   }
   const places = result?.decimalPlaces ?? 0;
   return <><Card title="예금보험 · 정리 배분 미리보기" caption="은행의 보험 한도 안 예금과 가정한 회수금의 우선순위 배분을 계산합니다. 실제 전기는 하지 않으며 보험기금 원장은 아직 없어 기금 잔액은 표시하지 않습니다.">
-    <div className="alm-edit">
+    <div className="alm-edit rates-edit">
       <select aria-label="은행" value={form.bank} onChange={(event) => setForm({ ...form, bank: event.target.value })}>{banks.map((bank) => <option key={bank.id} value={bank.id}>{bank.name ? `${bank.name} (${bank.id})` : bank.id}</option>)}</select>
-      <input inputMode="decimal" aria-label="보험료율(%)" placeholder="보험료율 %" value={form.premium} onChange={(event) => setForm({ ...form, premium: event.target.value })} />
-      <input inputMode="numeric" aria-label="회수금(최소단위)" placeholder="회수금(최소단위)" value={form.proceeds} onChange={(event) => setForm({ ...form, proceeds: event.target.value })} />
-      <input inputMode="numeric" aria-label="일반 채권 청구(최소단위)" placeholder="일반 채권(최소단위)" value={form.general} onChange={(event) => setForm({ ...form, general: event.target.value })} />
+      <label className="rates-field"><span>보험료율 %</span><input inputMode="decimal" aria-label="보험료율(%)" placeholder="보험료율 %" value={form.premium} onChange={(event) => setForm({ ...form, premium: event.target.value })} /></label>
+      <label className="rates-field"><span>회수금(최소단위)</span><input inputMode="numeric" aria-label="회수금(최소단위)" placeholder="회수금 (최소단위)" style={{ minWidth: 190 }} value={form.proceeds} onChange={(event) => setForm({ ...form, proceeds: event.target.value })} /></label>
+      <label className="rates-field"><span>일반 채권 청구(최소단위)</span><input inputMode="numeric" aria-label="일반 채권 청구(최소단위)" placeholder="일반 채권 (최소단위)" style={{ minWidth: 200 }} value={form.general} onChange={(event) => setForm({ ...form, general: event.target.value })} /></label>
       <button type="button" className="btn primary" disabled={busy || !form.bank} onClick={load}>미리보기</button>
     </div>
     {result && <>
@@ -156,12 +157,12 @@ function ScheduleCard({ ctx }: { ctx: Ctx }) {
   useEffect(load, []);
   const summary = (json: string) => { try { const d = JSON.parse(json) as { segments: { from_day: number; kind: string; rate?: string; spread?: string }[]; floor: string | null; cap: string | null };
     return `${d.segments.map((x) => `${x.from_day}일~ ${x.kind === "fixed" ? `고정 ${x.rate}%` : `변동 지표+${x.spread}`}`).join(" → ")} · 하한/상한 ${d.floor ?? "—"} / ${d.cap ?? "—"}`; } catch { return "—"; } };
-  function save(code: string, type: string, json: string, enabled: boolean) {
+  async function save(code: string, type: string, json: string, enabled: boolean) {
     let schedule: unknown;
     try { schedule = JSON.parse(json); } catch { say("금리 일정 JSON 형식을 확인해주세요.", true); return; }
     if (!code.trim()) { say("상품 코드를 입력해주세요.", true); return; }
     const text = enabled ? `${code} 상품에 금리 일정을 켭니다. 이후 새로 체결하는 ${type === "loan" ? "대출" : "예금"} 계약부터 이 일정이 적용되고 기존 계약은 바뀌지 않습니다. 계속할까요?` : `${code} 상품의 금리 일정을 끕니다. 이미 체결한 계약은 자기 일정을 유지합니다. 계속할까요?`;
-    if (!window.confirm(text)) return;
+    if (!(await confirmAction(text))) return;
     void run(() => api<{ success: boolean }>("/api/admin/product-rate-schedule", { method: "POST", body: JSON.stringify({ action: "set", productType: type, productCode: code.trim(), schedule, enabled }) }),
       "금리 일정을 저장하지 못했습니다.", () => { say(enabled ? "금리 일정을 켰습니다." : "금리 일정을 껐습니다."); load(); });
   }
@@ -173,7 +174,7 @@ function ScheduleCard({ ctx }: { ctx: Ctx }) {
         <td>{row.enabled ? <span className="tag ok">켜짐</span> : <span className="tag warn">꺼짐</span>}</td><td>{row.updated_by} · {day(row.updated_epoch)}</td>
         <td><button type="button" className="outline" disabled={busy} onClick={() => save(row.product_code, row.product_type, row.schedule_json, !row.enabled)}>{row.enabled ? "끄기" : "켜기"}</button></td></tr>)}
     </tbody></table></div>
-    <div className="alm-edit">
+    <div className="alm-edit rates-edit">
       <select aria-label="종류" value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value })}><option value="loan">대출</option><option value="deposit">예금</option></select>
       <input aria-label="상품 코드" placeholder="상품 코드" value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value })} />
       <textarea aria-label="금리 일정(JSON)" rows={8} cols={46} value={form.json} onChange={(event) => setForm({ ...form, json: event.target.value })} />
@@ -204,7 +205,7 @@ export function RatesPage({ ctx }: { ctx: Ctx }) {
     if (max === null && !form.apr && tax === null) { say("최고금리, APR 표시, 세율 중 하나 이상을 정해주세요.", true); return; }
     const epoch = Math.floor(new Date(`${form.date}T00:00:00`).getTime() / 1000);
     if (!Number.isFinite(epoch) || epoch < 0) { say("적용일을 확인해주세요.", true); return; }
-    if (!await confirmAction(`${form.nationality} · ${label(CUSTOMER, form.customer)} · ${label(PRODUCT, form.product)} 규칙을 ${form.date}부터 적용할까요? 이 날짜 이후에 체결하는 계약에만 적용되며, 등록한 규칙은 고치거나 지울 수 없습니다.`)) return;
+    if (!(await confirmAction(`${form.nationality} · ${label(CUSTOMER, form.customer)} · ${label(PRODUCT, form.product)} 규칙을 ${form.date}부터 적용할까요? 이 날짜 이후에 체결하는 계약에만 적용되며, 등록한 규칙은 고치거나 지울 수 없습니다.`))) return;
     void run(() => api<{ success: boolean; ruleId: number }>("/api/admin/rate-rules", { method: "POST", body: JSON.stringify({
       action: "add_rule", nationality: form.nationality, customerType: form.customer, productType: form.product, effectiveEpoch: epoch,
       maxRateBps: max, aprDisplay: form.apr || null, taxBps: tax, note: form.note.trim() }) }), "규칙을 저장하지 못했습니다.", (response) => {
@@ -224,7 +225,7 @@ export function RatesPage({ ctx }: { ctx: Ctx }) {
       <p className="alm-note">현재 실제 계약에 반영되는 값은 최고금리(신규 대출의 금리·산입비용 상한)뿐입니다. APR 표시와 세율은 기록만 하며 아직 계산에 쓰지 않습니다.</p>
     </Card>
     <Card title="규칙 추가" caption="같은 국가·고객·상품·적용일에는 한 번만 등록할 수 있습니다. 바꾸려면 더 늦은 적용일로 새 규칙을 등록합니다.">
-      <div className="alm-edit">
+      <div className="alm-edit rates-edit">
         <select aria-label="국가" value={form.nationality} onChange={(event) => setForm({ ...form, nationality: event.target.value })}><option value="">국가 선택</option>{data.countries.map((c) => <option key={c.nationality} value={c.nationality}>{c.nationality}</option>)}</select>
         <select aria-label="고객 유형" value={form.customer} onChange={(event) => setForm({ ...form, customer: event.target.value })}>{CUSTOMER.map(([id, text]) => <option key={id} value={id}>{text}</option>)}</select>
         <select aria-label="상품 유형" value={form.product} onChange={(event) => setForm({ ...form, product: event.target.value })}>{PRODUCT.map(([id, text]) => <option key={id} value={id}>{text}</option>)}</select>
