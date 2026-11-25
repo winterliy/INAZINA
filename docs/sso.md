@@ -10,11 +10,10 @@
 ## 도메인 (지금 쓰는 전부)
 | 이름 | 가는 곳 | 비고 |
 |---|---|---|
-| `id.inazina.localhost` | 4312 (`/oidc/*`, `/login`, `/register`, `/reset` 만) | 통합 로그인. 나머지 경로(로고의 `/` 포함)는 `www.` 로 302 |
+| `id.inazina.localhost` | 4312 (`/oidc/*`, `/login`, `/register`, `/reset` 만) | 통합 로그인. 나머지 경로(로고의 `/` 포함)는 공개 사이트로 302 |
 | `naru.inazina.localhost` | 4311 + `/api/*` → 4312 | HTS. 비회원도 둘러볼 수 있다 |
 | `console.inazina.localhost` | 4310 + `/api/*` → 4312 | 관리자 콘솔. 로그인은 최근 15분 이내여야 한다(`max_age`) |
-| `www.inazina.localhost` | 4314 (+ `/api/site/feedback` 만 4312) | 공식 사이트 |
-| `corp.inazina.localhost` | 4314 (+ `/api/site/feedback` 만 4312) | 법인 페이지 |
+| `inazina.localhost`, `www.`, `corp.` | (서비스 없음) | 공식 사이트는 GitHub Pages(`https://winterliy.github.io/INAZINA/`)로 옮겼다. 이 이름들은 그곳으로 302 리디렉션만 한다(`INAZINA_PUBLIC_SITE`). 4314는 더 이상 실행하지 않는다 |
 | `inazina.localhost` | `www.` 로 301 | |
 | `wl.localhost` | 4315 | 위키 뷰어. **이 이름 하나만** 쓴다. SSO 대상이 아니고 자체 진입 비밀번호가 있다. `INAZINA_WL=off` 로 끈다 |
 | `api.…` , 4313 | **공개하지 않음** | 앱은 API 를 자기 호스트의 `/api/*` 로 부른다. `/api/internal*` 은 404 |

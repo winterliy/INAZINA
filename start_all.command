@@ -78,7 +78,6 @@ if [[ "$FRONTEND" == "static" ]]; then
 else
   print "Dashboard: http://127.0.0.1:4310"
   print "HTS:       http://127.0.0.1:4311"
-  print "Site:      http://127.0.0.1:4314"
 fi
 print "API:       http://127.0.0.1:4312/api/health"
 print "WL:        http://127.0.0.1:4315"
@@ -88,7 +87,6 @@ if lsof -nP -iTCP:4310 -sTCP:LISTEN >/dev/null 2>&1 \
   || lsof -nP -iTCP:4311 -sTCP:LISTEN >/dev/null 2>&1 \
   || lsof -nP -iTCP:4312 -sTCP:LISTEN >/dev/null 2>&1 \
   || lsof -nP -iTCP:4313 -sTCP:LISTEN >/dev/null 2>&1 \
-  || lsof -nP -iTCP:4314 -sTCP:LISTEN >/dev/null 2>&1 \
   || lsof -nP -iTCP:4315 -sTCP:LISTEN >/dev/null 2>&1 \
   || pgrep -f "$ROOT/run.py" >/dev/null 2>&1; then
   print -u2 "기존 INAZINA 서비스가 실행 중입니다."
@@ -116,14 +114,14 @@ if [[ "$FRONTEND" == "static" ]]; then
     exit 1
   fi
   rebuild=0
-  for app in hts dashboard site id; do
+  for app in hts dashboard id; do
     built="$ROOT/apps/$app/dist/index.html"
     if [[ ! -f "$built" ]] || [[ -n "$(find "$ROOT/apps/$app/src" "$ROOT/apps/$app/index.html" "$ROOT/apps/shared" -newer "$built" -print -quit 2>/dev/null)" ]]; then rebuild=1; fi
   done
   if (( rebuild )); then
-    print "화면을 빌드합니다(hts, dashboard, site, id)."
-    npm run build --workspace @inazina/hts --workspace @inazina/dashboard --workspace @inazina/site --workspace @inazina/id >/dev/null 2>&1 || {
-      print -u2 "화면 빌드에 실패했습니다. 원인을 확인하세요: npm run build --workspace @inazina/hts (dashboard, site, id 도 같은 방식)"
+    print "화면을 빌드합니다(hts, dashboard, id)."
+    npm run build --workspace @inazina/hts --workspace @inazina/dashboard --workspace @inazina/id >/dev/null 2>&1 || {
+      print -u2 "화면 빌드에 실패했습니다. 원인을 확인하세요: npm run build --workspace @inazina/hts (dashboard, id 도 같은 방식)"
       exit 1
     }
   fi
@@ -144,7 +142,6 @@ start api npm run start --workspace @inazina/api
 if [[ "$FRONTEND" != "static" ]]; then
   start dashboard npm run dev:dashboard
   start hts npm run dev:hts
-  start site npm run dev:site
 fi
 # The wiki viewer's server part exists only in Vite; Caddy serves it as wl.<domain> (INAZINA_WL=off turns that off).
 start wl npm run dev:wl

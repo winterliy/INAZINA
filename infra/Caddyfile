@@ -1,10 +1,11 @@
-# INAZINA front door, for the internal network: every name is <service>.inazina.localhost (id., naru., console., www., corp.)
+# INAZINA front door, for the internal network: every name is <service>.inazina.localhost (id., naru., console.)
 # except the wiki viewer, which is wl.localhost, and certificates come from Caddy's own local CA (`tls internal`); there is no public DNS or public certificate.
+# The official site is no longer served here: it lives on GitHub Pages (INAZINA_PUBLIC_SITE), and inazina.localhost / www. / corp. only send visitors there.
 # api.<domain> and port 4313 (internal gateway) are intentionally NOT published here. work. and mc. are on hold.
 # Env (all optional): INAZINA_DOMAIN (default inazina.localhost), INAZINA_FRONTEND (dev | static), INAZINA_ROOT (project folder,
-# for static), INAZINA_WL (proxy | off).
+# for static), INAZINA_WL (proxy | off), INAZINA_PUBLIC_SITE (where the old site names and the login server's other addresses go).
 
-# The screens (naru, console, the site). INAZINA_FRONTEND=dev (default) proxies to the Vite development servers; `static`
+# The screens (naru, console). INAZINA_FRONTEND=dev (default) proxies to the Vite development servers; `static`
 # serves the built files (apps/<app>/dist from `npm run build`) from Caddy itself, which is what belongs on the internet:
 # a development server is not made for visitors. The API is reached through /api/* either way.
 (frontend_dev) {
@@ -47,45 +48,32 @@
 	}
 }
 
+# The old site names only send visitors to the public site; nothing runs for them here.
 {$INAZINA_DOMAIN:inazina.localhost} {
 	import common
-	redir https://www.{$INAZINA_DOMAIN:inazina.localhost}{uri} permanent
+	redir {$INAZINA_PUBLIC_SITE:https://winterliy.github.io/INAZINA/}
 }
 
 www.{$INAZINA_DOMAIN:inazina.localhost} {
 	import common
-	# The contact / report form is the only thing the site asks the API for.
-	@feedback path /api/site/feedback
-	handle @feedback {
-		reverse_proxy 127.0.0.1:4312
-	}
-	handle {
-		import frontend_{$INAZINA_FRONTEND:dev} 4314 {$INAZINA_ROOT:.}/apps/site/dist
-	}
+	redir {$INAZINA_PUBLIC_SITE:https://winterliy.github.io/INAZINA/}
 }
 
 corp.{$INAZINA_DOMAIN:inazina.localhost} {
 	import common
-	# The contact / report form is the only thing the site asks the API for.
-	@feedback path /api/site/feedback
-	handle @feedback {
-		reverse_proxy 127.0.0.1:4312
-	}
-	handle {
-		import frontend_{$INAZINA_FRONTEND:dev} 4314 {$INAZINA_ROOT:.}/apps/site/dist
-	}
+	redir {$INAZINA_PUBLIC_SITE:https://winterliy.github.io/INAZINA/}
 }
 
-# Identity provider: only the OIDC and account pages are reachable; everything else goes to www.
+# Identity provider: only the OIDC and account pages are reachable; everything else goes to the public site.
 id.{$INAZINA_DOMAIN:inazina.localhost} {
 	import common
 	@idpaths path /oidc/* /login /register /reset
 	handle @idpaths {
 		reverse_proxy 127.0.0.1:4312
 	}
-	# The logo (/) and any other address go to the main page.
+	# The logo (/) and any other address go to the public site.
 	handle {
-		redir https://www.{$INAZINA_DOMAIN:inazina.localhost}/
+		redir {$INAZINA_PUBLIC_SITE:https://winterliy.github.io/INAZINA/}
 	}
 }
 

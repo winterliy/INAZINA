@@ -20,7 +20,7 @@
 | HTS (거래 화면) | `apps/hts` | `http://127.0.0.1:4311` |
 | API (TypeScript) | `apps/api` | `http://127.0.0.1:4312/api/health` |
 | Python 데이터 서비스 (비공개) | `web_api` | `127.0.0.1:4313` (API가 자동으로 시작) |
-| 공식 사이트 (NACURI) | `apps/site` | `http://127.0.0.1:4314` |
+| 공식 사이트 | `apps/site` | GitHub Pages `https://winterliy.github.io/INAZINA/` (로컬에서는 실행하지 않음, 보려면 `npm run dev:site`) |
 | Wide-Learning 뷰어 | `apps/wl` | `http://127.0.0.1:4315` |
 
 - 디스코드 봇과 도메인 로직은 Python으로 작성되어 있습니다. 진입점은 `main.py`와 `run.py`이고, 로직은 `managers/`, `database/`, `functions/`에 있습니다.

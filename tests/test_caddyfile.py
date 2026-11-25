@@ -7,6 +7,7 @@ from pathlib import Path
 TEXT = (Path(__file__).resolve().parents[1] / "infra" / "Caddyfile").read_text()
 LIVE = "\n".join(line for line in TEXT.splitlines() if not line.lstrip().startswith("#"))
 D = "{$INAZINA_DOMAIN:inazina.localhost}"
+PUBLIC = "{$INAZINA_PUBLIC_SITE:https://winterliy.github.io/INAZINA/}"
 
 
 def _body(text, start):
@@ -46,6 +47,7 @@ WL = "wl.localhost"
 
 def test_names_are_inazina_localhost_only_and_there_is_no_public_api_or_internal_gateway():
     assert "4313" not in LIVE
+    assert "4314" not in LIVE, "the official site is on GitHub Pages; nothing runs on 4314 any more"
     assert not re.search(r"^api\.", LIVE, re.M)
     assert ".kr" not in LIVE and "INAZINA_TLS" not in LIVE and "WL_DOMAIN" not in LIVE, "the public-domain plan was dropped"
 
@@ -72,9 +74,11 @@ def test_wiki_viewer_site_is_chosen_by_INAZINA_WL_and_has_the_one_name_wl_localh
     assert "respond" in SITES["(wl_off)"] and "4315" not in SITES["(wl_off)"]
 
 
-def test_apex_redirects_permanently_to_www():
-    assert f"redir https://www.{D}{{uri}} permanent" in SITES[D]
-    assert "reverse_proxy" not in SITES[D]
+def test_the_old_site_names_only_send_visitors_to_the_public_site():
+    for label in (D, f"www.{D}", f"corp.{D}"):
+        body = SITES[label]
+        assert f"redir {PUBLIC}" in body, label
+        assert "reverse_proxy" not in body and "file_server" not in body and "import frontend_" not in body, label
 
 
 def test_id_host_exposes_only_oidc_paths_and_sends_everything_else_to_www():
@@ -82,7 +86,7 @@ def test_id_host_exposes_only_oidc_paths_and_sends_everything_else_to_www():
     assert "@idpaths path /oidc/* /login /register /reset" in body
     found = handlers(body)
     assert "reverse_proxy 127.0.0.1:4312" in found["@idpaths"]
-    assert found[""].strip() == f"redir https://www.{D}/", "the logo (/) and any other address land on the main page, not on an empty 404"
+    assert found[""].strip() == f"redir {PUBLIC}", "the logo (/) and any other address land on the public site, not on an empty 404"
     assert "reverse_proxy" not in body.replace(found["@idpaths"], "")
 
 
@@ -97,15 +101,6 @@ def test_app_hosts_split_api_from_frontend_and_block_internal():
         assert found[""].strip() == f"import frontend_{{$INAZINA_FRONTEND:dev}} {port} {{$INAZINA_ROOT:.}}/apps/{app}/dist"
         # The internal block must come before the generic /api/* handler (first handle wins).
         assert body.index("handle @internal") < body.index("handle @api")
-
-
-def test_site_hosts_send_only_the_contact_form_to_the_api():
-    for host in ("www", "corp"):
-        body = SITES[f"{host}.{D}"]
-        assert "@feedback path /api/site/feedback" in body
-        found = handlers(body)
-        assert found["@feedback"].strip() == "reverse_proxy 127.0.0.1:4312"
-        assert found[""].strip() == "import frontend_{$INAZINA_FRONTEND:dev} 4314 {$INAZINA_ROOT:.}/apps/site/dist"
 
 
 # ---- What Caddy makes of it (skipped when Caddy is not installed) ----
@@ -173,8 +168,7 @@ def test_caddy_serves_exactly_the_planned_names_with_its_own_certificates():
 @needs_caddy
 def test_development_mode_proxies_the_screens_to_the_vite_servers():
     config = _adapt()
-    for host, port in (("naru.inazina.localhost", "4311"), ("console.inazina.localhost", "4310"), ("www.inazina.localhost", "4314"), ("corp.inazina.localhost", "4314"),
-                       ("wl.localhost", "4315")):
+    for host, port in (("naru.inazina.localhost", "4311"), ("console.inazina.localhost", "4310"), ("wl.localhost", "4315")):
         site = _site(config, host)
         assert f"127.0.0.1:{port}" in site["dials"], host
         assert "file_server" not in site["handlers"], host
@@ -183,14 +177,13 @@ def test_development_mode_proxies_the_screens_to_the_vite_servers():
 @needs_caddy
 def test_static_mode_serves_the_built_files_and_never_the_vite_servers_of_the_screens():
     config = _adapt(INAZINA_FRONTEND="static")
-    for host, app in (("naru.inazina.localhost", "hts"), ("console.inazina.localhost", "dashboard"), ("www.inazina.localhost", "site"), ("corp.inazina.localhost", "site")):
+    for host, app in (("naru.inazina.localhost", "hts"), ("console.inazina.localhost", "dashboard")):
         site = _site(config, host)
         assert site["roots"] == {f"/srv/inazina/apps/{app}/dist"}, host
         assert "file_server" in site["handlers"], host
-        assert not site["dials"] & {"127.0.0.1:4310", "127.0.0.1:4311", "127.0.0.1:4314"}, host
+        assert not site["dials"] & {"127.0.0.1:4310", "127.0.0.1:4311"}, host
     assert "127.0.0.1:4312" in _site(config, "naru.inazina.localhost")["dials"], "/api still goes to the API"
     assert "127.0.0.1:4312" in _site(config, "console.inazina.localhost")["dials"]
-    assert _site(config, "www.inazina.localhost")["dials"] == {"127.0.0.1:4312"}, "the site only asks the API for its contact form"
 
 
 @needs_caddy
