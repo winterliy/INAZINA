@@ -45,16 +45,18 @@ class ConsentButton(discord.ui.DynamicItem[discord.ui.Button], template=r"consen
 
     async def callback(self, interaction):
         bot, user_id = interaction.client, str(interaction.user.id)
+        # Discord wants an answer within 3 seconds and the database can be busy for longer: acknowledge first, then record.
+        await interaction.response.defer()
 
         def record():
             with bot.db.atomic() as conn:
                 return DocumentConsent.consent(conn, self.campaign_id, user_id)
         outcome = await bot._run_background_write(record)
         if outcome == "unknown":
-            await interaction.response.send_message("이미 종료되었거나 동의를 요청받지 않은 개정안입니다.", ephemeral=True)
+            await interaction.followup.send("이미 종료되었거나 동의를 요청받지 않은 개정안입니다.", ephemeral=True)
             return
         embeds = list(interaction.message.embeds) if interaction.message else []
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content="✅ 동의가 기록되었습니다. 감사합니다." if outcome == "consented" else "✅ 이미 동의하셨습니다.", embeds=embeds, view=None)
 
 

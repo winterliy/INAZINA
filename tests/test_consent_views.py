@@ -72,16 +72,28 @@ class ConsentViewTests(unittest.TestCase):
         asyncio.run(deliver_consent_requests(bot))
         self.assertEqual(len(reachable.sent), 1, 'a delivered message is not sent again')
 
-    def test_the_button_records_the_first_agreement_and_survives_a_restart(self):
+    def interaction(self, user_id, message=None):
+        return SimpleNamespace(client=FakeBot(self.db, {}), user=SimpleNamespace(id=user_id), message=message,
+                               response=SimpleNamespace(defer=AsyncMock(), send_message=AsyncMock(), edit_message=AsyncMock()),
+                               followup=SimpleNamespace(send=AsyncMock()), edit_original_response=AsyncMock())
+
+    def test_the_button_answers_at_once_then_records_the_first_agreement_and_survives_a_restart(self):
         self.seed()
         campaign = self.campaign('111')
         self.assertTrue(ConsentButton.__discord_ui_compiled_template__.fullmatch(f"consent:{campaign}"), 'one pattern serves every campaign')
-        interaction = SimpleNamespace(client=FakeBot(self.db, {}), user=SimpleNamespace(id=111), message=SimpleNamespace(embeds=[consent_embed({
-            'title': '서비스 이용약관', 'summary': 's', 'effective_epoch': NOW})]),
-            response=SimpleNamespace(edit_message=AsyncMock(), send_message=AsyncMock()))
+        order = []
+        interaction = self.interaction(111, SimpleNamespace(embeds=[consent_embed({'title': '서비스 이용약관', 'summary': 's', 'effective_epoch': NOW})]))
+        interaction.response.defer = AsyncMock(side_effect=lambda *a, **k: order.append("defer"))
+        original = interaction.client._run_background_write
+
+        async def traced(callback, *args):
+            order.append("database")
+            return await original(callback, *args)
+        interaction.client._run_background_write = traced
         asyncio.run(ConsentButton(campaign).callback(interaction))
-        interaction.response.edit_message.assert_awaited()
-        self.assertIsNone(interaction.response.edit_message.await_args.kwargs.get("view"), 'the button is removed once answered')
+        self.assertEqual(order, ["defer", "database"], "Discord wants an answer within 3 seconds; the database may be busy, so answer first")
+        interaction.edit_original_response.assert_awaited()
+        self.assertIsNone(interaction.edit_original_response.await_args.kwargs.get("view"), 'the button is removed once answered')
         with self.db.atomic() as conn:
             self.assertEqual(conn.execute("SELECT consented_epoch IS NOT NULL FROM document_consents WHERE campaign_id=? AND user_id='111'", (campaign,)).fetchone()[0], 1)
         asyncio.run(ConsentButton(campaign).callback(interaction))  # pressed twice: harmless
@@ -89,12 +101,11 @@ class ConsentViewTests(unittest.TestCase):
     def test_someone_who_was_not_asked_gets_a_plain_answer(self):
         self.seed()
         campaign = self.campaign('111')
-        interaction = SimpleNamespace(client=FakeBot(self.db, {}), user=SimpleNamespace(id=999), message=None,
-                                      response=SimpleNamespace(edit_message=AsyncMock(), send_message=AsyncMock()))
+        interaction = self.interaction(999)
         asyncio.run(ConsentButton(campaign).callback(interaction))
-        interaction.response.send_message.assert_awaited()
-        interaction.response.edit_message.assert_not_awaited()
-
+        interaction.followup.send.assert_awaited()
+        self.assertTrue(interaction.followup.send.await_args.kwargs.get("ephemeral"))
+        interaction.edit_original_response.assert_not_awaited()
 
     def test_a_held_member_can_only_agree_or_ask_for_help(self):
         from functions.registration import RegistrationRequired
