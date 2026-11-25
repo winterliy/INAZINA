@@ -138,6 +138,8 @@ if [[ ! -f "$api_built" ]] || [[ -n "$(find "$ROOT/apps/api/src" "$ROOT/apps/api
 fi
 # The API reports this value on the console's 서비스 page (screens served by Caddy are "on" without a dev server).
 export INAZINA_FRONTEND="$FRONTEND"
+# A document saved in the console (or swapped in on its effective date) is committed and pushed by tools/publish_documents.py, so the public site follows.
+export INAZINA_PUBLISH_DOCUMENTS="${INAZINA_PUBLISH_DOCUMENTS:-1}"
 start api npm run start --workspace @inazina/api
 if [[ "$FRONTEND" != "static" ]]; then
   start dashboard npm run dev:dashboard

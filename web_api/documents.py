@@ -21,6 +21,8 @@ import hashlib
 import json
 import os
 import re
+import subprocess
+import sys
 import time
 import zoneinfo
 from pathlib import Path
@@ -150,6 +152,20 @@ def _clean(content):
     return text if text.endswith("\n") else text + "\n"
 
 
+def publish_async():
+    """Ask tools/publish_documents.py to commit and push the changed public document files, so the official site (GitHub Pages) follows.
+
+    Off unless INAZINA_PUBLISH_DOCUMENTS=1 (start_all switches it on). It runs on its own, after the request, and logs to logs/publish.log.
+    """
+    if os.environ.get("INAZINA_PUBLISH_DOCUMENTS") != "1":
+        return False
+    log_dir = ROOT / "logs"
+    log_dir.mkdir(exist_ok=True)
+    with open(log_dir / "publish.log", "ab") as log:
+        subprocess.Popen([sys.executable, str(ROOT / "tools" / "publish_documents.py")], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    return True
+
+
 def preview(document_id, content, important=False, now=None):
     """Line changes against the editing base and when they would apply, without writing anything."""
     title, path, _ = _document(document_id)
@@ -203,9 +219,11 @@ def save(document_id, content, base_sha256, confirmed, important=False, now=None
         manifest[document_id] = {"effectiveEpoch": epoch, "announcedEpoch": int(now if now is not None else time.time()),
                                  "important": important is True}
         _save_manifest(manifest)
+        publish_async()
         return {**change, "after": _sha(new), "scheduled": epoch}
     _backup(document_id, current["content"])
     _write(path, new)
+    publish_async()
     return {**change, "after": _sha(new), "scheduled": None}
 
 
@@ -218,6 +236,7 @@ def cancel(document_id):
     manifest.pop(document_id, None)
     _save_manifest(manifest)
     _next_path(document_id).unlink(missing_ok=True)
+    publish_async()
     return {"document": document_id}
 
 
@@ -239,6 +258,8 @@ def apply_due(now=None):
         manifest.pop(document_id)
     if applied or len(manifest) != len(_manifest()):
         _save_manifest(manifest)
+    if applied:
+        publish_async()  # the swapped-in text is the one in force: the public site must show it too
     return applied
 
 
