@@ -264,3 +264,25 @@ dialog[open] { animation: rise .45s var(--ease); }
 /* Customer support (mail links). */
 .cta .lead a { color: var(--accent); text-underline-offset: 3px; }
 .cta .mail-note { font-size: 14px; color: var(--muted); }
+
+/* Notices: the announced changes to the documents, with a before/after comparison. */
+.notice-list { display: grid; gap: 28px; margin-top: 28px; }
+.notice { padding: 26px 28px; border-radius: 22px; background: var(--soft); }
+.notice header { display: grid; gap: 8px; margin-bottom: 14px; }
+.notice h2 { margin: 0; font: 400 26px/1.2 var(--serif); }
+.notice h3 { margin: 22px 0 8px; font-size: 16px; font-weight: 600; }
+.notice .meta { margin: 0; color: var(--muted); font-size: 14px; }
+.notice .badge { justify-self: start; padding: 4px 12px; border-radius: 999px; background: var(--chip); font-size: 13px; font-weight: 600; }
+.notice .badge.open { background: var(--accent-soft); color: var(--accent); }
+.notice .badge.cancelled { color: var(--muted); }
+.notice-consent { margin: 0 0 6px; color: var(--ink-2); font-size: 14px; line-height: 1.6; }
+.notice-consent.must { padding: 12px 14px; border-radius: 12px; background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+.notice .compare { width: 100%; border-collapse: collapse; font-size: 14px; table-layout: fixed; }
+.notice .compare th { padding: 8px; text-align: left; color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--line); }
+.notice .compare td { padding: 10px 8px; vertical-align: top; overflow-wrap: anywhere; }
+.notice .compare td:first-child { color: var(--muted); }
+.notice .compare ul { margin: 0; padding-left: 18px; line-height: 1.6; }
+.notice .none { margin: 0; color: var(--muted); }
+.announce-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px; margin: 14px auto 0; padding: 10px 18px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 14px; width: fit-content; max-width: 100%; }
+.announce-bar p { margin: 0; }
+.announce-bar a { color: var(--accent); font-weight: 700; }
