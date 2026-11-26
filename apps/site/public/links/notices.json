@@ -1,1 +1,26 @@
-{ "updated": 0, "notices": [] }
+{
+  "updated": 1795708714,
+  "notices": [
+    {
+      "id": 1,
+      "document": "terms",
+      "title": "서비스 이용약관",
+      "status": "open",
+      "announcedEpoch": 1795708714,
+      "effectiveEpoch": 1798297200,
+      "unfavourable": true,
+      "changes": [
+        {
+          "section": "제10조 (탈퇴)",
+          "before": [
+            "이용자는 나루 또는 콘솔의 '내 계정'에서 '회원 탈퇴' 버튼으로 언제든 바로 탈퇴할 수 있고, 이메일(w2nterist@gmail.com)로도 요청할 수 있습니다."
+          ],
+          "after": [
+            "이용자는 나루 또는 콘솔의 '내 계정'에서 '회원 탈퇴' 버튼으로, 또는 Discord에서 `/탈퇴` 명령어를 실행한 뒤 나오는 확인 창에 '탈퇴'를 입력해 제출하는 방법으로 언제든 바로 탈퇴할 수 있고, 이메일(w2nterist@gmail.com)로도 요청할 수 있습니다. 개정된 약관에 아직 동의하지 않은 이용자도 탈퇴할 수 있습니다.",
+            "탈퇴는 확인을 마치는 즉시 처리되며 되돌릴 수 없습니다."
+          ]
+        }
+      ]
+    }
+  ]
+}
