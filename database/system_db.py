@@ -84,6 +84,21 @@ class SystemDB(DBManager):
             last_display_price INTEGER NOT NULL CHECK(last_display_price > 0),
             event_id INTEGER
         )""")
+        # The slow long-run anchor of each quote (managers/price_guard.py): keeps automatic movement from wandering to the floor.
+        self.execute("""CREATE TABLE IF NOT EXISTS market_price_anchor (
+            asset_code TEXT PRIMARY KEY,
+            anchor_price REAL NOT NULL CHECK(anchor_price >= 1 AND anchor_price <= 9007199254740991),
+            updated_epoch INTEGER NOT NULL
+        )""")
+        # Every time a stock below the price floor is lifted to it: the console shows these as a notice (managers/price_guard.py).
+        self.execute("""CREATE TABLE IF NOT EXISTS price_floor_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_code TEXT NOT NULL,
+            name TEXT,
+            from_price REAL NOT NULL,
+            to_price REAL NOT NULL,
+            created_epoch INTEGER NOT NULL
+        )""")
         self.execute("""CREATE TABLE IF NOT EXISTS market_factor_state (
             key TEXT PRIMARY KEY,
             last_epoch INTEGER NOT NULL,
@@ -97,6 +112,13 @@ class SystemDB(DBManager):
             ("auto_target_pull", "0.08"),
             ("auto_target_noise_multiplier", "6"),
             ("auto_target_band_percent", "25"),
+            ("price_guard_enabled", "1"),
+            ("price_floor_won", "100"),
+            ("price_floor_zone_percent", "15"),
+            ("price_floor_pull", "0.05"),
+            ("price_guard_halflife_hours", "12"),
+            ("price_guard_band_percent", "50"),
+            ("price_guard_pull", "0.02"),
         ):
             self.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
         # Soft automatic targets are model state, not disposable chart history.

@@ -603,6 +603,7 @@ class AdminCommandsManager:
                 if category not in {'option','bond'}:
                     conn.execute('DELETE FROM market_quote_overrides WHERE asset_code=?',(args[0],))
                 conn.execute('DELETE FROM market_simulation_state WHERE asset_code=?',(args[0],))
+                conn.execute('DELETE FROM market_price_anchor WHERE asset_code=?',(args[0],))
                 from managers.market_manager import MarketManager
                 MarketManager(self.db).clear_runtime_targets(args[0],conn=conn)
                 self.control._audit(conn,actor,command,{'code':args[0],'operation':args[1],'before':current,'after':value})

@@ -97,6 +97,18 @@ class RealSchemaWebApiTests(unittest.TestCase):
         self.assertEqual([row["code"] for row in found["savingProducts"]], ["SV1"])
         self.assertEqual([row["code"] for row in found["loanProducts"]], ["LN1"])
 
+    def test_admin_overview_lists_the_stocks_lifted_to_the_price_floor(self):
+        import time
+        empty = server.admin_overview()
+        self.assertEqual(empty["priceFloor"], {"floor": 100.0, "actions": []})
+        with self.db.atomic() as conn:
+            conn.execute("INSERT INTO price_floor_events(asset_code,name,from_price,to_price,created_epoch) VALUES ('TSB','The South Bank',1,100,?)", (int(time.time()),))
+            conn.execute("INSERT INTO price_floor_events(asset_code,name,from_price,to_price,created_epoch) VALUES ('OLD','오래된',2,100,?)", (int(time.time()) - 30 * 86400,))
+        overview = server.admin_overview()
+        self.assertEqual([item["code"] for item in overview["priceFloor"]["actions"]], ["TSB"], "only the last 7 days")
+        item = overview["priceFloor"]["actions"][0]
+        self.assertEqual((item["name"], item["from"], item["to"]), ("The South Bank", 1.0, 100.0))
+
     def test_a_company_shows_the_companies_it_holds_even_with_one_share(self):
         # The ownership chart follows a company's shareholders. A company with none of its own (a holding company
         # before anyone bought in, a liquidity firm) used to open an empty chart although it owns other companies.

@@ -6,14 +6,14 @@ import { date, number } from "./common";
 type Exchange = { exchange_id: string; status: string; trading_halted: number };
 type Audit = { auditId: number; actorId: string; action: string; payload: Record<string, unknown>; time: number };
 type Index = { exchangeId: string; value: number; change24h: number | null };
-type Todo = { id: string; title: string; note: string; count: number };
+type Todo = { id: string; title: string; note: string; count: number; page?: string };
 
 /**
  * The main page: what needs a decision today, the markets at a glance, the latest administrator work and
  * every page by group. It reads only what other pages already show, so a failed request just leaves that block empty.
  */
-export function HomePage({ market, bankDeficits, labels, badges, onPage }: {
-  market: Exchange[] | undefined; bankDeficits: { issuer: string; nationality: string }[]; labels: Map<string, string>;
+export function HomePage({ market, bankDeficits, floorActions = [], labels, badges, onPage }: {
+  market: Exchange[] | undefined; bankDeficits: { issuer: string; nationality: string }[]; floorActions?: { code: string; name: string }[]; labels: Map<string, string>;
   badges: Record<string, number>; onPage: (page: string) => void;
 }) {
   const [court, setCourt] = useState(0);
@@ -33,7 +33,8 @@ export function HomePage({ market, bankDeficits, labels, badges, onPage }: {
     { id: "board", title: "게시판 신고 대기", note: "처리하지 않은 신고", count: reports },
     { id: "court", title: "회생 · 파산 접수", note: "접수·심리 중인 신청", count: court },
     { id: "overview", title: "은행 본사 계좌 적자", note: bankDeficits.map((bank) => bank.issuer).join(" · "), count: bankDeficits.length },
-  ] as Todo[]).filter((item) => item.count > 0 && labels.has(item.id));
+    { id: "price-floor", title: "주가 하한 조치 (최근 7일)", note: floorActions.slice(0, 3).map((item) => item.name).join(" · "), count: floorActions.length, page: "overview" },
+  ] as Todo[]).filter((item) => item.count > 0 && labels.has(item.page ?? item.id));
   const open = (market ?? []).filter((item) => item.status === "open" && !item.trading_halted).length;
   const indexOf = new Map(indexes.map((item) => [item.exchangeId, item]));
   const pending = todos.reduce((sum, item) => sum + item.count, 0);
@@ -49,7 +50,7 @@ export function HomePage({ market, bankDeficits, labels, badges, onPage }: {
       <div className="sec-body">{todos.length
         ? <div className="rows">{todos.map((item) => <div className="row" key={item.id}>
           <div><b>{item.title}</b><small>{item.note}</small></div>
-          <span className="row-end"><span className="nav-badge">{item.count}</span><a className="link-out" href={`#${item.id}`} onClick={(event) => { event.preventDefault(); onPage(item.id); }}>열기</a></span>
+          <span className="row-end"><span className="nav-badge">{item.count}</span><a className="link-out" href={`#${item.page ?? item.id}`} onClick={(event) => { event.preventDefault(); onPage(item.page ?? item.id); }}>열기</a></span>
         </div>)}</div>
         : <p className="empty">지금 처리할 일이 없습니다.</p>}</div>
     </section>

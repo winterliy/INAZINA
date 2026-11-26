@@ -15,6 +15,7 @@ from database.unified import UnifiedConnection
 from managers.movement_history_manager import MovementHistoryManager
 from managers.market_session_manager import MarketSessionManager
 from managers.auto_target_engine import AutoTargetConfig, TargetCycle, cycle_bounds, sample_target, target_pull
+from managers.price_guard import PriceGuardConfig, clamp_price, floor_bias, guard_bias, next_anchor
 from managers.stochastic_price_engine import (
     GarchConfig, MAX_PRICE, TRADING_MINUTES_PER_YEAR,
     next_variance, simulate_step, standardized_shock,
@@ -30,6 +31,15 @@ PROFILE_COLUMNS = (
 
 class _MarketHalted(Exception):
     """A concurrent administrator pause rolls back the current price batch."""
+
+
+def recent_floor_actions(conn, limit=20, since=0):
+    """Stocks lifted to the price floor since an epoch, newest first (what the console's notice lists). `conn` is anything with .execute."""
+    result = conn.execute("SELECT asset_code, name, from_price, to_price, created_epoch FROM price_floor_events "
+                          "WHERE created_epoch > ? ORDER BY event_id DESC LIMIT ?", (int(since), int(limit)))
+    rows = result.fetchall() if hasattr(result, "fetchall") else list(result)      # a connection gives a cursor, a database manager a list
+    return [{"code": row["asset_code"], "name": row["name"] or row["asset_code"], "from": float(row["from_price"]),
+             "to": float(row["to_price"]), "epoch": int(row["created_epoch"])} for row in rows]
 
 
 class MarketManager:
@@ -576,6 +586,33 @@ class MarketManager:
                      "last_display_price = excluded.last_display_price, event_id = excluded.event_id",
                      (code, variance, innovation, latent, epoch, price, event_id))
 
+    def _anchor(self, conn, code):
+        """The remembered long-run anchor of a quote (None when it has none yet)."""
+        batch = getattr(self._tick, 'batch', None)
+        if batch is not None:
+            return batch['anchors'].get(code)
+        row = conn.execute("SELECT anchor_price FROM system.market_price_anchor WHERE asset_code = ?", (code,)).fetchone()
+        return float(row["anchor_price"]) if row else None
+
+    def _drop_anchor(self, conn, code):
+        """Forget the anchor (a fixed or matured quote, an edited price): the next free step starts a new one from the quote."""
+        batch = getattr(self._tick, 'batch', None)
+        if batch is not None:
+            batch['anchors'].pop(code, None)
+            batch['anchor_updates'].pop(code, None)
+        conn.execute("DELETE FROM system.market_price_anchor WHERE asset_code = ?", (code,))
+
+    def _save_anchor(self, conn, code, value, epoch):
+        value = max(1.0, float(value))
+        batch = getattr(self._tick, 'batch', None)
+        if batch is not None:
+            batch['anchors'][code] = value
+            batch['anchor_updates'][code] = (code, value, int(epoch))
+            return
+        conn.execute("INSERT INTO system.market_price_anchor (asset_code, anchor_price, updated_epoch) VALUES (?, ?, ?) "
+                     "ON CONFLICT(asset_code) DO UPDATE SET anchor_price = excluded.anchor_price, updated_epoch = excluded.updated_epoch",
+                     (code, value, int(epoch)))
+
     def _auto_target(self, conn, code, price, epoch, config):
         batch = getattr(self._tick, 'batch', None)
         row = batch['targets'].get(code) if batch is not None else conn.execute("SELECT * FROM system.market_auto_targets WHERE asset_code = ?", (code,)).fetchone()
@@ -617,7 +654,7 @@ class MarketManager:
         conn.execute('DELETE FROM system.market_auto_target_history WHERE history_id <= '
                      '(SELECT MAX(history_id) FROM system.market_auto_target_history) - ?', (self.AUTO_TARGET_HISTORY_LIMIT,))
 
-    def _stochastic_price(self, conn, code, price, now, settings, volatility, condition, legacy_events, profile=None, sector_key=None):
+    def _stochastic_price(self, conn, code, price, now, settings, volatility, condition, legacy_events, profile=None, sector_key=None, stock=False):
         profile = profile or {}
         liquidity = max(0.05, float(profile.get("liquidity", 1.0)))
         trend_sensitivity = max(0.0, float(profile.get("trend_sensitivity", 1.0)))
@@ -659,8 +696,10 @@ class MarketManager:
 
         event_price = self._event_target_price(conn, code, price, now, legacy_events,
                                               sample_noise=event_noise, context=event_context, batch=batch)
+        guard = PriceGuardConfig.from_settings(settings)
         if event_price is not None:
             self._delete_auto_target(conn, code)
+            self._save_anchor(conn, code, event_price, epoch)       # after an event the guard starts again from the quote
             if not event_context["advanced"] and state is not None and not edited:
                 return event_price
             if event_step is not None:
@@ -677,6 +716,7 @@ class MarketManager:
             # Start free movement from the completed bridge's actual quote,
             # retaining its volatility memory but not its target trajectory.
             latent = ExactDecimal(price)
+            self._save_anchor(conn, code, price, epoch)
         if not due:
             if edited:
                 self._save_simulation_state(conn, code, config.step_variance, 0.0, ExactDecimal(price),
@@ -689,6 +729,12 @@ class MarketManager:
             return price
         bias = {"bull": 1, "bear": -1, "flat": 0}[condition] * trend_sensitivity * math.log1p(.10) \
                * config.trading_minutes_per_step / TRADING_MINUTES_PER_YEAR
+        anchor = None if state is None or edited or state["event_id"] is not None else self._anchor(conn, code)
+        if anchor is None:
+            anchor = float(price)
+        bias += guard_bias(latent, anchor, guard)             # far from its long-run anchor: a gentle pull back
+        if stock:
+            bias += floor_bias(latent, guard)                  # near the stock price floor: a gentle push up
         if str(sector_key or "").casefold() == "depositary_receipt":
             reference = self._dr_reference_value(conn, code)
             if reference is not None and latent > 0:
@@ -727,7 +773,14 @@ class MarketManager:
             # single-step limit while the quote returns to its new band.
             next_price = min(MAX_PRICE, max(1.0, min(latent * 1.2, max(latent * .8, bounded))))
             next_innovation = math.log(next_price / latent) - bias + step.variance / 2
+        if stock and guard.enabled and guard.floor > 0 and next_price < guard.floor <= float(latent):
+            next_price = ExactDecimal(guard.floor)             # a quote above the floor never steps under it
+        guarded = clamp_price(float(next_price), anchor, guard, prior=float(latent))
+        if guarded != float(next_price):                    # one step may not go further out of the band than where the quote was
+            next_price = ExactDecimal(guarded)
+            next_innovation = math.log(next_price / latent) - bias + step.variance / 2
         new_price = min(MAX_PRICE, max(1, self.normalize_market_price(next_price)))
+        self._save_anchor(conn, code, next_anchor(anchor, float(new_price), config.step_seconds, guard), epoch)
         self._save_simulation_state(conn, code, step.variance, next_innovation, next_price, epoch, new_price)
         return new_price
 
@@ -788,7 +841,8 @@ class MarketManager:
         return dict(states={r['asset_code']: r for r in conn.execute('SELECT * FROM market_simulation_state')},
             targets={r['asset_code']: r for r in conn.execute('SELECT * FROM market_auto_targets')},
             factor=conn.execute("SELECT * FROM market_factor_state WHERE key='market'").fetchone(),
-            events=events, running=running, state_updates={}, target_updates={}, target_deletes=set(), sector_shocks={})
+            events=events, running=running, anchors={r['asset_code']: float(r['anchor_price']) for r in conn.execute('SELECT asset_code, anchor_price FROM market_price_anchor')},
+            anchor_updates={}, state_updates={}, target_updates={}, target_deletes=set(), sector_shocks={})
 
     def _delete_auto_target(self, conn, code):
         batch = getattr(self._tick, 'batch', None)
@@ -809,6 +863,9 @@ class MarketManager:
             'target_price=excluded.target_price,start_epoch=excluded.start_epoch,end_epoch=excluded.end_epoch',
             batch['target_updates'].values())
         self._record_auto_targets(conn, batch['target_updates'].values())
+        conn.executemany('INSERT INTO market_price_anchor (asset_code,anchor_price,updated_epoch) VALUES (?,?,?) '
+            'ON CONFLICT(asset_code) DO UPDATE SET anchor_price=excluded.anchor_price,updated_epoch=excluded.updated_epoch',
+            batch['anchor_updates'].values())
         conn.executemany('INSERT INTO market_simulation_state '
             '(asset_code,variance,innovation,latent_price,last_epoch,last_display_price,event_id) VALUES (?,?,?,?,?,?,?) '
             'ON CONFLICT(asset_code) DO UPDATE SET variance=excluded.variance,innovation=excluded.innovation, '
@@ -959,12 +1016,13 @@ class MarketManager:
                             sector_key = row["industry"] if schema == "company" else row["product_type"] if has_derivative else row["type"] if "type" in row.keys() else None
                             new_price = self._stochastic_price(conn, code, price, now, settings,
                                 min(self.MAX_VOLATILITY, asset_volatility * market_trend), asset_condition, legacy_events,
-                                profile=profile, sector_key=sector_key)
+                                profile=profile, sector_key=sector_key, stock=schema == "company")
                         else:
                             self._delete_auto_target(conn, code)
                         if int(row["is_fixed"] or 0) or matured:
                             # A price edited while fixed must become the new
                             # anchor when automatic movement is enabled again.
+                            self._drop_anchor(conn, code)
                             conn.execute("UPDATE system.market_simulation_state SET latent_price = ?, "
                                 "last_display_price = ?, last_epoch = ?, variance = 0, innovation = 0, event_id = NULL "
                                 "WHERE asset_code = ?", (price, price, now // global_config.step_seconds
@@ -1000,12 +1058,41 @@ class MarketManager:
                     raise
                 if "locked" not in str(exc).casefold() and "busy" not in str(exc).casefold():
                     raise
+        self._enforce_price_floor(now, settings)
         self._update_exchange_indices(now)
         self._update_leveraged_etfs(now)
         self._update_linked_products(now)
         self._update_event_quotes(now, settings, volatility, market_condition)
         self._record_special_quotes(now)
         return changed
+
+    def _enforce_price_floor(self, now, settings):
+        """Lift every active stock below the price floor (100 won) to it and record the action for the console. A fixed stock is lifted too
+        (once; it stays fixed). The same stock is not reported again within an hour, however often it is pushed below."""
+        guard = PriceGuardConfig.from_settings(settings)
+        if not guard.enabled or guard.floor <= 0:
+            return
+        floor = guard.floor
+        lifted = []
+        with self._short_market_transaction(("company", "system")) as conn:
+            rows = conn.execute("SELECT company_code, name, share_price FROM company.company WHERE status='active' AND share_price < ?",
+                                (floor,)).fetchall()
+            for row in rows:
+                code = row["company_code"]
+                conn.execute("UPDATE company.company SET share_price = ? WHERE company_code = ?", (floor, code))
+                self._drop_anchor(conn, code)
+                self._delete_auto_target(conn, code)
+                if not conn.execute("SELECT 1 FROM system.price_floor_events WHERE asset_code = ? AND created_epoch > ?", (code, now - 3600)).fetchone():
+                    conn.execute("INSERT INTO system.price_floor_events (asset_code, name, from_price, to_price, created_epoch) VALUES (?, ?, ?, ?, ?)",
+                                 (code, row["name"], float(row["share_price"] or 0), floor, now))
+                lifted.append((code, floor, now))
+        if lifted:
+            with self._short_market_transaction("assets") as conn:
+                conn.executemany("INSERT INTO assets.market_price_history (asset_code, price, recorded_epoch) VALUES (?, ?, ?) "
+                                 "ON CONFLICT(asset_code, recorded_epoch) DO UPDATE SET price = excluded.price", lifted)
+
+    def recent_floor_actions(self, conn=None, limit=20, since=0):
+        return recent_floor_actions(conn if conn is not None else self.db.system, limit, since)
 
     def _update_event_quotes(self, now, settings, volatility, condition):
         # Run after NAV/index repricing, so linked prices cannot overwrite an

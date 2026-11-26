@@ -151,7 +151,7 @@ export default function App() {
           placeholder={page === "users" ? "이름 또는 ID" : page === "database" ? "모든 열에서 검색" : "이름 또는 코드"} onQuery={setQuery} onPage={onPage} />
         {noticeBar}
         <Suspense fallback={<p className="loading">화면을 불러오는 중…</p>}>
-          {page === "home" && <HomePage market={overview?.market} bankDeficits={overview?.bankDeficits ?? []} labels={labels} badges={badges.badges} onPage={onPage} />}
+          {page === "home" && <HomePage market={overview?.market} bankDeficits={overview?.bankDeficits ?? []} floorActions={overview?.priceFloor?.actions ?? []} labels={labels} badges={badges.badges} onPage={onPage} />}
           {page === "overview" && <OverviewSection ctx={ctx} overview={overview} audit={audit} />}
           {page === "instruments" && <><Lazy.ProductsPage group="market" ctx={ctx} /><Lazy.WarningsCard ctx={ctx} /></>}
           {page === "finance" && <Lazy.ProductsPage group="finance" ctx={ctx} />}

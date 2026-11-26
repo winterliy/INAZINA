@@ -1307,12 +1307,17 @@ def admin_overview():
         ).fetchall()
         from managers.capital_markets_manager import CapitalMarketsManager
         deficits = CapitalMarketsManager.bank_deficits(connection)
+        from managers.market_manager import recent_floor_actions
+        from managers.price_guard import PriceGuardConfig
+        settings = {row[0]: row[1] for row in connection.execute("SELECT key, value FROM settings WHERE key LIKE 'price_%'").fetchall()}
+        price_floor = {"floor": PriceGuardConfig.from_settings(settings).floor, "actions": recent_floor_actions(connection, since=int(time.time()) - 7 * 86400)}
     return {
         "activeUsers": int(active_users),
         "activeInstruments": int(active_assets),
         "openOrders": int(open_orders),
         "market": [dict(session) for session in sessions],
         "bankDeficits": deficits,
+        "priceFloor": price_floor,
     }
 
 
