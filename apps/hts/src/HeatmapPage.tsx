@@ -48,7 +48,7 @@ export function HeatmapPage({ instruments, exchangeId, onExchangeChange, onSelec
   const tally = stocks.length > 0 && `▲ ${up} · ▼ ${down} · ${stocks.length}종목`;
   return <GuideLayout
     nav={summaries.map((item, index) => <button type="button" key={item.exchangeId} aria-current={item.exchangeId === exchangeId} onClick={() => onExchangeChange?.(item.exchangeId)}>{item.exchangeId}<small>{pad(index + 1)} · <span className={item.averageChange > 0 ? "up" : item.averageChange < 0 ? "down" : ""}>{formatChange(item.averageChange)}</span></small></button>)}
-    footer={<a href="/">HTS로 돌아가기</a>}>
+    footer={<a href="/">나루로 돌아가기</a>}>
     <Hero background={<DotField stocks={stocks.map((item) => ({ code: item.code, name: item.name, volume: item.volume24h, change: item.change24h ?? 0 }))} onSelect={onSelect} />}><RotatingStat stats={heroStats} /></Hero>
     <header className="bg-intro">
       <div><p className="bg-label">INAZINA · HEATMAP</p><h1>{exchangeId || "거래소"} 거래소 히트맵</h1></div>

@@ -51,7 +51,7 @@ export function PortfolioPage({ holdings, instruments, homeCurrency, cash = 0, t
 
   return <GuideLayout
     nav={SECTIONS.map((label, index) => <a key={label} href={`#pf-${index + 1}`}>{label}<small>{pad(index + 1)}</small></a>)}
-    footer={<a href="/">HTS로 돌아가기</a>}>
+    footer={<a href="/">나루로 돌아가기</a>}>
     <Hero dark={isDark(centreBand?.color ?? "#ffffff")} background={<AllocationBands bands={segments} onSelect={onSelect} />}><RotatingStat stats={[
       { label: "평가액", value: formatMoneyNumeric(total), unit: homeCurrency },
       { label: "현금", value: formatMoneyNumeric(cash), unit: homeCurrency },
@@ -64,7 +64,7 @@ export function PortfolioPage({ holdings, instruments, homeCurrency, cash = 0, t
       <div className="bg-copy">
         <p>보유 비중과 최근 성과를 한눈에 확인합니다.</p>
         <p className="bg-muted">{holdings.length}개 종목 · 평가액 기준{onRefreshRates && <RefreshRateButton busy={ratesBusy} onRefresh={onRefreshRates} />}</p>
-        <a className="bg-btn" href="/">HTS로 돌아가기 <i aria-hidden="true">→</i></a>
+        <a className="bg-btn" href="/">나루로 돌아가기 <i aria-hidden="true">→</i></a>
       </div>
     </header>
 

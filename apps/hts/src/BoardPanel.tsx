@@ -312,7 +312,7 @@ export function BoardPanel({ user, initialAsset = "", onLogin, onLogout }: { use
         <nav className="plaza-util" aria-label="계정">
           {user ? <><span className="plaza-user">{user.nickname}</span><button type="button" aria-expanded={accountOpen} onClick={() => { setAccountOpen((open) => !open); setPost(null); setDraft(null); }}>계정설정</button></> : <button type="button" onClick={onLogin}>로그인</button>}
           {user && <button type="button" onClick={onLogout}>로그아웃</button>}
-          <a href="/">HTS</a>
+          <a href="/">나루</a>
         </nav>
       </header>
       {closed && <p className="board-notice">게시판은 지금 읽기만 할 수 있습니다. 글쓰기·댓글·신고는 개인정보 처리방침 개정에 따라 <b>{opensText}</b>부터 열립니다. 작성·신고 시 접속 IP가 1년간 보관됩니다.</p>}
