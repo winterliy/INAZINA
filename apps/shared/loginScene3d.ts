@@ -117,7 +117,7 @@ vec3 place(float time, float form, float burst) {
 
 const POINT_VERT = /* glsl */`
 ${PLACE}
-varying float vBlue, vAlpha;
+varying float vBlue, vAlpha, vHue;
 
 void main() {
   vec3 at = place(uTime, uForm, uBurst);
@@ -126,7 +126,7 @@ void main() {
   float defocus = 1.0 + 2.2 * abs(at.z) * (1.0 - f);        // out of the focal plane: bigger, softer, fainter
   gl_Position = projectionMatrix * mv;
   gl_PointSize = uPx * mix(1.15 + 1.9 * aSeed.y, 1.0 + 0.9 * aSeed.y, f) * (1.0 + 0.4 * uBeat * (1.0 - f) + 0.2 * uEnergy) * defocus * clamp(5.2 / -mv.z, 0.55, 1.7);
-  vBlue = aBlue;
+  vBlue = aBlue; vHue = aSeed.w;
   vAlpha = mix(0.3, 0.95, f) * mix(0.55 + 0.45 * aSeed.x, 1.0, f) * uPresence / defocus;
 }
 `;
@@ -147,17 +147,39 @@ void main() {
 }
 `;
 
+/** The "glass" colours of the scattered cloud, one per kind (a data-sculpture look: the points are coloured by kind and the grey ones are the
+ *  plain ones). One list feeds both the shader and the legend, so they cannot drift apart. [name, share of the points, rgb 0..255] */
+const GLASS: [string, number, [number, number, number]][] = [
+  ["grey", 0.22, [138, 141, 150]], ["gold", 0.1, [224, 176, 74]], ["red", 0.1, [216, 68, 60]], ["blue", 0.1, [74, 120, 232]], ["white", 0.1, [242, 242, 244]],
+  ["green", 0.1, [79, 176, 112]], ["violet", 0.1, [143, 111, 224]], ["orange", 0.09, [240, 138, 58]], ["cyan", 0.09, [60, 207, 224]],
+];
+const glassShader = () => {
+  let edge = 0;
+  const lines = GLASS.map(([, share, [r, g, b]], index) => {
+    edge += share;
+    const color = `vec3(${(r / 255).toFixed(3)}, ${(g / 255).toFixed(3)}, ${(b / 255).toFixed(3)})`;
+    return index === GLASS.length - 1 ? `  return ${color};` : `  if (h < ${edge.toFixed(3)}) return ${color};`;
+  });
+  return `vec3 glassColor(float h) {\n${lines.join("\n")}\n}`;
+};
+
 const POINT_FRAG = /* glsl */`
 precision mediump float;
-varying float vBlue, vAlpha;
-uniform float uDark, uAccent, uAlphaScale, uTintMix;
+varying float vBlue, vAlpha, vHue;
+uniform float uDark, uAccent, uAlphaScale, uTintMix, uGlass;
 uniform vec3 uTint;
+${glassShader()}
 void main() {
   float d = length(gl_PointCoord - 0.5);
   float a = smoothstep(0.5, 0.18, d) * vAlpha * uAlphaScale;
   vec3 ink = mix(vec3(0.035, 0.04, 0.085), vec3(0.9, 0.93, 1.0), uDark);
   vec3 blue = mix(vec3(0.12, 0.25, 1.0), vec3(0.3, 0.5, 1.0), uDark);
   vec3 col = vBlue > 1.5 ? mix(ink, vec3(1.0, 0.45, 0.16), uAccent) : mix(ink, blue, vBlue);
+  if (vBlue < 0.5 && uTintMix < 0.5 && uGlass > 0.001) {              // glass: a coloured kind, brighter at the rim like a bead
+    float rim = smoothstep(0.16, 0.44, d) * (1.0 - smoothstep(0.44, 0.5, d));
+    col = mix(col, mix(glassColor(vHue), vec3(1.0), rim * 0.4), uGlass * 0.92);
+    a *= 1.0 + uGlass * rim * 0.7;
+  }
   gl_FragColor = vec4(mix(col, uTint, uTintMix), a);
 }
 `;
@@ -563,7 +585,7 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void, opt
   const uniforms = {
     uTime: { value: 0 }, uForm: { value: 0 }, uBurst: { value: 0.15 }, uGlitch: { value: 0 }, uPx: { value: 1 }, uTrail: { value: 0 },
     uFormRate: { value: 0 }, uBurstRate: { value: 0 }, uBeat: { value: 0 }, uPresence: { value: 1 }, uBloom: { value: 0 }, uBloomVis: { value: 0 }, uWalk: { value: 0 }, uWalkVis: { value: 0 }, uEnergy: { value: 0.5 }, uClip: { value: 0 }, uKal: { value: 0 }, uKalGrow: { value: 0 }, uAlarm: { value: 0 }, uStack: { value: 0 }, uWave: { value: 0 }, uShard: { value: 0 }, uCut: { value: 0 }, uCutIdx: { value: 0 }, uCutT: { value: 0 },  uDark: { value: 0 }, uAccent: { value: 0 }, uAlphaScale: { value: 1 },
-    uPointer: { value: new Vector2(9, 9) }, uOffset: { value: new Vector2(0, 0) }, uTint: { value: new Vector3(0, 0, 0) }, uTintMix: { value: 0 },
+    uGlass: { value: 0 }, uPointer: { value: new Vector2(9, 9) }, uOffset: { value: new Vector2(0, 0) }, uTint: { value: new Vector3(0, 0, 0) }, uTintMix: { value: 0 },
   };
   const pointMaterial = (extra: Partial<typeof uniforms> = {}) => new ShaderMaterial({
     uniforms: { ...uniforms, ...extra }, vertexShader: POINT_VERT, fragmentShader: POINT_FRAG, transparent: true, depthTest: false, depthWrite: false });
@@ -682,6 +704,8 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void, opt
   const grainAnimation = grain.animate([{ backgroundPosition: "0 0" }, { backgroundPosition: "-80px 48px" }, { backgroundPosition: "40px -64px" }, { backgroundPosition: "0 0" }], { duration: 480, iterations: Infinity, easing: "steps(4)" });
   const vignette = overlay(`background:${VIGNETTE.day}`);
   const hud = overlay("inset:auto auto 18px 22px;font:500 11px/1.7 ui-monospace,'SF Mono',Menlo,monospace;letter-spacing:.02em;white-space:pre;z-index:1");
+  const legend = overlay("inset:auto 22px 18px auto;font:500 11px/1.65 ui-monospace,'SF Mono',Menlo,monospace;letter-spacing:.02em;white-space:pre;text-align:left;opacity:0;transition:opacity .5s");
+  legend.innerHTML = `<div style="opacity:.7;margin-bottom:3px">glass = kind</div>${GLASS.map(([name, , [r, g, b]]) => `<div><i style="display:inline-block;width:8px;height:8px;margin-right:8px;border-radius:50%;background:rgb(${r},${g},${b})"></i>${name}</div>`).join("")}`;
   const caption = document.createElement("span");
   caption.style.cssText = "display:inline-block;padding:1px 9px 2px;margin-bottom:6px;font:600 15px/1.45 var(--font-system,'DM Sans','Noto Sans KR',system-ui,sans-serif);letter-spacing:-.01em;white-space:pre;min-width:22px;min-height:24px";
   const readout = document.createElement("div");
@@ -737,7 +761,7 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void, opt
     el.innerHTML = '<i style="width:5px;height:5px;border:1px solid currentColor;display:block"></i><i style="width:38px;height:1px;background:currentColor;opacity:.55;display:block"></i><span></span>';
     return el;
   });
-  container.append(grain, vignette, hud, panel, ...callouts);
+  container.append(grain, vignette, hud, legend, panel, ...callouts);
 
   let width = 1, height = 1, dist = 6, halfH = 1, halfW = 1;
   const resize = () => {
@@ -827,6 +851,7 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void, opt
     uniforms.uBeat.value = beatAt(t);                         // the pulse follows the measured hits; energy follows the measured loudness
     uniforms.uEnergy.value = energyAt(t);
     if (clip) { if (phase.clipVis > 0.01) { if (clip.video.paused) void clip.video.play().catch(() => undefined); } else if (!clip.video.paused) clip.video.pause(); }
+    uniforms.uGlass.value = clamp01(1 - phase.form * 1.25) * phase.dark;   // coloured only at night while the cloud is loose: the day picture and the held word stay crisp ink
     uniforms.uAlphaScale.value = held ? 1 : 0.55;              // the long smear stacks many frames, so each one is fainter
     for (const ghost of ghosts) ghost.visible = phase.glitch > 0;
 
@@ -860,6 +885,7 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void, opt
       grain.style.mixBlendMode = nightText ? "screen" : "multiply"; grain.style.opacity = nightText ? ".09" : ".14";
     }
     panel.style.opacity = String(phase.panelVis);
+    legend.style.opacity = String(Math.min(1, uniforms.uGlass.value * 1.4)); legend.style.color = hud.style.color;
     const spec = CALLOUTS[phase.name];
     if (phase.name !== captionKey) { captionKey = phase.name; captionAt = now; }
     if (now - hudAt > 60) {
@@ -895,6 +921,6 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void, opt
     for (const item of [geometry, material, trailGeometry, trailMaterial, rays.geometry, rays.material, bloom.geometry, bloom.material, walk.geometry, walk.material, stack.geometry, stack.material, wave.geometry, wave.material, shard.geometry, shard.material, cut.geometry, cut.material, kaleido.geometry, kaleido.material, ...(clip ? [clip.geometry, clip.material, clip.texture] : []), strands.geometry, strands.material, ground, groundMaterial, fadeGeometry, fadeMaterial, lensMaterial, picture, ...ghostMaterials]) item.dispose();
     renderer.dispose();
     renderer.forceContextLoss();
-    renderer.domElement.remove(); grain.remove(); vignette.remove(); hud.remove(); panel.remove(); callouts.forEach((el) => el.remove());
+    renderer.domElement.remove(); grain.remove(); vignette.remove(); hud.remove(); legend.remove(); panel.remove(); callouts.forEach((el) => el.remove());
   };
 }
