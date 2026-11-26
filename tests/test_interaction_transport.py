@@ -51,7 +51,10 @@ class InteractionTransportTests(unittest.IsolatedAsyncioTestCase):
             release.set()
         self.assertEqual(await task,(99,True))
         await SlashCommandRegistry._reply(slow,content='ready')
-        slow.edit_original_response.assert_awaited_once_with(content='ready')
+        slow.edit_original_response.assert_awaited_once()
+        edited = slow.edit_original_response.await_args.kwargs
+        self.assertEqual(edited['embed'].description,'ready')
+        self.assertNotIn('content',edited)
         slow.followup.send.assert_not_awaited()
 
     async def test_deferred_file_edits_original_and_later_message_is_followup(self):
@@ -65,7 +68,10 @@ class InteractionTransportTests(unittest.IsolatedAsyncioTestCase):
         options['attachments'][0].close()
         self.assertIsNotNone(view._uploaded_chart_digest)
         await SlashCommandRegistry._reply(target,content='second')
-        target.followup.send.assert_awaited_once_with(content='second',ephemeral=True)
+        target.followup.send.assert_awaited_once()
+        later = target.followup.send.await_args.kwargs
+        self.assertEqual((later['embed'].description,later['ephemeral']),('second',True))
+        self.assertNotIn('content',later)
 
     async def test_library_exhausted_error_is_not_replayed_and_ack_failure_cancels_work(self):
         error = discord.DiscordServerError(SimpleNamespace(status=503,reason='Unavailable'),'unavailable')

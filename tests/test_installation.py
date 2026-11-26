@@ -1,3 +1,4 @@
+from notice_text import text_of
 import asyncio
 import unittest
 from types import SimpleNamespace
@@ -56,13 +57,13 @@ class InstallationTests(unittest.TestCase):
         self.assertIsNone(self.db.users.get_user('777'))
         registry._prepare.assert_not_awaited()
         self.assertTrue(interaction.followup.send.call_args.kwargs['ephemeral'])
-        self.assertIn('전달했습니다',interaction.followup.send.call_args.kwargs['content'])
+        self.assertIn('전달했습니다',text_of(interaction.followup.send.call_args.kwargs))
 
     def test_ordinary_member_dm_and_invalid_input_cannot_send_requests(self):
         registry=self.registry()
         for interaction,country,currency in [(self.interaction(False),'낙원','NWX'),(self.interaction(guild=False),'낙원','NWX'),(self.interaction(),'낙원\n가짜','NWX')]:
             asyncio.run(registry.request_installation(interaction,country,currency))
-            self.assertIn('❌',interaction.response.send_message.call_args.kwargs['content'])
+            self.assertIn('❌',text_of(interaction.response.send_message.call_args.kwargs))
             self.assertTrue(interaction.response.send_message.call_args.kwargs['ephemeral'])
         self.bot.get_user.assert_not_called()
 
@@ -81,7 +82,7 @@ class InstallationTests(unittest.TestCase):
         error=discord.Forbidden(SimpleNamespace(status=403,reason='Forbidden'),{'code':50007,'message':'Cannot send messages to this user'})
         self.bot.get_user.return_value.send.side_effect=error
         asyncio.run(registry.request_installation(interaction,'낙원','NWX'))
-        self.assertIn('전달하지 못했습니다',interaction.followup.send.call_args.kwargs['content'])
+        self.assertIn('전달하지 못했습니다',text_of(interaction.followup.send.call_args.kwargs))
         self.assertEqual(self.db.currency.execute_one('SELECT COUNT(*) FROM guild_countries')[0],0)
 
     def test_new_install_prefix_applies_requested_server_and_preserves_citizens(self):

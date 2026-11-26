@@ -219,6 +219,8 @@ class InazinaBot(discord.Client):
         from functions.slash_commands import SlashCommandRegistry
 
         self.command_registry = SlashCommandRegistry(self)
+        from functions.notices import install as decorate_messages
+        decorate_messages()  # everything the bot sends as bare text goes out as a decorated embed
         self.command_registry.register()
         from functions.consent_views import ConsentButton
         self.add_dynamic_items(ConsentButton)  # the consent DM's button keeps working after a restart

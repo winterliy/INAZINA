@@ -12,6 +12,7 @@ from database import DatabaseManager
 from database import pg_backend
 from database.db_manager import DBManager
 from database.user_db import TREASURY_USER_ID
+from notice_text import text_of
 from managers.bank_manager import BankManager
 from managers.admin_manager import AdminManager
 from managers.interest_manager import InterestManager
@@ -1353,7 +1354,7 @@ class EconomyTests(unittest.TestCase):
 
         self.assertEqual(calls, [("citizen-new", "New Citizen")])
         self.assertTrue(interaction.response.kwargs["ephemeral"])
-        self.assertIn("등록이 완료", interaction.response.kwargs["content"])
+        self.assertIn("등록이 완료", text_of(interaction.response.kwargs))
 
     def test_registration_command_opens_modal_as_initial_response(self):
         import asyncio
@@ -1502,7 +1503,7 @@ class EconomyTests(unittest.TestCase):
             def __init__(self):
                 self.messages = []
 
-            async def send(self, content, **kwargs):
+            async def send(self, content=None, **kwargs):
                 self.messages.append((content, kwargs))
 
         admin_by_id = {
@@ -1551,15 +1552,18 @@ class EconomyTests(unittest.TestCase):
         self.assertEqual(asset_snapshot_calls, [("citizen-1", False)])
         self.assertEqual(len(admin_by_id[admin_id].messages), 1)
         self.assertEqual(len(admin_by_id[next(iter(BOOTSTRAP_ADMIN_IDS))].messages), 1)
-        message = admin_by_id[admin_id].messages[0][0]
-        self.assertTrue(message.startswith("[Citizen One (citizen-1)가 회생을 신청했습니다."))
-        self.assertIn("현금: 500 NWX", message)
-        self.assertIn("투자자산: 2,500 NWX", message)
-        self.assertIn("매수 주문 예치금: 100 NWX", message)
-        self.assertIn("총 자산: 4,100 NWX", message)
-        self.assertIn("대출 잔액: 700 NWX", message)
+        embed = admin_by_id[admin_id].messages[0][1]["embed"]
+        self.assertEqual(embed.title, "🧾 회생 신청")
+        self.assertIn("Citizen One", embed.description)
+        self.assertIn("회생", embed.description)
+        fields = {field.name: field.value for field in embed.fields}
+        self.assertEqual(fields["현금"], "500 NWX")
+        self.assertEqual(fields["투자자산"], "2,500 NWX")
+        self.assertEqual(fields["매수 주문 예치금"], "100 NWX")
+        self.assertEqual(fields["총 자산"], "4,100 NWX")
+        self.assertEqual(fields["대출 잔액"], "700 NWX")
         self.assertEqual(self.db.users.get_user("citizen-1")["cash"], original_cash)
-        self.assertIn("관리자 2명", response.messages[0]["content"])
+        self.assertIn("관리자 2명", text_of(response.messages[0]))
 
         # Bankruptcy is the same notification-only workflow, with no financial action.
         for admin in admin_by_id.values():
@@ -1569,11 +1573,9 @@ class EconomyTests(unittest.TestCase):
         interaction.command = SimpleNamespace(name="파산신청")
         asyncio.run(SlashCommandRegistry(bot).apply_bankruptcy(interaction))
         self.assertEqual(asset_snapshot_calls, [("citizen-1", False), ("citizen-1", False)])
-        self.assertTrue(
-            admin_by_id[admin_id].messages[0][0].startswith(
-                "[Citizen One (citizen-1)가 파산을 신청했습니다."
-            )
-        )
+        bankruptcy = admin_by_id[admin_id].messages[0][1]["embed"]
+        self.assertEqual(bankruptcy.title, "🧾 파산 신청")
+        self.assertIn("파산", bankruptcy.description)
         self.assertEqual(self.db.users.get_user("citizen-1")["cash"], original_cash)
 
     def test_slash_reply_omits_missing_file_attachment(self):
@@ -1600,10 +1602,16 @@ class EconomyTests(unittest.TestCase):
 
         self.assertNotIn("file", interaction.response.kwargs)
         self.assertNotIn("view", interaction.response.kwargs)
-        self.assertNotIn("embed", interaction.response.kwargs)
-        self.assertEqual(interaction.response.kwargs["content"], "hello")
+        self.assertNotIn("content", interaction.response.kwargs, "plain text goes out as a decorated embed")
+        self.assertEqual(interaction.response.kwargs["embed"].description, "hello")
 
     def test_slash_prepare_defers_only_when_requested(self):
+        from contextlib import contextmanager
+
+        @contextmanager
+        def no_consent_tables():  # the consent check looks for its tables first; there are none here
+            yield SimpleNamespace(execute=lambda *args, **kwargs: SimpleNamespace(fetchone=lambda: None, fetchall=lambda: []))
+
         import asyncio
 
         calls = []
@@ -1623,7 +1631,7 @@ class EconomyTests(unittest.TestCase):
 
         bot = SimpleNamespace(
             ensure_user=ensure_user,
-            db=SimpleNamespace(users=SimpleNamespace(get_user=lambda _user_id: {"role": "user"})),
+            db=SimpleNamespace(users=SimpleNamespace(get_user=lambda _user_id: {"role": "user"}), readonly=no_consent_tables),
         )
         interaction = SimpleNamespace(
             response=FakeResponse(),
@@ -1675,7 +1683,7 @@ class EconomyTests(unittest.TestCase):
 
         with self.assertRaises(RegistrationRequired):
             asyncio.run(SlashCommandRegistry(bot)._prepare(interaction))
-        self.assertIn("/등록", sent[0]["content"])
+        self.assertIn("/등록", text_of(sent[0]))
         self.assertTrue(sent[0]["ephemeral"])
 
     def test_unknown_user_is_not_auto_registered_but_explicit_registration_creates_user(self):

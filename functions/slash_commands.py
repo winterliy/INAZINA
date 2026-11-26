@@ -25,6 +25,7 @@ from functions.discord_views import (
     HelpLinksView,
     RegistrationModal,
 )
+from functions.notices import notice_embed
 from functions.registration import RegistrationRequired
 from managers.investment_manager import FUND_TYPES
 from managers.currency_exchange_manager import display_units
@@ -32,6 +33,27 @@ from managers.deposit_accounts import OWNER_HOME
 
 
 MAX_DISCORD_INTEGER = 2**53 - 1
+
+
+def relief_embed(display_name, user_id, request_type, assets, home, base):
+    """The administrators' notice of a 파산/회생 request: who, and the balances as the 내 자산 page shows them."""
+    investment_total = int(assets["stock_total"]) + int(assets["bond_total"])
+    embed = discord.Embed(
+        title=f"🧾 {request_type} 신청",
+        description=f"**{discord.utils.escape_markdown(str(display_name))[:100]}** (`{user_id}`)가 **{request_type}**을 신청했습니다.",
+        color=discord.Color.red() if request_type == "파산" else discord.Color.orange())
+    for name, value in (
+        ("현금", f"{int(assets['cash']):,} {home}"),
+        ("통장", f"{int(assets['account_total']):,} {home}"),
+        ("투자자산", f"{investment_total:,} {base}"),
+        ("매수 주문 예치금", f"{int(assets['order_reserved_total']):,} {base}"),
+        ("총 자산", f"{int(assets['grand_total']):,} {base}"),
+        ("대출 잔액", f"{int(assets['loan_total']):,} {home}"),
+        ("순자산", f"**{int(assets['net_worth']):,} {base}**"),
+    ):
+        embed.add_field(name=name, value=value, inline=True)
+    embed.set_footer(text="내 자산 페이지 구성 기준 · 미정산 이자/만기정산 제외 · INAZINA")
+    return embed
 
 
 async def submit_relief_request(bot, user_id, display_name, request_type):
@@ -57,20 +79,9 @@ async def submit_relief_request(bot, user_id, display_name, request_type):
         if resolve_user_role(row["user_id"], row) == "admin"
     }
     admin_ids.update(BOOTSTRAP_ADMIN_IDS)
-    investment_total = int(assets["stock_total"]) + int(assets["bond_total"])
     home = assets.get("national_currency") or bot.db.base_currency_code()
     base = bot.db.base_currency_code()
-    message = (
-        f"[{display_name} ({user_id})가 {request_type}을 신청했습니다.\n"
-        "현재 잔액 (내 자산 페이지 구성 기준 · 미정산 이자/만기정산 제외)\n"
-        f"현금: {int(assets['cash']):,} {home} · "
-        f"통장: {int(assets['account_total']):,} {home} · "
-        f"투자자산: {investment_total:,} {base} · "
-        f"매수 주문 예치금: {int(assets['order_reserved_total']):,} {base}\n"
-        f"총 자산: {int(assets['grand_total']):,} {base} · "
-        f"대출 잔액: {int(assets['loan_total']):,} {home} · "
-        f"순자산: {int(assets['net_worth']):,} {base}]"
-    )
+    embed = relief_embed(display_name, user_id, request_type, assets, home, base)
 
     sent = failed = 0
     for admin_id in sorted(admin_ids):
@@ -79,7 +90,7 @@ async def submit_relief_request(bot, user_id, display_name, request_type):
             if recipient is None:
                 recipient = await bot.fetch_user(int(admin_id))
             await recipient.send(
-                message,
+                embed=embed,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             sent += 1
@@ -485,6 +496,8 @@ class SlashCommandRegistry:
 
     @staticmethod
     async def _reply(interaction, *, content=None, embed=None, view=None, file=None, ephemeral=True):
+        if embed is None and isinstance(content, str) and content.strip():
+            embed, content = notice_embed(content), None  # bare text goes out as a decorated embed
         response_options = {"ephemeral": ephemeral}
         file_payload = None
         for name, value in (
