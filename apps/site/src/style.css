@@ -260,3 +260,7 @@ dialog[open] { animation: rise .45s var(--ease); }
 .doc-page .doc-body p { font-size: 16px; }
 .doc-bar .back { margin-left: auto; }
 @media (max-width: 720px) { .doc-main { padding-top: 24px; } }
+
+/* Customer support (mail links). */
+.cta .lead a { color: var(--accent); text-underline-offset: 3px; }
+.cta .mail-note { font-size: 14px; color: var(--muted); }
