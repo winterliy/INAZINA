@@ -26,8 +26,8 @@ else {
 
 const toggle = () => {
   try {
-    if (document.fullscreenElement) void document.exitFullscreen();
-    else void document.documentElement.requestFullscreen();
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+    else void document.documentElement.requestFullscreen().catch(() => undefined);   // refused (no user gesture, embedded frame): the page still fills the window
   } catch { /* a browser without the Fullscreen API: the page still fills the window */ }
 };
 document.getElementById("full")?.addEventListener("click", toggle);
