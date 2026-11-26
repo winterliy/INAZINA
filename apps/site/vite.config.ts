@@ -59,7 +59,7 @@ function site(): Plugin {
 export default defineConfig({
   base: process.env.VITE_BASE || "/",
   plugins: [site()],
-  build: { rollupOptions: { input: { main: `${root}index.html`, notices: `${root}notices/index.html`, ...Object.fromEntries(DOCS.map((name) => [name, `${root}${name}/index.html`])) } } },
+  build: { rollupOptions: { input: { main: `${root}index.html`, notices: `${root}notices/index.html`, display: `${root}display/index.html`, ...Object.fromEntries(DOCS.map((name) => [name, `${root}${name}/index.html`])) } } },
   // Only for looking at the site locally (npm run dev --workspace @inazina/site); start_all no longer runs it.
   server: { host: "127.0.0.1", port: 4314, strictPort: true },
   preview: { host: "127.0.0.1", port: 4314, strictPort: true },

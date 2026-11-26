@@ -534,7 +534,9 @@ const CAPTIONS: Record<string, string> = {
 const GRAIN = "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 .55 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>\")";
 
 /** `onSlow` is called once if the first seconds ran under ~26 fps; the caller then drops the scene and shows the still logo. */
-export function mountLoginScene(container: HTMLElement, onSlow?: () => void): () => void {
+/** `lens: false` keeps the pointer's magnifier lens off (the full-screen display page); the sign-in screen leaves it on. */
+export function mountLoginScene(container: HTMLElement, onSlow?: () => void, options: { lens?: boolean } = {}): () => void {
+  const lensOn = options.lens !== false;
   const renderer = new WebGLRenderer({ antialias: false, alpha: false, powerPreference: "high-performance" });
   renderer.autoClear = false;
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
@@ -843,8 +845,10 @@ export function mountLoginScene(container: HTMLElement, onSlow?: () => void): ()
     fadeUniforms.uFade.value = 1 - Math.exp(-delta * (held ? 9 : phase.name === "drift" ? 2.6 : 1.9));
     renderer.render(scene, camera);
     renderer.setRenderTarget(null);
-    lensUniforms.uLens.value += ((pointer.active ? 1 : 0) - lensUniforms.uLens.value) * (1 - Math.exp(-delta * 10));
-    lensUniforms.uCenter.value.set(pointer.x * 0.5 + 0.5, pointer.y * 0.5 + 0.5);
+    if (lensOn) {
+      lensUniforms.uLens.value += ((pointer.active ? 1 : 0) - lensUniforms.uLens.value) * (1 - Math.exp(-delta * 10));
+      lensUniforms.uCenter.value.set(pointer.x * 0.5 + 0.5, pointer.y * 0.5 + 0.5);
+    }
     renderer.render(lensScene, camera);
 
     const nightText = phase.dark > 0.5;
