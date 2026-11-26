@@ -17,6 +17,8 @@ import { Backdrop } from "./Backdrop";
 import { HeatmapPage } from "./HeatmapPage";
 import { PortfolioPage } from "./PortfolioPage";
 import { CreditPage } from "./CreditPage";
+import { AnnouncementModal } from "./AnnouncementModal";
+import { AnnouncementsPage } from "./AnnouncementsPage";
 import { NotificationBell } from "./NotificationBell";
 import { PayoutPage } from "./PayoutPage";
 import { OrderReviewModal } from "./OrderReviewModal";
@@ -248,7 +250,7 @@ export default function App() {
       <button className="icon-button" title={me.delegatedBy ? "관리자 계정으로 돌아갑니다" : "로그아웃"} onClick={() => void logout()}>{me.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button></>}
     </div>
     {me.delegatedBy && <p className="delegation-bar" role="status">관리자 {me.delegatedByName ?? me.delegatedBy}님이 <b>{ROLE_LABEL[me.role]} {me.nickname}</b>(으)로 로그인 중 · 모든 거래는 이 계정 명의로 처리됩니다.</p>}
-  </header>{toast}</>;
+  </header>{toast}{!guest && me.role === "user" && !me.delegatedBy && <AnnouncementModal />}</>;
   if (legacyTarget) return null;
   const service = servicePath(location.pathname);
   if (guest && !guestCanView(location.pathname)) return <div className="hts-shell stage">
@@ -268,6 +270,12 @@ export default function App() {
     <Backdrop />
     {topbar("home")}
     <main><HeatmapPage instruments={instruments} exchangeId={heatmapExchange} onExchangeChange={setHeatmapExchangeOverride} onSelect={chooseInstrument} /></main>
+    <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
+  </div>;
+  if (location.pathname === "/announcements" || location.pathname === "/announcements/") return <div className="hts-shell stage account-page-shell">
+    <Backdrop />
+    {topbar("account")}
+    <main><AnnouncementsPage /></main>
     <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
   </div>;
   if (location.pathname === "/credit" || location.pathname === "/credit/") return <div className="hts-shell stage portfolio-page-shell">

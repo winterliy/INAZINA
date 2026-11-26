@@ -20,7 +20,7 @@ const KIND_LABEL: Record<string, string> = {
   credit_score: "신용점수", loan_maturity: "대출", loan_overdue: "대출", loan_payment: "대출",
   deposit_maturity: "예금·적금", deposit_payment: "예금·적금", account_notice: "계좌",
   order_fill: "체결", futures_margin: "선물", settlement: "정산", option_expiry: "옵션",
-  bond_redemption: "국채", rehab: "회생", naturalization: "귀화", feedback: "문의·신고",
+  bond_redemption: "국채", rehab: "회생", naturalization: "귀화", feedback: "문의·신고", policy: "약관·방침",
 };
 
 const POLL_MS = 30_000;
