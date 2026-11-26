@@ -79,6 +79,7 @@ class AnnouncementTests(unittest.TestCase):
         with self.db.atomic() as conn:
             title, body = announcements.render(announcements.get(conn, hard), "announced")
             self.assertIn("서비스 이용약관", title)
+            self.assertIn("(시행 2027년 02월 14일)", title, "the whole date, not a cut-off one")
             self.assertIn("2027년 02월", body)
             self.assertIn("B2", body)
             self.assertIn("동의", body)

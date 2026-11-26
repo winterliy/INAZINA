@@ -122,6 +122,10 @@ def _when(epoch):
     return datetime.datetime.fromtimestamp(int(epoch), KST).strftime("%Y년 %m월 %d일 %H:%M") + "(한국시간)"
 
 
+def _day(epoch):
+    return datetime.datetime.fromtimestamp(int(epoch), KST).strftime("%Y년 %m월 %d일")
+
+
 CONSENT = ("이용자에게 불리하거나 중요한 변경입니다. Discord DM으로 보내 드린 개정안의 '동의합니다' 버튼을 눌러야 시행일 이후에도 서비스를 계속 이용할 수 있습니다. "
            "DM을 받지 못했다면 나루 첫 화면의 안내에서도 동의할 수 있습니다.")
 PLAIN = "일반 변경입니다. 시행일 이후에도 계속 이용하면 동의한 것으로 봅니다."
@@ -132,7 +136,7 @@ def render(record, stage, limit=3500):
     name = record["title"]
     if stage == "cancelled":
         return f"⚠️ {name} 개정 안내가 취소되었습니다", "예고했던 개정이 취소되었습니다. 지금 적용 중인 문서가 계속 적용됩니다."
-    headline = f"📢 {name} 개정 안내 (시행 {_when(record['effective_epoch'])[:11]})" if stage == "announced" else f"✅ {name} 개정이 시행됩니다"
+    headline = f"📢 {name} 개정 안내 (시행 {_day(record['effective_epoch'])})" if stage == "announced" else f"✅ {name} 개정이 시행됩니다"
     lines = [f"시행일: {_when(record['effective_epoch'])}", CONSENT if record["unfavourable"] else PLAIN, "", "변경 내용 (신구 대조)"]
     for change in record["changes"]:
         lines.append(f"■ {change['section']}")
