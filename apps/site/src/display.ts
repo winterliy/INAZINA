@@ -1,9 +1,28 @@
-import { mountLoginScene } from "../../shared/loginScene3d";
+import sceneSvg from "../../shared/scene.svg?raw";
+import { STILL_KEY, forcedMotion, stillLogoOnly } from "../../shared/sceneGuard";
 
 // The sign-in screen's motion picture on a page of its own: it fills the window, the pointer's lens is off, and F (or the button) goes full screen.
+// The sign-in screen's safeguard applies: a phone, weak machine, software rendering or reduced-motion setting gets the still logo and the 3D code
+// is not even loaded; a machine that turns out too slow falls back to the logo and is remembered (the same key as the sign-in screen).
 const scene = document.getElementById("scene") as HTMLElement;
 const controls = document.getElementById("controls") as HTMLElement;
-mountLoginScene(scene, undefined, { lens: false });
+
+const still = () => {
+  scene.querySelector("canvas")?.remove();
+  scene.classList.add("is-still");
+  scene.innerHTML = `<div class="still-logo">${sceneSvg}</div>`;
+};
+if (stillLogoOnly()) still();
+else {
+  let dispose: (() => void) | undefined;
+  const settle = () => {
+    dispose?.(); dispose = undefined; still();
+    try { localStorage.setItem(STILL_KEY, "still"); } catch { /* not remembered */ }
+  };
+  void import("../../shared/loginScene3d").then((module) => {
+    try { dispose = module.mountLoginScene(scene, forcedMotion() ? undefined : settle, { lens: false }); } catch { still(); }
+  }).catch(still);
+}
 
 const toggle = () => {
   try {
