@@ -111,5 +111,19 @@ class DocumentsAskForPublishingTests(unittest.TestCase):
         self.assertEqual(popen.call_count, 4, "the swap at the effective date is published too")
 
 
+    def test_the_public_notice_list_is_written_for_the_site_and_published(self):
+        import json
+        with patch.dict(os.environ, {"INAZINA_PUBLISH_DOCUMENTS": "1"}), patch.object(documents.subprocess, "Popen") as popen:
+            documents.write_notices([{"id": 3, "document": "terms", "status": "open"}], now=1792200000)
+        data = json.loads((documents.LINKS / "notices.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["notices"][0]["document"], "terms")
+        self.assertEqual(data["updated"], 1792200000)
+        self.assertEqual(popen.call_count, 1)
+        with patch.dict(os.environ, {}, clear=False), patch.object(documents.subprocess, "Popen") as quiet:
+            os.environ.pop("INAZINA_PUBLISH_DOCUMENTS", None)
+            documents.write_notices([])
+        quiet.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

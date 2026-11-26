@@ -719,6 +719,17 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  // 나루's first-screen modal and 공지 page: the announced changes to the terms and the privacy policy (and marking them seen).
+  if (request.method === "GET" && (url.pathname === "/api/me/announcements" || url.pathname === "/api/me/announcements/all")) {
+    const result = await internalGet(url.pathname.replace("/api/", "/internal/"), principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/me/announcements/seen") {
+    const result = await internalRequest("POST", "/internal/me/announcements/seen", principal.userId, await requestJson(request));
+    send(response, result.status, result.body);
+    return;
+  }
   // Agreeing to a revised document (the DM button does the same): allowed while the member is held, like leaving.
   if (request.method === "POST" && url.pathname === "/api/me/consent") {
     if (principal.by) {

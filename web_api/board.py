@@ -85,6 +85,7 @@ _POSTS_TABLE = """CREATE TABLE {name} (
             author_id TEXT NOT NULL REFERENCES users(user_id),
             author_admin INTEGER NOT NULL DEFAULT 0 CHECK(author_admin IN (0,1)),
             anonymous INTEGER NOT NULL DEFAULT 0 CHECK(anonymous IN (0,1)),
+            author_label TEXT,
             title TEXT NOT NULL, body TEXT NOT NULL, asset_code TEXT,
             pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1)),
             notice INTEGER NOT NULL DEFAULT 0 CHECK(notice IN (0,1)),
@@ -240,6 +241,9 @@ def ensure_tables(connection):
     for table in ("board_comments", "board_posts"):
         if "secret" not in {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}:
             connection.execute(f"ALTER TABLE {table} ADD COLUMN secret INTEGER NOT NULL DEFAULT 0 CHECK(secret IN (0,1))")
+    # A post may carry the name it is shown under instead of its writer's (the announcements are shown as 관리자).
+    if "author_label" not in {row[1] for row in connection.execute("PRAGMA table_info(board_posts)")}:
+        connection.execute("ALTER TABLE board_posts ADD COLUMN author_label TEXT")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_board_comments_parent ON board_comments(parent_id)")
     # Earlier versions kept likes only; carry them over as 좋아요.
     if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='board_likes'").fetchone():
@@ -439,7 +443,7 @@ def _post(connection, post_id):
 _PUBLIC_POST = (
     "SELECT p.post_id,p.board,b.name AS board_name,p.category_id,k.name AS category_name,p.title,p.asset_code,"
     "p.pinned,p.notice,p.author_admin,p.anonymous,p.secret,p.view_count,p.created_epoch,p.updated_epoch,"
-    "p.author_id,CASE WHEN p.anonymous=1 THEN ? ELSE COALESCE(u.nickname,'알 수 없음') END AS author,"
+    "p.author_id,CASE WHEN p.author_label IS NOT NULL THEN p.author_label WHEN p.anonymous=1 THEN ? ELSE COALESCE(u.nickname,'알 수 없음') END AS author,"
     "(SELECT COUNT(*) FROM board_comments c WHERE c.post_id=p.post_id AND c.status='active') AS comment_count,"
     "(SELECT COUNT(*) FROM board_post_reactions r WHERE r.post_id=p.post_id AND r.value=1) AS like_count,"
     "(SELECT COUNT(*) FROM board_post_reactions r WHERE r.post_id=p.post_id AND r.value=-1) AS dislike_count,"
@@ -626,11 +630,12 @@ def create_post(connection, user, payload, ip):
     now = int(time.time())
     # Only administrators may pin a post or make it a 공지 (also later, from the post).
     pinned, notice = (_flag(payload.get("pinned")), _flag(payload.get("notice"))) if admin else (0, 0)
+    label = str(payload.get("authorLabel") or "").strip()[:20] if admin else ""  # only an administrator may post under another name
     cursor = connection.execute(
         "INSERT INTO board_posts(board,category_id,author_id,author_admin,anonymous,secret,title,body,asset_code,pinned,notice,"
-        "author_ip,created_epoch,updated_epoch) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "author_ip,created_epoch,updated_epoch,author_label) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (board["board_id"], category, user["userId"], 1 if admin else 0, _flag(payload.get("anonymous")), _flag(payload.get("secret")),
-         title, body, asset, pinned, notice, _ip(ip), now, now))
+         title, body, asset, pinned, notice, _ip(ip), now, now, label or None))
     post_id = cursor.lastrowid
     if news:
         connection.execute(

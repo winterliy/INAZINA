@@ -271,7 +271,7 @@ export function BoardPanel({ user, initialAsset = "", onLogin, onLogout }: { use
     });
   }
 
-  const authorView = (name: string, isAdmin: number) => <>{name}{isAdmin ? <em className="board-admin">관리자</em> : null}</>;
+  const authorView = (name: string, isAdmin: number) => <>{name}{isAdmin && name !== "관리자" ? <em className="board-admin">관리자</em> : null}</>;
 
   // One comment or reply. Replies to a reply join the same thread (one level).
   function commentView(item: Comment) {

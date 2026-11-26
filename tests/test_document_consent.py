@@ -106,6 +106,22 @@ if __name__ == '__main__':
     unittest.main()
 
 
+class ConsentStateTests(unittest.TestCase):
+    setUp = fixtures.InazinaTests.setUp
+    tearDown = fixtures.InazinaTests.tearDown
+    seed = fixtures.InazinaTests.seed
+
+    def test_a_member_can_see_whether_they_were_asked_and_whether_they_agreed(self):
+        self.seed()
+        with self.db.atomic() as conn:
+            self.assertIsNone(DocumentConsent.consented(conn, 1, "citizen"), "no campaign tables yet: not asked")
+            campaign = DocumentConsent.open_campaign(conn, "terms", "서비스 이용약관", "abc", "s", NOW + DAY, now=NOW)["campaignId"]
+            self.assertIs(DocumentConsent.consented(conn, campaign, "citizen"), False)
+            self.assertIsNone(DocumentConsent.consented(conn, campaign, "stranger"), "never asked")
+            DocumentConsent.consent(conn, campaign, "citizen", now=NOW + 1)
+            self.assertIs(DocumentConsent.consented(conn, campaign, "citizen"), True)
+
+
 class ConsentGatePaths(unittest.TestCase):
     """While a member is held, only what is needed to agree, leave or see the state stays open."""
 

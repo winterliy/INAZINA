@@ -90,6 +90,14 @@ class DocumentConsent:
         return "consented"
 
     @classmethod
+    def consented(cls, conn, campaign_id, user_id):
+        """True if the member agreed, False if they were asked and have not, None if they were never asked."""
+        if not _has_table(conn, "document_consents"):
+            return None
+        row = conn.execute("SELECT consented_epoch FROM document_consents WHERE campaign_id=? AND user_id=?", (int(campaign_id), str(user_id))).fetchone()
+        return None if row is None else row["consented_epoch"] is not None
+
+    @classmethod
     def outstanding(cls, conn, user_id, now=None):
         """Revisions already in force that this member was asked about and has not agreed to."""
         if not _has_table(conn, "document_consents"):

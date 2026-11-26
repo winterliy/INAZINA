@@ -495,9 +495,13 @@ def _apply_due_documents():
     """Put announced document revisions into force once their notice period is over."""
     applied = documents.apply_due()
     if applied:
-        with connect_db(timeout=5) as connection:
+        with board_db() as connection:  # the announcements post on the board, which needs its tables
+            from web_api import announcements
             for change in applied:
                 _audit_db(connection, "system", "document.apply", change)
+                announcements.take_effect(connection, change["document"])  # "in force from today": bell, board and the public list
+            feed = announcements.feed(connection)
+        documents.write_notices(feed)
     return applied
 
 
@@ -4914,6 +4918,15 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     self.send_json(200, {"user": user})
+            elif path in ("/internal/me/announcements", "/internal/me/announcements/all"):
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "user":
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    from web_api import announcements
+                    with connect_readonly() as connection:
+                        items = announcements.member_view(connection, user["userId"], "all" if path.endswith("/all") else "unseen")
+                    self.send_json(200, {"announcements": items})
             elif path == "/internal/me/ownership-graph":
                 user_id = internal_user_id(self)
                 if not identity(user_id):
@@ -5673,6 +5686,19 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.send_json(200, choose_payout(user["userId"], action, payload.get("payoutId")))
                 return
+            if path == "/internal/me/announcements/seen":
+                user = identity(verified_id)
+                if not user or user["role"] != "user" or _DELEGATION.by:
+                    self.send_json(403, {"error": "active_user_required"})
+                    return
+                ids = payload.get("ids")
+                if set(payload) != {"ids"} or not isinstance(ids, list) or len(ids) > 20 or not all(isinstance(item, int) and not isinstance(item, bool) for item in ids):
+                    raise ValueError("invalid_announcements_payload")
+                from web_api import announcements
+                with connect_db(timeout=5) as connection:
+                    announcements.mark_seen(connection, user["userId"], ids)
+                self.send_json(200, {"success": True})
+                return
             if path == "/internal/me/consent":
                 user = identity(verified_id)
                 if not user or user["role"] != "user" or _DELEGATION.by:
@@ -6405,27 +6431,43 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, documents.preview(parts[0], payload.get("content"), payload.get("important") is True))
                 elif len(parts) == 2 and parts[1] == "cancel":
                     change = documents.cancel(parts[0])
-                    with connect_db(timeout=5) as connection:
+                    with board_db() as connection:
                         from managers.document_consent import DocumentConsent
+                        from web_api import announcements
                         DocumentConsent.cancel(connection, parts[0])  # nobody is held for a revision that was withdrawn
+                        announcements.retract(connection, parts[0])  # the cancellation is announced where the announcement was
                         _audit_db(connection, user["userId"], "document.cancel", change)
+                        feed = announcements.feed(connection)
+                    documents.write_notices(feed)
                     self.send_json(200, {"success": True, "message": "✅ 공지한 개정안을 거두었습니다. 지금 문서가 계속 적용됩니다.",
                                          "document": documents.read_document(parts[0])})
                 elif len(parts) == 1:
                     unfavourable = payload.get("important") is True
+                    before_text = documents.read_document(parts[0])["content"]  # the text in force: the announcement compares against it
                     previewed = documents.preview(parts[0], payload.get("content"), unfavourable)  # its changed lines go into the consent message
                     change = documents.save(parts[0], payload.get("content"), payload.get("baseSha256"), payload.get("confirmed"), unfavourable)
-                    consent = None
-                    with connect_db(timeout=5) as connection:
+                    consent, announced, feed = None, None, None
+                    with board_db() as connection:
                         if change["scheduled"] and unfavourable:
                             # An unfavourable revision needs each member's agreement: the bot sends the DMs (managers/document_consent.py).
                             from managers.document_consent import DocumentConsent
                             consent = DocumentConsent.open_campaign(connection, parts[0], previewed["title"], change["after"],
                                                                     _consent_summary(previewed["diff"]), change["scheduled"])
+                        if change["scheduled"]:
+                            # Every change is announced everywhere: bell, 공지 board (as 관리자), the official site's list, the 나루 first-screen modal.
+                            from web_api import announcements
+                            announced = announcements.announce(connection, parts[0], previewed["title"], before_text,
+                                                               documents.read_document(parts[0])["pending"]["content"], change["scheduled"], unfavourable,
+                                                               user["userId"], campaign_id=consent["campaignId"] if consent else None)
+                            feed = announcements.feed(connection)
                         _audit_db(connection, user["userId"], "document.announce" if change["scheduled"] else "document.save",
                                   {**change, **({"consentRecipients": consent["recipients"]} if consent else {})})
+                    if feed is not None:
+                        documents.write_notices(feed)
                     when = time.strftime("%Y-%m-%d %H:%M", time.gmtime(change["scheduled"] + 9 * 3600)) if change["scheduled"] else None
                     notice = f" 회원 {consent['recipients']}명에게 Discord DM으로 동의를 요청합니다." if consent else ""
+                    if announced:
+                        notice += " 나루 알림창과 공지 게시판, 공식 사이트 공지에도 게시했습니다."
                     self.send_json(200, {"success": True, "document": documents.read_document(parts[0]),
                                          "message": f"✅ 개정안을 공지했습니다. {when}(한국시간)에 적용됩니다.{notice}" if when
                                          else f"✅ 저장했습니다. (+{change['added']} / -{change['removed']}줄)"})

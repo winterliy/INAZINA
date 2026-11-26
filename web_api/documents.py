@@ -166,6 +166,13 @@ def publish_async():
     return True
 
 
+def write_notices(notices, now=None):
+    """The public list of announced revisions (links/notices.json, shown on the official site's 공지 page), then publish it."""
+    payload = {"updated": int(time.time() if now is None else now), "notices": notices}
+    _write(LINKS / "notices.json", json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    publish_async()
+
+
 def preview(document_id, content, important=False, now=None):
     """Line changes against the editing base and when they would apply, without writing anything."""
     title, path, _ = _document(document_id)

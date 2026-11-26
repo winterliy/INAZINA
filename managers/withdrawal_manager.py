@@ -148,6 +148,8 @@ COLUMN_BUCKETS = {
     'user_tax_residency_events': {'bucket': 'rekey', 'columns': ['user_id'], 'staff': []},
     'deposit_insurance_fund_events': {'bucket': 'staff', 'columns': [], 'staff': ['actor_id', 'issuer']},
     'document_consents': {'bucket': 'rekey', 'columns': ['user_id'], 'staff': []},
+    'announcement_seen': {'bucket': 'rekey', 'columns': ['user_id'], 'staff': []},
+    'document_announcements': {'bucket': 'staff', 'columns': [], 'staff': ['actor_id']},
     'product_rate_schedules': {'bucket': 'staff', 'columns': [], 'staff': ['updated_by']},
     'users': {'bucket': 'users', 'columns': ['user_id'], 'staff': []},
     'web_auth_credentials': {'bucket': 'delete', 'columns': ['user_id'], 'staff': []},
