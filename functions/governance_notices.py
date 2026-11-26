@@ -13,6 +13,8 @@ from datetime import datetime
 
 import discord
 
+from functions.notices import notice_embed
+
 from database.user_db import TREASURY_USER_ID
 from web_api import governance
 
@@ -68,7 +70,8 @@ class MeetingAttendanceView(discord.ui.View):
             text = {"meeting_closed": "이미 끝난 주주총회입니다.", "not_a_holder": "이 주주총회의 의결권이 없습니다."}.get(str(exc), str(exc))
             return await interaction.response.send_message(f"❌ {text}", ephemeral=True)
         label = "참석" if attendance == "attend" else "불참"
-        await interaction.response.edit_message(content=f"✅ `{label}`으로 응답했습니다. 의안 투표는 {_where('/meetings')}에서 할 수 있습니다.", view=None)
+        done = notice_embed(f"✅ `{label}`으로 응답했습니다. 의안 투표는 {_where('/meetings')}에서 할 수 있습니다.")
+        await interaction.response.edit_message(content=None, embeds=[done, *interaction.message.embeds], view=None)
 
     def _respond(self, user, attendance):
         with _db(self.bot) as connection:

@@ -8,6 +8,7 @@ import zoneinfo
 
 import discord
 
+from functions.notices import notice_embed
 from functions.public_links import document_url
 from managers.document_consent import DocumentConsent
 
@@ -57,8 +58,8 @@ class ConsentButton(discord.ui.DynamicItem[discord.ui.Button], template=r"consen
             await interaction.followup.send("이미 종료되었거나 동의를 요청받지 않은 개정안입니다.", ephemeral=True)
             return
         embeds = list(interaction.message.embeds) if interaction.message else []
-        await interaction.edit_original_response(
-            content="✅ 동의가 기록되었습니다. 감사합니다." if outcome == "consented" else "✅ 이미 동의하셨습니다.", embeds=embeds, view=None)
+        done = notice_embed("✅ 동의가 기록되었습니다. 감사합니다." if outcome == "consented" else "✅ 이미 동의하셨습니다.")
+        await interaction.edit_original_response(content=None, embeds=[done, *embeds], view=None)
 
 
 async def deliver_consent_requests(bot, limit=20):

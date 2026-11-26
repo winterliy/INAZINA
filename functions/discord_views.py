@@ -1,5 +1,6 @@
 import asyncio
 import copy
+from functions.notices import notice_embed
 from functions.public_links import HELP_URL, PRIVACY_URL, TERMS_URL
 import discord
 import io
@@ -494,7 +495,7 @@ class ShareholderMeetingResponseView(discord.ui.View):
             f"✅ `{status}` 응답을 개최자에게 DM으로 전달했습니다.", ephemeral=True
         )
         try:
-            await interaction.message.edit(content="응답이 전달되었습니다. 이 초대장은 더 이상 응답할 수 없습니다.", view=None)
+            await interaction.message.edit(content=None, embeds=[notice_embed("응답이 전달되었습니다. 이 초대장은 더 이상 응답할 수 없습니다."), *interaction.message.embeds], view=None)
         except discord.HTTPException as exc:
             print(f"[Meeting Message Update Error] {exc}")
 
@@ -513,7 +514,7 @@ class ShareholderMeetingResponseView(discord.ui.View):
             child.disabled = True
         try:
             await self.message.edit(
-                content="⏰ 응답 시간이 종료되었습니다. (1시간)", view=self
+                content=None, embeds=[notice_embed("⏰ 응답 시간이 종료되었습니다. (1시간)"), *self.message.embeds], view=self
             )
         except discord.HTTPException:
             pass
