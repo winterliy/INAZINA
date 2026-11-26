@@ -129,3 +129,18 @@
 .court-form textarea:focus { box-shadow: inset 0 0 0 2px var(--court); }
 .gov-agenda-row input { height: 44px; }
 .gov-agenda-row textarea { font-size: 14px; }
+
+/* 나의 사건 목록: a row opens to show the application and the court's decision with its reason. */
+.court-case-row { cursor: pointer; }
+.court-case-row:hover td, .court-case-row.open td { background: var(--surface); }
+.court-case-row:focus-visible { outline: 2px solid var(--court); outline-offset: -2px; }
+.court-case-detail > td { padding: 4px 14px 18px; background: var(--surface); }
+.court-case-detail dl { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 8px 14px; margin: 0 0 14px; font-size: 13px; }
+.court-case-detail dt { color: var(--ink2); font-weight: 600; }
+.court-case-detail dd { margin: 0; overflow-wrap: anywhere; }
+.court-outcome { padding: 12px 14px; border-radius: 10px; background: rgba(29, 60, 120, .08); }
+.court-outcome h4 { margin: 0 0 6px; font-size: 13px; }
+.court-outcome p { margin: 0; font-size: 13px; line-height: 1.6; }
+.court-outcome.approved { background: rgba(48, 176, 88, .12); }
+.court-outcome.rejected { background: var(--up-soft); }
+@media (max-width: 640px) { .court-case-detail dl { grid-template-columns: minmax(0, 1fr); gap: 2px; } .court-case-detail dd { margin-bottom: 8px; } }

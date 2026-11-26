@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { api } from "../../../shared/api";
 import { won, type ServiceProps } from "./ServiceKit";
+import { decisionSummary, type CaseFiling } from "./courtCases";
 import "./GovernancePages.css";
 
 type Kind = "rehabilitation" | "bankruptcy";
-type Filing = { filingId: number; kind: Kind; label: string; reason: string; plan: string; status: string; createdEpoch: number };
+type Filing = CaseFiling;
 
 const KIND: Record<Kind, { title: string; case: string; summary: string; points: string[] }> = {
   rehabilitation: { title: "개인회생 신청", case: "개회", summary: "채무를 조정해 변제계획에 따라 일부를 갚고, 나머지는 면책받는 절차입니다.",
@@ -27,6 +28,7 @@ export function CourtPage({ cash, homeCurrency, homeDigits, creditScore, account
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const [filings, setFilings] = useState<Filing[] | null>(null);
+  const [openCase, setOpenCase] = useState<number | null>(null);
   const load = useCallback(() => { api<{ filings: Filing[] }>("/api/court/filings").then((data) => setFilings(data.filings)).catch(() => setFilings([])); }, []);
   useEffect(load, [load]);
   const deposits = accounts.reduce((sum, account) => account.currency_code === homeCurrency ? sum + Number(account.balance) : sum, 0);
@@ -86,7 +88,25 @@ export function CourtPage({ cash, homeCurrency, homeDigits, creditScore, account
       <header className="court-subhead"><h3>나의 사건 목록</h3></header>
       {filings === null ? <p className="svc-empty">불러오는 중…</p> : filings.length === 0 ? <p className="svc-empty">신청한 사건이 없습니다.</p> :
         <table className="court-cases"><thead><tr><th>사건번호</th><th>사건명</th><th>접수일</th><th>진행 상태</th></tr></thead>
-          <tbody>{filings.map((filing) => <tr key={filing.filingId}><td>{caseNo(filing)}</td><td>{filing.label}</td><td>{new Date(filing.createdEpoch * 1000).toLocaleDateString("ko-KR")}</td><td><span className={`court-status ${filing.status}`}>{STATUS[filing.status] ?? filing.status}</span></td></tr>)}</tbody></table>}
+          <tbody>{filings.map((filing) => {
+            const opened = openCase === filing.filingId;
+            const outcome = decisionSummary(filing);
+            const toggle = () => setOpenCase(opened ? null : filing.filingId);
+            return <Fragment key={filing.filingId}>
+              <tr className={opened ? "court-case-row open" : "court-case-row"} tabIndex={0} aria-expanded={opened} onClick={toggle} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); } }}>
+                <td>{caseNo(filing)}</td><td>{filing.label}</td><td>{new Date(filing.createdEpoch * 1000).toLocaleDateString("ko-KR")}</td><td><span className={`court-status ${filing.status}`}>{STATUS[filing.status] ?? filing.status}</span></td>
+              </tr>
+              {opened && <tr className="court-case-detail"><td colSpan={4}>
+                <dl>
+                  <dt>접수</dt><dd>{new Date(filing.createdEpoch * 1000).toLocaleString("ko-KR")}</dd>
+                  {filing.handledEpoch && <><dt>결정</dt><dd>{new Date(filing.handledEpoch * 1000).toLocaleString("ko-KR")}</dd></>}
+                  <dt>신청 이유</dt><dd className="court-pre">{filing.reason}</dd>
+                  {filing.plan && <><dt>변제계획</dt><dd className="court-pre">{filing.plan}</dd></>}
+                </dl>
+                <div className={`court-outcome${outcome.decided ? ` ${filing.status}` : ""}`}><h4>{outcome.heading}</h4><p className="court-pre">{outcome.text}</p></div>
+              </td></tr>}
+            </Fragment>;
+          })}</tbody></table>}
     </section>
   </div>;
 }
