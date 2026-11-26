@@ -6429,6 +6429,10 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "admin_required"})
                 elif len(parts) == 2 and parts[1] == "preview":
                     self.send_json(200, documents.preview(parts[0], payload.get("content"), payload.get("important") is True))
+                elif len(parts) == 2 and parts[1] == "draft":
+                    saved = documents.save_draft(parts[0], payload.get("content"))  # kept on this machine only: nothing is published
+                    self.send_json(200, {"success": True, "document": documents.read_document(parts[0]),
+                                         "message": "✅ 초안을 저장했습니다. 공개되지 않습니다." if saved else "초안을 지웠습니다."})
                 elif len(parts) == 2 and parts[1] == "cancel":
                     change = documents.cancel(parts[0])
                     with board_db() as connection:

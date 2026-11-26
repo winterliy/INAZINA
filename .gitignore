@@ -20,6 +20,7 @@ database/board_files/
 database/oidc_jwks.json
 database/geoip/
 database/document_history/
+database/document_drafts/
 
 # SQLiteBrowser per-user workspace state.
 database/*.sqbpro

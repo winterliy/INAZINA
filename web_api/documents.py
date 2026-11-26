@@ -40,6 +40,8 @@ DOCUMENTS = {  # id: (title, path, where it is shown)
 LEGAL = {"privacy", "terms", "operations", "internal"}
 NOTICE_DAYS, IMPORTANT_NOTICE_DAYS = 7, 30
 HISTORY = Path(os.environ.get("INAZINA_DOCUMENT_HISTORY", ROOT / "database" / "document_history"))
+# Wording being worked on: kept on this machine only (never in the public links folder), cleared when the revision is announced.
+DRAFTS = Path(os.environ.get("INAZINA_DOCUMENT_DRAFTS", ROOT / "database" / "document_drafts"))
 MAX_CHARS = 100_000
 # /등록 shows the notice plus a link and a confirmation code in one 4,000-character modal field.
 REGISTRATION_MAX_CHARS = 3_800
@@ -137,7 +139,7 @@ def read_document(document_id):
     base = pending["content"] if pending else text
     return {"id": document_id, "title": title, "shown": shown, "legal": document_id in LEGAL,
             "path": str(path.relative_to(ROOT)), "content": text, "pending": pending,
-            "base": base, "sha256": _sha(base), "history": _history(document_id),
+            "base": base, "sha256": _sha(base), "history": _history(document_id), "draft": read_draft(document_id),
             "noticeDays": NOTICE_DAYS, "importantNoticeDays": IMPORTANT_NOTICE_DAYS}
 
 
@@ -166,6 +168,29 @@ def publish_async():
     return True
 
 
+def save_draft(document_id, content, now=None):
+    """Keep wording that is not final. Not published anywhere. An empty text discards the draft. Returns {"content", "updated"} or None."""
+    _document(document_id)
+    if not isinstance(content, str) or not content.strip():
+        delete_draft(document_id)
+        return None
+    text = _clean(content)
+    DRAFTS.mkdir(parents=True, exist_ok=True)
+    (DRAFTS / f"{document_id}.txt").write_text(text, encoding="utf-8")
+    return {"content": text, "updated": int(time.time() if now is None else now)}
+
+
+def read_draft(document_id):
+    path = DRAFTS / f"{document_id}.txt"
+    if not path.is_file():
+        return None
+    return {"content": path.read_text(encoding="utf-8"), "updated": int(path.stat().st_mtime)}
+
+
+def delete_draft(document_id):
+    (DRAFTS / f"{document_id}.txt").unlink(missing_ok=True)
+
+
 def write_notices(notices, now=None):
     """The public list of announced revisions (links/notices.json, shown on the official site's 공지 page), then publish it."""
     payload = {"updated": int(time.time() if now is None else now), "notices": notices}
@@ -185,6 +210,7 @@ def preview(document_id, content, important=False, now=None):
         period = IMPORTANT_NOTICE_DAYS if important is True else NOTICE_DAYS
         notes.append(f"저장하면 개정안을 바로 공지하고, 공지 기간 {period}일이 지난 {_kst(epoch)}(한국시간)에 적용합니다. 그때까지는 지금 문서가 적용됩니다.")
         notes.append("개정안의 '시행일:' 줄은 이 날짜로 자동으로 채워집니다.")
+        notes.append("확정하면 개정안이 바로 공개 발표됩니다: 나루 알림창·공지 게시판, 공식 사이트(공개 GitHub 저장소)에 즉시 게시되고, 이후 취소해도 올라간 이력은 공개 저장소에 남습니다. 오탈자와 문구를 다시 확인하세요.")
         if current["pending"]:
             warnings.append(f"이미 공지한 개정안({_kst(current['pending']['effectiveEpoch'])} 시행 예정)을 이 내용으로 바꾸고, 시행일도 새로 계산합니다.")
     else:
@@ -226,10 +252,12 @@ def save(document_id, content, base_sha256, confirmed, important=False, now=None
         manifest[document_id] = {"effectiveEpoch": epoch, "announcedEpoch": int(now if now is not None else time.time()),
                                  "important": important is True}
         _save_manifest(manifest)
+        delete_draft(document_id)
         publish_async()
         return {**change, "after": _sha(new), "scheduled": epoch}
     _backup(document_id, current["content"])
     _write(path, new)
+    delete_draft(document_id)
     publish_async()
     return {**change, "after": _sha(new), "scheduled": None}
 

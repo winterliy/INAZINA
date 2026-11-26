@@ -7,7 +7,8 @@ type Summary = { id: string; title: string; shown: string; legal: boolean; path:
 type Pending = { content: string; effectiveEpoch: number; announcedEpoch: number; important: boolean };
 // content: the version in force; base: what editing starts from (the announced revision when there is one).
 type Document = { id: string; title: string; shown: string; legal: boolean; path: string; content: string; pending: Pending | null; base: string; sha256: string;
-  history: { name: string; size: number }[]; noticeDays: number; importantNoticeDays: number };
+  history: { name: string; size: number }[]; noticeDays: number; importantNoticeDays: number;
+  /** Wording kept on this machine only (not published) until the revision is announced. */ draft: { content: string; updated: number } | null };
 type Preview = { diff: string[]; added: number; removed: number; changed: boolean; notes: string[]; warnings: string[]; blocking: boolean; effectiveEpoch: number | null };
 
 /**
@@ -50,7 +51,8 @@ export function DocumentsPage({ ctx }: { ctx: Ctx }) {
     if (!document || !preview) return;
     const effects = [...preview.notes, ...preview.warnings].map((line) => `· ${line}`).join("\n");
     const question = document.legal ? "개정안을 공지할까요?" : "저장할까요? 바로 적용됩니다.";
-    if (!await confirmAction(`${document.title} ${question} (+${preview.added} / -${preview.removed}줄)${effects ? `\n\n${effects}` : ""}`)) return;
+    const publicNotice = document.legal ? "⚠️ 확정하면 바로 공개 발표됩니다. 나루 알림창·공지 게시판과 공식 사이트(공개 GitHub)에 즉시 올라가며, 취소해도 올라간 이력은 남습니다. 오탈자를 모두 확인했나요?\n\n" : "";
+    if (!await confirmAction(`${publicNotice}${document.title} ${question} (+${preview.added} / -${preview.removed}줄)${effects ? `\n\n${effects}` : ""}`)) return;
     void run(() => api<{ success: boolean; message: string; document: Document }>(`/api/admin/documents/${selected}`, {
       method: "POST", body: JSON.stringify({ content: draft, baseSha256: document.sha256, confirmed: true, important }),
     }), "저장하지 못했습니다.", async (result) => {
@@ -58,6 +60,10 @@ export function DocumentsPage({ ctx }: { ctx: Ctx }) {
       setDocument(result.document); setDraft(result.document.base); setPreview(null);
       await loadList();
     });
+  }
+  function keepDraft(content: string) {
+    void run(() => api<{ success: boolean; message: string; document: Document }>(`/api/admin/documents/${selected}/draft`, { method: "POST", body: JSON.stringify({ content }) }),
+      "초안을 저장하지 못했습니다.", (result) => { say(plain(result.message), !result.success); setDocument((current) => current && { ...current, draft: result.document.draft }); });
   }
   async function withdraw() {
     if (!document?.pending || !await confirmAction("공지한 개정안을 거둘까요? 지금 문서가 계속 적용되고, 사이트의 개정 예정 안내도 사라집니다.")) return;
@@ -74,7 +80,13 @@ export function DocumentsPage({ ctx }: { ctx: Ctx }) {
     {document && <Card panel={tabPanel("documents", selected)} title={document.title} caption={<><span className="mono">{document.path}</span> · {document.shown}</>}
       actions={<><button className="soft" type="button" disabled={busy || !dirty} onClick={() => { setDraft(document.base); setPreview(null); }}>되돌리기</button>
         <button className="soft" type="button" disabled={busy} onClick={async () => { if (!dirty || await confirmAction("수정한 내용을 버리고 다시 불러올까요?")) void run(() => open(selected), "다시 불러오지 못했습니다."); }}>다시 불러오기</button>
+        <button className="soft" type="button" disabled={busy || !dirty} title="공개되지 않는 초안으로 이 컴퓨터에만 저장합니다" onClick={() => keepDraft(draft)}>초안 저장</button>
         <button className="btn primary small" type="button" disabled={busy || !dirty} onClick={check}>변경 내용 확인</button></>}>
+      {document.draft && document.draft.content !== draft && <div className="doc-pending">
+        <p>📝 저장해 둔 초안이 있습니다 ({date(document.draft.updated)}). 초안은 공개되지 않고, 개정안을 확정해야 공개됩니다.</p>
+        <button className="soft small" type="button" disabled={busy} onClick={async () => { if (!dirty || await confirmAction("지금 수정한 내용을 버리고 초안을 불러올까요?")) { setDraft(document.draft!.content); setPreview(null); } }}>초안 불러오기</button>
+        <button className="soft small danger" type="button" disabled={busy} onClick={async () => { if (await confirmAction("저장해 둔 초안을 지울까요?")) keepDraft(""); }}>초안 지우기</button>
+      </div>}
       {document.pending && <div className="doc-pending">
         <p>📢 개정안 공지 중 — <b>{date(document.pending.effectiveEpoch)}</b>에 적용됩니다 (공지 {date(document.pending.announcedEpoch)}, {document.pending.important ? `중요한 변경 ${document.importantNoticeDays}일` : `${document.noticeDays}일`}). 아래 편집기는 개정안을 보여 줍니다. 다시 확정하면 개정안을 바꾸고 적용일을 새로 계산합니다.</p>
         <button className="soft small danger" type="button" disabled={busy} onClick={withdraw}>개정안 거두기</button>

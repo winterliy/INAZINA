@@ -1124,7 +1124,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
   // Public documents (terms, privacy policy, rules, help, registration notice): read, preview, confirmed save.
-  if (url.pathname === "/api/admin/documents" || /^\/api\/admin\/documents\/[a-z]+(\/(preview|cancel))?$/.test(url.pathname)) {
+  if (url.pathname === "/api/admin/documents" || /^\/api\/admin\/documents\/[a-z]+(\/(preview|cancel|draft))?$/.test(url.pathname)) {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });
       return;
