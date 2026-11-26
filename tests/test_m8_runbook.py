@@ -20,3 +20,9 @@ def test_schema_preview_refuses_the_live_database():
     run = subprocess.run([sys.executable, str(ROOT / "tools" / "pg_schema_preview.py")], capture_output=True, text=True,
                          env={"PATH": "/usr/bin:/bin", "INAZINA_PG_DSN": "postgresql:///inazina"}, cwd=ROOT)
     assert run.returncode != 0 and "copy" in run.stderr
+
+
+def test_runbook_backup_commands_spell_out_the_production_dsn():
+    backup_lines = [line for line in RUNBOOK.splitlines() if "database.backup" in line and line.lstrip().startswith(("INAZINA", ".venv"))]
+    assert backup_lines and all("INAZINA_PG_DSN=postgresql:///inazina " in line for line in backup_lines), backup_lines
+    assert RUNBOOK.count("--expect-dbname inazina") >= 2

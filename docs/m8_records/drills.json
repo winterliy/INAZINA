@@ -41,6 +41,17 @@
       "ok": true,
       "cleanup_ok": true,
       "note": "status=matched, close_ready=true, 발견 0건. 즉 운영에 면제 1행만 반영되면 복원본 통합 대사가 통과한다(수기 확인, 도구 자동 실행 아님)."
+    },
+    {
+      "date": "2026-11-27",
+      "source": "운영 DB inazina 읽기 전용 pg_dump 복사본(헤더 dbname: inazina)",
+      "command": "tools/backup_restore_drill.py <덤프> --require-table users --expect-dbname inazina --reconcile --sync-schema",
+      "ok": false,
+      "source_dbname": "inazina",
+      "elapsed_seconds": 36.5,
+      "cleanup_ok": true,
+      "error": "통합 대사 발견 5건(금액 필드 미분류 3: market_price_anchor.anchor_price, price_floor_events.from_price, price_floor_events.to_price / common_journals customer posting_gaps 6 / institution_subledgers 낙원시민은행 customer_deposits NWX 차이 -500)",
+      "note": "2026-11-27 운영에 금액 등록부 이관(등록부 167, 면제 23)을 실행한 뒤의 점검이다. 이관 전 복사본은 발견 6건이었고 이관 후 5건이며 exempt_amount 발견은 해소됐다. 남은 5건은 M4가 조사 중이라 원인은 적지 않는다."
     }
   ],
   "access_reviews": [

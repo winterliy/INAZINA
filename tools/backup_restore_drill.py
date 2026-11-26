@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Restore a pg_dump backup (custom format) into a temporary database and inspect it; the source file is only read.
 
-    python tools/backup_restore_drill.py database/backups/inazina-pg-<time>.dump [--require-table NAME]... [--reconcile] [--sync-schema]
+    python tools/backup_restore_drill.py database/backups/inazina-pg-<time>.dump [--require-table NAME]... [--reconcile] [--sync-schema] [--expect-dbname NAME]
 
 The server comes from INAZINA_PG_DSN (host/user only: the drill creates and drops its own `inazina_drill_*` database there).
 Prints one JSON report and exits 0 when ok, 1 otherwise. SQLite backups ended on 2026-11-20; the old SQLite version of this tool is
@@ -37,12 +37,23 @@ def verify(dsn, required):
     return {"ok": not missing and not violations, "tables": len(tables), "missing_tables": missing, "foreign_key_violations": violations}
 
 
+def source_dbname(backup, env=None):
+    """The database name in the backup's header (`pg_restore --list`: `;     dbname: inazina`), or None."""
+    from database.backup import pg_tool
+    listing = subprocess.run([pg_tool("pg_restore"), "--list", str(backup)], capture_output=True, text=True, timeout=300, env=env)
+    for line in listing.stdout.splitlines()[:30]:
+        if line.startswith(";") and line.split(":", 1)[0].strip("; ") == "dbname":
+            return line.split(":", 1)[1].strip()
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("backup", type=Path, help="a pg_dump custom-format backup file")
     parser.add_argument("--require-table", action="append", default=[], metavar="NAME", help="require this table after restore (repeatable)")
     parser.add_argument("--reconcile", action="store_true", help="run the financial close checks on the restored copy")
     parser.add_argument("--sync-schema", action="store_true", help="bring the restored copy up to the current code (pg_schema_sync) before the checks; an older backup lacks newer tables (data rows are not synced)")
+    parser.add_argument("--expect-dbname", metavar="NAME", help="fail unless the backup header says it was dumped from this database (production is `inazina`; the default DSN is `inazina_dev`)")
     args = parser.parse_args()
     start = time.monotonic()
     name = f"inazina_drill_{os.getpid()}_{int(time.time())}"
@@ -81,8 +92,11 @@ def main():
             sync = {kind: len(items) for kind, items in summary.items()}
             if summary.get("errors"):
                 raise RuntimeError(f"schema sync reported {len(summary['errors'])} errors: {str(summary['errors'][0])[:200]}")
+        dbname = source_dbname(source)
+        if args.expect_dbname and dbname != args.expect_dbname:
+            raise ValueError(f"backup was dumped from database {dbname!r}, expected {args.expect_dbname!r}")
         verification = verify(restored_dsn, args.require_table)
-        report = {"ok": verification["ok"], "verification": verification}
+        report = {"ok": verification["ok"], "source_dbname": dbname, "verification": verification}
         if sync is not None:
             report["schema_sync"] = sync
         if args.reconcile and report["ok"]:

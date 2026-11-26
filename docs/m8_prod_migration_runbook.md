@@ -4,10 +4,10 @@
 
 ## 1. 사전: 백업과 복원 확인
 ```
-.venv/bin/python -m database.backup                         # database/backups/inazina-pg-<시각>.dump 를 만든다(pg_dump, 읽기 전용)
-.venv/bin/python tools/backup_restore_drill.py database/backups/inazina-pg-<시각>.dump --require-table users --require-table accounts
+INAZINA_PG_DSN=postgresql:///inazina .venv/bin/python -m database.backup      # database/backups/inazina-pg-<시각>.dump 를 만든다(pg_dump, 읽기 전용)
+.venv/bin/python tools/backup_restore_drill.py database/backups/inazina-pg-<시각>.dump --require-table users --require-table accounts --expect-dbname inazina
 ```
-기대: `"ok": true`, `foreign_key_violations: []`, `cleanup_ok: true`. 하나라도 아니면 중단한다. 이 덤프가 5절 롤백의 기준점이다. '통제 · 복구' 화면의 백업 최신성이 '정상'인지도 본다.
+**DSN을 반드시 적는다.** `INAZINA_PG_DSN`이 없으면 백업 도구의 기본값은 개발 DB `inazina_dev`다(2026-11-27에 실제로 겪음). 복원 점검은 백업 헤더의 `dbname`을 보고서 `source_dbname`에 적고, `--expect-dbname inazina`가 다른 DB의 덤프를 거부한다. 기대: `"ok": true`, `"source_dbname": "inazina"`, `foreign_key_violations: []`, `cleanup_ok: true`. 하나라도 아니면 중단한다. 이 덤프가 5절 롤백의 기준점이다. '통제 · 복구' 화면의 백업 최신성이 '정상'인지도 본다.
 
 ## 2. 서버 재시작이 만들 새 표 목록 (자동 추출)
 서버는 시작할 때 `pg_schema_sync`로 코드의 스키마 정의를 PostgreSQL에 더한다(추가만 하고 지우지 않는다). 무엇이 더해질지는 **복사본에서** 미리 뽑는다.
@@ -36,8 +36,8 @@ PY
 
 ## 4. 이관 후 확인
 ```
-.venv/bin/python -m database.backup
-.venv/bin/python tools/backup_restore_drill.py database/backups/inazina-pg-<새 시각>.dump --require-table users --require-table accounts --reconcile --sync-schema
+INAZINA_PG_DSN=postgresql:///inazina .venv/bin/python -m database.backup
+.venv/bin/python tools/backup_restore_drill.py database/backups/inazina-pg-<새 시각>.dump --require-table users --require-table accounts --reconcile --sync-schema --expect-dbname inazina
 ```
 기대: `"ok": true`, `reconciliation.status: "matched"`, `close_ready: true`, `finding_count: 0`, `cleanup_ok: true`. 발견이 있으면 `findings`에 원인이 나온다. 통과하면 `docs/m8_records/drills.json`에 날짜와 함께 기록한다.
 
@@ -61,3 +61,12 @@ PY
 | 2 | 운영 복사본에서 새 표 0개(이미 반영됨). 2026-11-20 백업에 같은 명령을 적용하면 표 7·인덱스 3·제약 1·트리거 10개를 뽑음 |
 | 3 | 소스 스키마 DB(등록부 167행, 면제 23행) → `금액 필드 167개, 면제 23개 이관 완료`. 복사본 면제 행 22 → 23. 같은 명령을 다시 돌려도 23으로 같음 |
 | 4 | 이관 전: `mismatch`, 발견 1건(`insolvency_policies.exempt_amount`). 이관 후 덤프: `ok: true`, `matched`, `close_ready: true`, 발견 0건, 33.9초 |
+
+## 운영 이관 실행 기록 (2026-11-27)
+통합관리 세션이 3절을 운영(`postgresql:///inazina`)에 실행했다: 등록부 167행, 면제 23행(이관 전 면제 22행은 작업 임시 폴더에 백업). 이 문서의 작성자는 실행하지 않았고 아래는 보고받은 사실과 이후 복사본 점검 결과다.
+| 항목 | 결과 |
+|---|---|
+| 이관 전 복사본 통합 대사 | 발견 6건 |
+| 이관 후 | 발견 5건. `insolvency_policies.exempt_amount` 발견은 해소됨 |
+| 남은 5건 (2026-11-27 운영 복사본, `--sync-schema --reconcile`, `source_dbname: inazina`, 36.5초, `cleanup_ok: true`) | 금액 필드 미분류 3건: `market_price_anchor.anchor_price`, `price_floor_events.from_price`, `price_floor_events.to_price`. 공통 분개 `common_journals`(customer): `posting_gaps` 6건(지갑 항목 45,465 = 공통 항목 45,465, `balance_gaps` 0). 기관 보조원장 `institution_subledgers`: 낙원시민은행 `customer_deposits` NWX, 계정 합 0, 분개 합 500, 차이 -500 |
+남은 5건의 원인은 이 문서에서 조사하지 않았다(M4 담당이 조사 중). 새로 생긴 가격 안전장치 표 3개 열의 분류, 공통 분개 6건, 낙원시민은행 500은 각각 사실만 적는다.
