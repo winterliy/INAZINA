@@ -818,7 +818,6 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
 .court-snapshot dt { color: var(--ink2, #6e6e73); font-size: 12px; }
 .court-snapshot dd { margin: 0; }
 .court-decide { grid-column: 1 / -1; display: grid; gap: 8px; }
-.court-decide textarea { width: 100%; }
 @media (max-width: 760px) { .court-detail { grid-template-columns: minmax(0, 1fr); } }
 
 /* 회생·파산 화면: Straightforward 브랜드 가이드 레퍼런스(흰 바탕·가는 선·DM Sans·주황 포인트) */
@@ -855,6 +854,14 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
 .court-ref .court-detail pre, .court-ref .court-snapshot { background: transparent; }
 .court-ref textarea, .court-ref .court-decide input { width: 100%; padding: 10px 0; border: 0; border-bottom: 1px solid var(--cr-line); border-radius: 0; background: transparent }
 .court-ref textarea:focus, .court-ref .court-decide input:focus { border-bottom: 2px solid var(--cr-accent); }
+/* The decision form: a label above each box, full width (the underline-only fields above suit one-line inputs, not the reason box). */
+.court-decide { gap: 14px; padding-top: 14px; border-top: 1px solid var(--cr-line, #e6e6e6); }
+.court-decide label { display: grid; gap: 6px; min-width: 0; color: var(--cr-ink2, #6b6b6b); font-size: 13px; font-weight: 600; }
+.court-ref .court-decide textarea, .court-ref .court-decide input { box-sizing: border-box; width: 100%; padding: 10px 12px; border: 1px solid #cfcfd4; border-radius: 8px; background: #fff; box-shadow: none; color: var(--cr-ink, #111); font: inherit; font-weight: 400; }
+.court-ref .court-decide textarea { min-height: 84px; resize: vertical; }
+.court-ref .court-decide input[type="number"] { width: min(220px, 100%); min-width: 0; justify-self: start; }
+.court-ref .court-decide textarea:focus, .court-ref .court-decide input:focus { border: 1px solid var(--cr-accent, #F26A1B); outline: 2px solid color-mix(in srgb, var(--cr-accent, #F26A1B) 30%, transparent); outline-offset: 0; }
+.court-decide .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .court-ref .policy-table td { height: 56px; }
 .court-ref .policy-table td.label small { display: block; color: var(--cr-ink2); font-size: 12px; }
 .court-ref .policy-table th.num, .court-ref .policy-table td.num { text-align: right; }
