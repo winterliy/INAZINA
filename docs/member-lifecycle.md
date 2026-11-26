@@ -11,6 +11,8 @@
 - 대응표(`withdrawal_records`)는 서버의 정기 정리 작업(`web_api/server.py`, 한 시간 간격, 웹 요청이 있을 때 실행)에서 1년이 지나면 지웁니다. 게시판 첨부 파일은 같은 정리 작업이 행이 없는 파일을 지웁니다.
 - **규칙:** 사용자 ID를 담는 새 테이블이나 열을 만들면 `COLUMN_BUCKETS`(transfer / block / delete / rekey / staff)에 함께 넣어야 합니다. 점검 시험(`tests/test_withdrawal.py`)은 시험 DB에 이미 있는 테이블만 검사하므로, 게시판처럼 필요할 때 만들어지는 테이블은 운영 DB와 가끔 대조하세요.
 
+- **Discord `/탈퇴` (2026-11-27):** 같은 탈퇴 처리를 디스코드에서도 합니다. 명령을 실행하면 먼저 막히는 사유(`blockers`)를 확인해 있으면 목록으로 안내하고, 없으면 모달로 한 번 묻습니다(귀속될 국고·취소될 주문·해지될 계좌 안내 + '탈퇴' 입력). 입력이 맞아 제출되면 탈퇴하고 본인에게만 결과를 알립니다. 개정 동의를 아직 안 한 회원도 탈퇴는 할 수 있습니다(`_prepare`를 거치지 않음). 코드: `functions/slash_commands.py: leave_service`, `functions/discord_views.py: WithdrawalModal`.
+
 ## 2. 불리한 약관 개정의 동의
 - 콘솔 "문서 · 약관"에서 약관/방침 등을 저장할 때 "이용자에게 불리하거나 중요한 변경"을 체크하면(공지 30일): 서버가 동의 요청(`document_consent_campaigns`, `document_consents`)을 만들고, 봇이 모든 일반 회원에게 변경된 부분과 "동의합니다" 버튼을 DM으로 보냅니다(`functions/consent_views.py`, 20초마다 확인). 개정안을 취소하거나 다시 저장하면 이전 요청은 닫힙니다.
 - 버튼은 영구 버튼(`ConsentButton`, `consent:<번호>`)이라 봇을 재시작해도 동작합니다. 동의는 처음 시각만 기록합니다.

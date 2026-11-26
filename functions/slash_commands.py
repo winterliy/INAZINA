@@ -24,6 +24,7 @@ from functions.discord_views import (
     MyOrdersView,
     HelpLinksView,
     RegistrationModal,
+    WithdrawalModal,
 )
 from functions.notices import notice_embed
 from functions.registration import RegistrationRequired
@@ -170,6 +171,7 @@ class SlashCommandRegistry:
         definitions = (
             ("설치", "서버 관리자가 INAZINA 관리자에게 서버 설치를 신청합니다", self.request_installation),
             ("등록", "이용 안내를 확인하고 Inazina 봇에 등록합니다", self.self_register),
+            ("탈퇴", "INAZINA 회원을 탈퇴합니다. 보유 자산은 국가 국고로 귀속되며 되돌릴 수 없습니다", self.leave_service),
             ("서버등록", "이 서버를 INAZINA 시스템에 등록합니다.", self.register_server),
             ("서버탈퇴", "이 서버를 INAZINA 시스템에 등록해제합니다.", self.leave_server),
             ("도움말", "Inazina 명령어 도움말", self.help),
@@ -657,6 +659,20 @@ class SlashCommandRegistry:
         message = ('✅ 이 서버의 연방국가 편입을 해제했습니다. 기존 시민의 국적은 유지됩니다.' if deleted
                    else '이 서버는 연방국가에 가입되어 있지 않습니다.')
         await interaction.response.send_message(message, ephemeral=True)
+
+    async def leave_service(self, interaction: discord.Interaction):
+        """/탈퇴: check what would block it, then ask once in a modal (the modal is the first response, so nothing is deferred before it).
+        It does not go through _prepare: a member who has not yet agreed to a revised document must still be able to leave."""
+        from managers.withdrawal_manager import WithdrawalManager
+        try:
+            plan = await asyncio.to_thread(WithdrawalManager(self.bot).plan, str(interaction.user.id))
+        except ValueError as exc:
+            return await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+        if plan["blockers"]:
+            return await interaction.response.send_message(
+                f"❌ {', '.join(plan['blockers'])}이(가) 남아 있어 지금은 탈퇴할 수 없습니다. 운영진에게 정리를 요청한 뒤 다시 시도해주세요.",
+                ephemeral=True)
+        await interaction.response.send_modal(WithdrawalModal(self.bot, str(interaction.user.id), plan))
 
     async def help(self, interaction: discord.Interaction):
         await self._prepare(interaction)

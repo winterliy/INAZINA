@@ -124,6 +124,56 @@ class RegistrationModal(discord.ui.Modal):
         await interaction.response.send_message(message, ephemeral=True)
 
 
+class WithdrawalModal(discord.ui.Modal):
+    """/탈퇴: says what leaving does and asks once; typing the confirmation word and submitting is the approval."""
+
+    PHRASE = "탈퇴"
+
+    def __init__(self, bot, user_id, plan):
+        super().__init__(title="INAZINA 회원 탈퇴")
+        self.bot = bot
+        self.user_id = str(user_id)
+        nationality = str(plan.get("nationality") or "국적")
+        self.display_content = (
+            "정말 탈퇴하시겠습니까? **탈퇴는 되돌릴 수 없습니다.**\n\n"
+            f"• 현금·통장 잔액·주식·채권·대출·복권 등 보유한 모든 것이 **{nationality}** 국고로 귀속됩니다.\n"
+            f"• 미체결 주문 {int(plan.get('openOrders') or 0)}건은 취소되고, 은행 계좌 {int(plan.get('accounts') or 0)}개는 해지됩니다.\n"
+            "• 웹 로그인, 알림, 게시판 글·댓글, KYC 등 개인정보는 삭제됩니다. 회계 기록은 임의 ID로 바뀌어 보관됩니다.\n"
+            "• 같은 Discord 계정으로 다시 `/등록`하면 새 회원으로 시작합니다.\n\n"
+            f"탈퇴하려면 아래 칸에 `{self.PHRASE}`를 입력하고 제출하세요. 그만두려면 이 창을 닫으세요."
+        )
+        self.notice_display = discord.ui.TextDisplay(self.display_content)
+        self.confirmation_input = discord.ui.TextInput(placeholder=self.PHRASE, min_length=1, max_length=10, required=True)
+        self.confirmation_field = discord.ui.Label(
+            text=f"확인을 위해 '{self.PHRASE}'를 입력하세요",
+            component=self.confirmation_input,
+        )
+        self.add_item(self.notice_display)
+        self.add_item(self.confirmation_field)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if self.confirmation_input.value.strip() != self.PHRASE:
+            return await interaction.response.send_message(
+                f"확인 문구가 맞지 않아 탈퇴하지 않았습니다. 탈퇴하려면 `/탈퇴`를 다시 실행하고 `{self.PHRASE}`를 입력해주세요.",
+                ephemeral=True,
+            )
+        # Leaving touches many tables, so answer first (a modal must be answered within 3 seconds) and report afterwards.
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        from managers.withdrawal_manager import WithdrawalManager
+        try:
+            await asyncio.to_thread(WithdrawalManager(self.bot).withdraw, self.user_id)
+        except ValueError as exc:
+            return await interaction.followup.send(f"❌ {exc}", ephemeral=True)
+        except Exception as exc:
+            print(f"[Withdrawal Error] {type(exc).__name__}: {exc}")
+            return await interaction.followup.send("❌ 탈퇴를 완료하지 못했습니다. 잠시 후 `/탈퇴`를 다시 실행해주세요.", ephemeral=True)
+        await interaction.followup.send(
+            "✅ 탈퇴가 완료되었습니다. 보유 자산은 국가 국고로 귀속되고 개인정보는 삭제되었습니다. "
+            "다시 이용하시려면 `/등록`을 실행해주세요. 이용해 주셔서 감사합니다.",
+            ephemeral=True,
+        )
+
+
 # --- UI components for Account Opening ---
 
 class AccountOpenModal(discord.ui.Modal):
