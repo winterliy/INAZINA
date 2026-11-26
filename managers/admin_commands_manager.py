@@ -42,7 +42,7 @@ USAGE = {
  '상품수정':'[id] [상품종류] [유형별 순서형 인자 ...] [추가 JSON(선택)]',
  '상품가격수정':'[종목id] [add/del/modify] [금액]',
  '상품생성':'[id] [상품종류] [유형별 순서형 인자 ...] [추가 JSON(선택)]',
- '상품삭제':'[id]', '기본소득':'[국가] [금액]', '서버설치':'[서버ID] [국적] [통화]', '잔고수정':'[user_id/계좌번호] [add/del/modify] [금액]',
+ '상품삭제':'[id]', '기본소득':'[국가] [금액]', '서버설치':'[서버ID] [국적] [통화]', '잔고수정':'[user_id/계좌번호] [add/del/modify] [금액] (통화)',
  '등록':'[user_id]', '도박확률':'[0~100]', '도박리턴값':'[리턴 퍼센트]',
  '시장분위기':'[bull/flat/bear]', '상품분위기':'[종목id] [bull/flat/bear]',
  '복권당첨번호보기':'', '복권당첨번호변경':'[서로 다른 1~45 번호 6개] [보너스 번호(선택)]',
@@ -388,6 +388,7 @@ class AdminCommandsManager:
                         or (command=='거래경고' and len(args) in {2,3,4})
                         or command in {'KYC심사','AML경보'}
                         or (command=='양도' and len(args) in {3,4})
+                        or (command=='잔고수정' and len(args) in {3,4})
                         or (command=='귀화심사' and (args[:1]==['목록'] and len(args)==1 or args[:1] in (['승인'],['거절']) and len(args) in {2,3})))
             if not flexible and command not in {'복권당첨번호변경'} and len(args)!=count.get(command,-1):
                 raise ValueError(f'사용법: ${command} {USAGE.get(command,"")}')
@@ -715,15 +716,27 @@ class AdminCommandsManager:
                 return f'✅ 옵션 {code} 생성 완료. '+message.replace(row['contract_code'],code)
         return self.control.entity(actor,category,operation,code,str(name),str(price),str(supply),fields)
 
-    def balance(self,actor,identity,operation,raw_amount):
+    def balance(self,actor,identity,operation,raw_amount,currency=None):
+        """Adjust a balance. The optional currency picks which one: for a user id, the home currency is the cash and any other currency is that
+        user's single foreign-currency account; for an account number it must be the account's own currency (a guard against a wrong account)."""
         from managers.currency_manager import CurrencyManager
+        code=str(currency).strip().upper() if currency else None
+        if code is not None and not re.fullmatch(r'[A-Z0-9]{2,8}',code):
+            raise ValueError('통화 코드를 확인해주세요.')
         row=self.db.accounts.execute_one('SELECT user_id FROM accounts WHERE account_number=?',(identity,))
         if row:
             from managers.interest_manager import InterestManager
             InterestManager(self.db).process_user_interests(row[0])
         with self.db.atomic() as conn:
             self.control.require(actor,conn)
+            if code and conn.execute('SELECT 1 FROM users WHERE user_id=?',(identity,)).fetchone() and code!=CurrencyManager.home(conn,identity):
+                held=[row[0] for row in conn.execute("SELECT account_number FROM accounts WHERE user_id=? AND account_type='saving' AND quote_currency=? ORDER BY account_number",(identity,code))]
+                if not held:raise ValueError(f'{code} 외환통장이 없습니다. 먼저 외환통장을 개설해야 합니다.')
+                if len(held)>1:raise ValueError(f'{code} 외환통장이 여러 개입니다. 계좌번호로 지정해주세요: '+', '.join(held))
+                identity=held[0]
             account=conn.execute("SELECT *,quote_currency AS currency_code FROM accounts WHERE account_number=?",(identity,)).fetchone()
+            if code and account and str(account['currency_code'] or CurrencyManager.home(conn,account['user_id'])).upper()!=code:
+                raise ValueError(f"계좌 {identity}의 통화는 {account['currency_code']}입니다. 통화를 확인해주세요.")
             # A savings account in a currency other than its owner's is kept in exact units.
             currency_account=account if account and account['account_type']=='saving' and account['currency_code'] and account['currency_code']!=CurrencyManager.home(conn,account['user_id']) else None
             bank=account if account and not currency_account else None

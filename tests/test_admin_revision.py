@@ -65,6 +65,29 @@ class AdminRevisionTests(unittest.TestCase):
         self.assertEqual(self.db.accounts.execute_one("SELECT balance_units FROM accounts WHERE account_number=? AND account_type='saving'",(fx,))[0],1750000)
         with self.assertRaises(ValueError):AdminCommandsManager(self.bot).execute('citizen','세율','5')
 
+    def test_balance_takes_an_optional_currency(self):
+        from managers.currency_manager import CurrencyManager
+        fixtures.InazinaTests.seed(self)
+        fx=self.bot.currency_mgr.open_account('citizen','INZCU001')
+        units=lambda:self.db.accounts.execute_one("SELECT balance_units FROM accounts WHERE account_number=?",(fx,))[0]
+        code=self.db.accounts.execute_one("SELECT quote_currency FROM accounts WHERE account_number=?",(fx,))[0]
+        with self.db.atomic() as conn:home=CurrencyManager.home(conn,'citizen')
+        self.assertNotEqual(code,home)
+        message=self.run_command('잔고수정',f'citizen modify 3 {code}')
+        self.assertEqual(units(),3000000)
+        self.assertIn(code,message)
+        self.run_command('잔고수정',f'{fx} add 1 {code.lower()}')
+        self.assertEqual(units(),4000000)
+        cash=self.db.users.get_user('citizen')['cash']
+        self.run_command('잔고수정',f'citizen add 5 {home}')
+        self.assertEqual(self.db.users.get_user('citizen')['cash'],cash+5)
+        self.assertEqual(units(),4000000,'the home currency never touches the foreign account')
+        other='EUR' if code!='EUR' else 'JPY'
+        with self.assertRaisesRegex(ValueError,'통화'):self.run_command('잔고수정',f'{fx} add 1 {other}')
+        with self.assertRaisesRegex(ValueError,'외환통장'):self.run_command('잔고수정',f'citizen add 1 {other}')
+        self.assertEqual(units(),4000000)
+        self.assertEqual(self.db.users.get_user('citizen')['cash'],cash+5)
+
     def test_rates_settings_and_cross_currency(self):
         self.run_command('금리수정','낙원 add 1')
         self.run_command('금리수정','낙원 del 0.5')
