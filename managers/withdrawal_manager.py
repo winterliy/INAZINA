@@ -18,6 +18,7 @@ import secrets
 import sqlite3
 import time
 
+from managers.bank_journal import BankJournal
 from managers.currency_manager import CurrencyManager, SCALE
 from managers.nationality_manager import NationalityManager
 
@@ -269,6 +270,7 @@ class WithdrawalManager:
             units = int(account["balance_units"] or 0)
             if units:
                 CurrencyManager.change(conn, user_id, home, units if account["quote_currency"] == home else CurrencyManager.convert(conn, units, account["quote_currency"], home))
+            BankJournal.post_forced_account_removal(conn, account, time.time())
             conn.execute("UPDATE accounts SET balance_units=0 WHERE account_number=?", (account["account_number"],))
             conn.execute("DELETE FROM accounts WHERE account_number=?", (account["account_number"],))
             summary["accounts"] += 1

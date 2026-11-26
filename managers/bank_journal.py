@@ -649,6 +649,22 @@ class BankJournal:
         return source_posted or settlement_posted
 
     @staticmethod
+    def post_forced_account_removal(conn, account, now=None):
+        """Release the bank's deposit liability for an account that is removed outside the normal closing (nationality change,
+        withdrawal). The balance has already been paid to the owner's wallet, so the institution's books must stop owing it."""
+        from decimal import Decimal
+        units = int(account["balance_units"] or 0)
+        product = conn.execute("SELECT issuer FROM saving WHERE product_code=?", (account["product_code"],)).fetchone()
+        if not units or not product or not product["issuer"]:
+            return None
+        amount = Decimal(units) / Decimal(1_000_000)
+        return BankJournal.post(
+            conn, product["issuer"], "deposit_close", f"account:{account['account_number']}",
+            account["quote_currency"] or base_currency_code(conn),
+            [("customer_deposits_payable", "debit", amount), ("settlement_asset", "credit", amount)],
+            description=f"Deposit account {account['account_number']} removed with its owner's wallet payout", now=now)
+
+    @staticmethod
     def post(conn, issuer, event_type, reference_key, currency_code, lines,
              *, description="", now=None):
         """Post bank and common-ledger entries atomically within the caller's transaction."""

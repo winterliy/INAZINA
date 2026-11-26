@@ -188,3 +188,33 @@ class WithdrawalTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class WithdrawalLedgerTests(unittest.TestCase):
+    """The books still reconcile after a withdrawal: the removed account's deposit liability is released and the wallet
+    entries (re-keyed to the replacement ID) still match their common-journal postings."""
+    setUp = fixtures.InazinaTests.setUp
+    tearDown = fixtures.InazinaTests.tearDown
+    seed = fixtures.InazinaTests.seed
+    prepare = WithdrawalTests.prepare
+
+    def test_reconciliation_is_clean_after_withdrawal(self):
+        from managers.accounting_journal import AccountingJournal
+        self.prepare()
+        WithdrawalManager(self.bot).withdraw('citizen')
+        with self.db.readonly() as conn:
+            report = AccountingJournal.reconcile_all_financial_ledgers(conn)
+        bad = [f for f in report['findings'] if f.get('scope') in ('common_journals', 'institution_subledgers')]
+        self.assertEqual(bad, [])
+
+    def test_nationality_change_releases_the_deposit_liability_too(self):
+        from managers.accounting_journal import AccountingJournal
+        self.seed()
+        self.assertTrue(BankManager(self.db).open_account('citizen', 'INZSV001', 'pass1234', 15000)[0])
+        with self.db.atomic() as conn:
+            conn.execute("INSERT OR IGNORE INTO country_currencies(nationality,currency_code) VALUES ('달러국','USD')")
+            CurrencyManager.treasury_id(conn, '달러국')
+        self.bot.admin_control.user('admin', 'citizen', {'nationality': '달러국'})
+        with self.db.readonly() as conn:
+            report = AccountingJournal.reconcile_all_financial_ledgers(conn)
+        self.assertEqual([f for f in report['findings'] if f.get('scope') == 'institution_subledgers'], [])

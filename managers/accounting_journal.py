@@ -2173,7 +2173,8 @@ class AccountingJournal:
         ).fetchall()] if orphan_balance_gaps else []
         posting_gaps = int(conn.execute("""SELECT COUNT(*) FROM customer_wallet_ledger w
             LEFT JOIN accounting_entries e ON e.ledger_scope='customer'
-              AND e.entity_type='wallet_holder' AND e.entity_id=w.user_id
+              AND e.entity_type='wallet_holder'
+              AND (e.entity_id=w.user_id OR w.user_id LIKE 'w-%')
               AND e.source_key='wallet:'||w.entry_id
             LEFT JOIN (
               SELECT l.entry_id,COUNT(*) line_count,

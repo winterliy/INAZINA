@@ -19,6 +19,7 @@ import json
 import time
 from decimal import Decimal, ROUND_CEILING
 
+from managers.bank_journal import BankJournal
 from managers.currency_manager import CurrencyManager, SCALE
 
 OPEN_ORDER_STATES = ("open", "partial", "scheduled")
@@ -131,6 +132,7 @@ class NationalityManager:
                         conn, units, account["quote_currency"], old)
                     CurrencyManager.change(conn, user_id, old, amount)
                     closed += amount
+                BankJournal.post_forced_account_removal(conn, account, now)
                 conn.execute("UPDATE accounts SET balance_units=0 WHERE account_number=?", (account['account_number'],))
                 conn.execute("DELETE FROM accounts WHERE account_number=?", (account["account_number"],))
             loans = Decimal(0)
