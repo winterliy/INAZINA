@@ -6145,6 +6145,27 @@ class Handler(BaseHTTPRequestHandler):
                     "allocations": result["allocations"], "duplicate": result["duplicate"]})
                 self.send_json(200, {"success": True, "result": result})
                 return
+            if path == "/internal/admin/guarantor":
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                    return
+                from managers import guarantor_recovery
+                action = payload.get("action")
+                shapes = {"register": {"action", "loanId", "guarantorId", "maxMinorUnits"}, "claim": {"action", "loanId", "guarantorId", "amountMinorUnits", "eventKey"}}
+                if action not in shapes or set(payload) != shapes[action] or not isinstance(payload["guarantorId"], str) or not 1 <= len(payload["guarantorId"]) <= 128 \
+                        or (action == "claim" and not isinstance(payload["eventKey"], str)):
+                    raise ValueError("invalid_guarantor_payload")
+                now = int(time.time())
+                with domain().db.atomic() as connection:
+                    if action == "register":
+                        result = {"guaranteeId": guarantor_recovery.register_guarantee(connection, loan_id=payload["loanId"], guarantor_id=payload["guarantorId"],
+                                                                                          max_minor_units=payload["maxMinorUnits"], actor_id=user["userId"], now=now)}
+                    else:
+                        result = guarantor_recovery.claim_from_guarantor(connection, loan_id=payload["loanId"], guarantor_id=payload["guarantorId"],
+                                                                         amount_minor_units=payload["amountMinorUnits"], event_key=payload["eventKey"], actor_id=user["userId"], now=now)
+                audit_admin_access(user["userId"], f"guarantor.{action}", {k: v for k, v in payload.items() if k != "action"} | {"result": result})
+                self.send_json(200, {"success": True, "result": result})
+                return
             if path == "/internal/admin/prepayment-mode":
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})

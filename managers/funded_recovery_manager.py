@@ -8,8 +8,8 @@ from managers.currency_manager import CurrencyManager
 from managers.rate_manager import RateManager
 
 
-def record_funded_recovery(conn, *, loan_id, amount_minor_units, event_key, actor_id, now=None):
-    """Debit actual borrower cash and record the bank recovery in one transaction."""
+def record_funded_recovery(conn, *, loan_id, amount_minor_units, event_key, actor_id, now=None, payer_id=None):
+    """Debit actual borrower cash (or, for a guarantor payment, the named payer's cash) and record the bank recovery in one transaction."""
     if not conn.in_transaction:
         raise ValueError('caller must start a transaction')
     ComplianceManager._require_admin(conn, actor_id)
@@ -22,9 +22,10 @@ def record_funded_recovery(conn, *, loan_id, amount_minor_units, event_key, acto
     if not loan or loan['status'] != 'charged_off' or not loan['quote_currency']:
         raise ValueError('charged-off loan with currency required')
     borrower, currency = str(loan['user_id']), str(loan['quote_currency']).upper()
+    payer = str(payer_id) if payer_id is not None else borrower          # default: the borrower pays, as before
     places = CurrencyManager.precision(conn, currency)
-    if CurrencyManager.home(conn, borrower) != currency:
-        raise ValueError('borrower home currency must match loan currency')
+    if CurrencyManager.home(conn, payer) != currency:
+        raise ValueError('payer home currency must match loan currency')
     prior = conn.execute("SELECT event_id,loan_id,event_type,amount_minor_units,currency_code FROM accounts.loan_chargeoff_events WHERE event_key=?", (key,)).fetchone()
     if prior:
         linked = conn.execute("""SELECT w.user_id,w.currency_code,w.delta_minor_units FROM business_cash_events e
@@ -32,17 +33,17 @@ def record_funded_recovery(conn, *, loan_id, amount_minor_units, event_key, acto
             WHERE e.kind='funded_chargeoff_recovery' AND e.reference=?""", (key,)).fetchall()
         if (prior['event_type'] != 'recovery' or int(prior['loan_id']) != loan_id
                 or int(prior['amount_minor_units']) != amount_minor_units or prior['currency_code'] != currency
-                or len(linked) != 1 or tuple(linked[0]) != (borrower, currency, -amount_minor_units)):
+                or len(linked) != 1 or tuple(linked[0]) != (payer, currency, -amount_minor_units)):
             raise ValueError('recovery key already used with different details')
         return {'eventId': int(prior['event_id']), 'duplicate': True}
     if loan['charged_off_balance_minor_units'] is None or amount_minor_units > int(loan['charged_off_balance_minor_units']):
         raise ValueError('recovery exceeds charged-off balance')
-    if CurrencyManager.balance(conn, borrower, currency) < amount_minor_units * 10 ** (6 - places):
-        raise ValueError('borrower wallet has insufficient funds')
+    if CurrencyManager.balance(conn, payer, currency) < amount_minor_units * 10 ** (6 - places):
+        raise ValueError('payer wallet has insufficient funds')
     conn.execute('SAVEPOINT funded_recovery')
     try:
         mark = AccountingJournal.cash_mark(conn)
-        CurrencyManager.change(conn, borrower, currency, -amount_minor_units * 10 ** (6 - places))
+        CurrencyManager.change(conn, payer, currency, -amount_minor_units * 10 ** (6 - places))
         result = CreditRiskManager.record_chargeoff_recovery(
             conn, loan_id=loan_id, amount=Decimal(amount_minor_units) / (10 ** places),
             event_key=key, actor_id=actor_id, now=epoch, memo='funded from borrower home wallet')
