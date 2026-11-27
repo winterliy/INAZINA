@@ -1068,15 +1068,18 @@ class MarketManager:
 
     def _enforce_price_floor(self, now, settings):
         """Lift every active stock below the price floor (100 won) to it and record the action for the console. A fixed stock is lifted too
-        (once; it stays fixed). The same stock is not reported again within an hour, however often it is pushed below."""
+        (once; it stays fixed). A stock under an administrator event (running, or completed in this very tick) keeps the event's price: the
+        floor applies again from the next tick. The same stock is not reported again within an hour, however often it is pushed below."""
         guard = PriceGuardConfig.from_settings(settings)
         if not guard.enabled or guard.floor <= 0:
             return
         floor = guard.floor
         lifted = []
         with self._short_market_transaction(("company", "system")) as conn:
-            rows = conn.execute("SELECT company_code, name, share_price FROM company.company WHERE status='active' AND share_price < ?",
-                                (floor,)).fetchall()
+            rows = conn.execute("SELECT company_code, name, share_price FROM company.company WHERE status='active' AND share_price < ? "
+                                "AND company_code NOT IN (SELECT asset_code FROM system.market_event_targets WHERE start_epoch <= ? "
+                                "AND (state = 'active' OR (state = 'completed' AND completed_epoch = ?)))",
+                                (floor, now, now)).fetchall()
             for row in rows:
                 code = row["company_code"]
                 conn.execute("UPDATE company.company SET share_price = ? WHERE company_code = ?", (floor, code))

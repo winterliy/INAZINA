@@ -110,6 +110,39 @@ class PriceGuardMarketTests(base.AutoTargetMarketTests):
         self.assertEqual(self.price(), 100)
         self.assertEqual(len(self.floor_events()), 1)
 
+    # ---- the floor yields to an administrator event -----------------------------------------------------------------------------------
+
+    def test_an_event_target_below_the_floor_is_kept_while_the_event_runs_and_the_floor_returns_after_it(self):
+        from managers.admin_manager import AdminManager
+        self.db.users.create_user("admin", "Admin", "Nac", 1000000, role="admin")
+        self.set_price(100)
+        self.assertTrue(AdminManager(self.db).create_market_event("admin", "bad", 70, "CO", 60, now=1000, target_price=30)[0])
+        self.factor(1000)
+        self.market.update_prices(volatility=0, now=1030)
+        self.assertTrue(30 <= self.price() < 100, "mid-bridge the event's own price (below 100) is not lifted")
+        self.assertEqual(self.floor_events(), [])
+        self.factor(1060)
+        self.market.update_prices(volatility=0, now=1060)
+        self.assertEqual(self.price(), 30, "still 30 in the tick the event completes")
+        self.factor(1061)
+        self.market.update_prices(volatility=0, now=1061)
+        self.assertEqual(self.price(), 100, "afterwards the floor applies as before")
+        self.assertEqual(len(self.floor_events()), 1)
+
+    def test_a_stock_without_an_event_is_still_lifted_while_another_stock_has_one(self):
+        from managers.admin_manager import AdminManager
+        self.db.users.create_user("admin", "Admin", "Nac", 1000000, role="admin")
+        self.db.companies.create_company("OTHER", "Other", "Industry", 100000, 1000, 100, "admin", "EX")
+        self.set_price(100)
+        self.set_price(40, "OTHER")
+        self.assertTrue(AdminManager(self.db).create_market_event("admin", "bad", 70, "CO", 60, now=1000, target_price=30)[0])
+        self.factor(1030)
+        self.market.update_prices(volatility=0, now=1030)
+        self.assertTrue(30 <= self.price() < 100)
+        other = self.db.companies.get_company("OTHER")["share_price"]
+        self.assertEqual(other, 100)
+        self.assertEqual([e["asset_code"] for e in self.floor_events()], ["OTHER"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -40,7 +40,6 @@ class MarketFeatureTests(unittest.TestCase):
         DBManager.database_dir = Path(self.tempdir.name)
         self.db = DatabaseManager()
         self.db.system.set_setting("auto_target_enabled", "0")
-        self.db.system.set_setting("price_floor_won", "0")      # these tests use sub-100 prices; the floor is tested in test_price_guard_market
         self.db.users.create_user("admin", "Admin", "Nac", 1000000, role="admin")
         self.db.users.create_user("alice", "Alice", "Nac", 10000)
         self.db.users.create_user("bob", "Bob", "Nac", 10000)
@@ -710,7 +709,7 @@ class MarketFeatureTests(unittest.TestCase):
         MarketManager(self.db).update_prices(volatility=.2, market_condition="bull", now=1120)
         self.assertEqual(self.db.companies.get_company("CO")["share_price"], 30)
         self.market.update_prices(volatility=0, now=1121)
-        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 30)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 100, "once the event is over the 100-won floor applies again")
 
     def test_event_maximum_discord_integer_target_remains_exact_in_database_and_market_reader(self):
         target = 2 ** 53 - 1
@@ -745,7 +744,7 @@ class MarketFeatureTests(unittest.TestCase):
         self.assertEqual(self.db.companies.get_company("CO")["share_price"], 80)
         self.assertEqual(self.db.assets.get_asset_info("SPOT")["price"], 160)
         self.event_tick_without_noise(1100, volatility=0)
-        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 80)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 100, "the 80-won event is over: the floor applies again")
         self.assertEqual(self.db.assets.get_asset_info("SPOT")["price"], 200)
 
     def test_global_percentage_uses_each_initial_price_and_excludes_fixed_linked_and_expired_assets(self):
