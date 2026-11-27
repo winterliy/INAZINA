@@ -6,7 +6,7 @@ from pathlib import Path
 SERVER = Path(__file__).resolve().parents[1] / "web_api" / "server.py"
 HANDLERS = {"do_GET", "do_POST", "do_PUT", "do_PATCH", "do_DELETE"}
 # Calls that record the administrator's action: explicit audit rows, the audited admin scope, or the admin command layer.
-AUDIT_MARKERS = ("audit", "admin_scope", "admin_control")
+AUDIT_MARKERS = ("audit", "admin_scope", "admin_control", "admin_approval")   # admin_approval writes its own audit rows (tests/test_m8_dual_approval.py)
 # Administrator POST routes whose audit evidence is not visible statically. Each needs a reason; shrink this list, never grow it quietly.
 NO_STATIC_AUDIT_EVIDENCE = {}   # emptied 2026-11-24: dr/monitor/sample now records its use
 

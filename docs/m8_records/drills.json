@@ -124,5 +124,12 @@
       "description": "낙원 관할 funding_auto_maturity_flag=1 저장",
       "result": "감사 prudential_parameter.set, admin_audit 2100. 낙원 은행 도매조달 0건이라 동작 없음, 봇 재시작 시 10분 주기에 반영"
     }
+  ],
+  "secret_rotations": [
+    {
+      "name": "INAZINA_INTERNAL_TOKEN",
+      "last_rotated": null,
+      "note": "교체 기록 없음. 처음 교체하면 tools/secret_rotation_check.py --record 로 날짜를 남긴다(값은 기록하지 않는다)."
+    }
   ]
 }

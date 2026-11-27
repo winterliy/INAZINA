@@ -957,7 +957,7 @@ class AdminControlManager:
     def _update_user(self,actor,user_id,changes):
         with self.db.atomic(('users','system')) as conn:
             self.require(actor,conn)
-            if not changes or set(changes)-{'nickname','nationality','cash','credit_score','credit_score_reason','annual_income','income_stability','status','role'}:
+            if not changes or set(changes)-{'nickname','nationality','cash','credit_score','credit_score_reason','annual_income','income_stability','status','role','role_reason'}:
                 raise ValueError("허용된 사용자 필드를 입력해주세요.")
             user = conn.execute("SELECT * FROM users WHERE user_id=?",(user_id,)).fetchone()
             if not user or user_id==TREASURY_USER_ID:
@@ -970,6 +970,7 @@ class AdminControlManager:
                 if old and new and old[0] != new[0]:
                     if ExactDecimal(user['cash'] or 0):
                         raise ValueError('국적 통화를 변경하려면 기존 cash 잔고를 먼저 0으로 정산해주세요.')
+            role_reason = changes.pop('role_reason', None)
             credit_reason = changes.pop('credit_score_reason', None)
             credit_target = None
             if 'credit_score' in changes:
@@ -1002,6 +1003,12 @@ class AdminControlManager:
                 raise ValueError("role/status 값을 확인해주세요.")
             if user_id==str(actor) and (changes.get('role')=='user' or changes.get('status') in {'inactive','bankrupt'}):
                 raise ValueError("현재 관리자는 자신의 관리 권한을 제거할 수 없습니다.")
+            if role != user['role'] and 'admin' in (role, user['role']):
+                # Granting or revoking administrator rights is recorded (append-only) with who, why and, when two-person approval is on, who approved.
+                from functions import admin_approval
+                if admin_approval.enabled(conn) and not str(role_reason or '').strip():
+                    raise ValueError("role_reason_required")
+                admin_approval.record_role_change(conn, actor, user_id, user['role'], role, role_reason, admin_approval.current_approver())
             if changes:
                 assignments = ','.join(f'"{k}"=?' for k in changes)
                 conn.execute(f'UPDATE users SET {assignments} WHERE user_id=?',(*changes.values(),user_id))

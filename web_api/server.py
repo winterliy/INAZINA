@@ -2194,6 +2194,26 @@ def admin_audit(limit=50):
     return entries
 
 
+def admin_approval_gate(handler, user_id, path, payload):
+    """Two-person approval of high-risk admin writes (functions/admin_approval.py, off by default). False when the 409 was already sent."""
+    from functions import admin_approval
+    handler._approval_use = None
+    if not isinstance(payload, dict) or ("approvalId" not in payload and admin_approval.risk_action(path, payload) is None):
+        return True
+    user = identity(user_id)
+    if not user or user["role"] != "admin":
+        return True
+    with connect_db(timeout=5) as connection:
+        state, request_id = admin_approval.gate(connection, user["userId"], path, payload)
+    if state == "needs":
+        handler.send_json(409, {"error": "approval_required", "approvalRequestId": request_id,
+                                "message": f"이중 승인이 필요합니다. 다른 관리자가 요청 {request_id}번을 승인한 뒤 같은 요청에 approvalId를 붙여 다시 보내세요."})
+        return False
+    if request_id is not None:
+        handler._approval_use = (request_id, user["userId"])
+    return True
+
+
 def audit_admin_access(actor_id, action, payload):
     """Append a minimal audit event for sensitive administrator reads."""
     with connect_db(timeout=5) as connection:
@@ -5156,7 +5176,17 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     from web_api import controls_overview
                     audit_admin_access(user["userId"], "controls.read", {})
-                    self.send_json(200, controls_overview.overview())
+                    with connect_readonly() as connection:
+                        self.send_json(200, controls_overview.overview(connection))
+            elif path == "/internal/admin/approvals":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    from functions import admin_approval
+                    audit_admin_access(user["userId"], "admin_approvals.read", {})
+                    with connect_readonly() as connection:
+                        self.send_json(200, admin_approval.overview(connection))
             elif path == "/internal/admin/liquidity":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -5655,6 +5685,8 @@ class Handler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             _REQUEST.path = path
             verified_id = internal_user_id(self)
+            if not admin_approval_gate(self, verified_id, path, payload):
+                return
             if path == "/internal/auth/login":
                 user_id = str(payload.get("loginId", payload.get("userId", ""))).strip()
                 if not user_id or len(user_id) > 80:
@@ -6148,6 +6180,22 @@ class Handler(BaseHTTPRequestHandler):
                         result = insurance_fund.record_claim_payouts(connection, issuer, actor_id=user["userId"], now=now)
                 audit_admin_access(user["userId"], f"deposit_insurance_fund.{action}", {"bank_id": payload["bankId"], **{k: v for k, v in payload.items() if k in ("premiumBps", "eventKey")}, "result": result})
                 self.send_json(200, {"success": True, "result": result})
+                return
+            if path == "/internal/admin/approvals":
+                from functions import admin_approval
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                    return
+                action = payload.get("action")
+                with connect_db(timeout=5) as connection:
+                    if action in ("approve", "reject") and set(payload) <= {"action", "requestId", "note"}:
+                        admin_approval.decide(connection, user["userId"], payload.get("requestId"), action, payload.get("note", ""))
+                    elif action == "set_switch" and set(payload) == {"action", "enabled"} and isinstance(payload["enabled"], bool):
+                        admin_approval.set_switch(connection, user["userId"], payload["enabled"])
+                    else:
+                        raise ValueError("invalid_approval_payload")
+                    result = admin_approval.overview(connection)
+                self.send_json(200, result)
                 return
             if path == "/internal/admin/rate-rules":
                 if user["role"] != "admin":
@@ -6739,6 +6787,12 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def send_json(self, status, payload):
+        approval_use = getattr(self, "_approval_use", None)
+        if approval_use and status < 400:           # an approval is used up only by a write that succeeded
+            self._approval_use = None
+            from functions import admin_approval
+            with connect_db(timeout=5) as connection:
+                admin_approval.consume(connection, approval_use[0], approval_use[1])
         from functions.exact_money import json_amount
         from decimal import Decimal
         def safe(value):

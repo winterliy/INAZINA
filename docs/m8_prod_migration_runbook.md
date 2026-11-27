@@ -81,5 +81,6 @@ INAZINA_PG_DSN=postgresql:///inazina .venv/bin/python -m database.backup
 확인: 위 반영 뒤 운영 덤프 복사본(백업 `inazina-pg-20261127-192056.dump`, `source_dbname: inazina`)에 `--sync-schema --reconcile`을 돌린 결과 `matched`, `close_ready: true`, 발견 0건이다. 위 '남은 5건'은 모두 해소됐다.
 
 ## 정기 점검
-서버 재시작이나 큰 반영(스키마·등록부·관할 기준 변경) 뒤마다 4절의 `--sync-schema --reconcile`을 돌려 `matched`, `close_ready: true`, 발견 0건인지 확인하고 `docs/m8_records/drills.json`에 날짜와 함께 기록한다. 발견이 있으면 그 사실을 기록하고 담당에게 넘긴다. 관리자 접근 검토는 `docs/m8_access_review_procedure.md`를 따른다.
+서버 재시작이나 큰 반영(스키마·등록부·관할 기준 변경) 뒤마다 4절의 `--sync-schema --reconcile`을 돌려 `matched`, `close_ready: true`, 발견 0건인지 확인하고 `docs/m8_records/drills.json`에 날짜와 함께 기록한다. 발견이 있으면 그 사실을 기록하고 담당에게 넘긴다. 같은 점검에 두 가지를 더 한다. 백업이 48시간(`--max-hours`로 조정)을 넘기지 않았는지 `python tools/backup_check.py`로(넘기면 종료 코드 1, 백업을 만들지는 않는다), 비밀 점검을 `python tools/secret_rotation_check.py`로 한다(교체 절차는 `docs/m8_secret_rotation.md`). 이 저장소는 백업이 일정대로 만들어지게 보장하지 못하고, 늦어진 것을 알려 줄 뿐이다. '통제 · 복구' 화면의 경고(백업 최신성, 접근 검토 기한, 교체 기한, 이상 접근)는 같은 정보를 보여 준다.
+관리자 접근 검토는 `docs/m8_access_review_procedure.md`를 따른다.
 

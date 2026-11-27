@@ -372,6 +372,45 @@ class SystemDB(DBManager):
         self.execute("""CREATE TRIGGER IF NOT EXISTS trg_admin_audit_immutable_delete
             BEFORE DELETE ON admin_audit
             BEGIN SELECT RAISE(ABORT,'Administrator audit history cannot be deleted'); END""")
+        # Two-person approval of high-risk administrator writes (functions/admin_approval.py). Off by default; every table is
+        # append-only, a request is decided at most once and an approval is used at most once.
+        self.execute("""CREATE TABLE IF NOT EXISTS admin_approval_requests (
+            request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            action_key TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            requester_id TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            created_epoch REAL NOT NULL,
+            expires_epoch REAL NOT NULL
+        )""")
+        self.execute("""CREATE TABLE IF NOT EXISTS admin_approval_decisions (
+            request_id INTEGER PRIMARY KEY REFERENCES admin_approval_requests(request_id),
+            approver_id TEXT NOT NULL,
+            decision TEXT NOT NULL CHECK(decision IN ('approve','reject')),
+            note TEXT NOT NULL DEFAULT '',
+            decided_epoch REAL NOT NULL
+        )""")
+        self.execute("""CREATE TABLE IF NOT EXISTS admin_approval_uses (
+            request_id INTEGER PRIMARY KEY REFERENCES admin_approval_requests(request_id),
+            used_by TEXT NOT NULL,
+            used_epoch REAL NOT NULL
+        )""")
+        self.execute("""CREATE TABLE IF NOT EXISTS admin_role_changes (
+            change_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_id TEXT NOT NULL,
+            old_role TEXT NOT NULL,
+            new_role TEXT NOT NULL,
+            actor_id TEXT NOT NULL,
+            reason TEXT,
+            approver_id TEXT,
+            recorded_epoch REAL NOT NULL
+        )""")
+        for table in ("admin_approval_requests", "admin_approval_decisions", "admin_approval_uses", "admin_role_changes"):
+            for event in ("update", "delete"):
+                self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_immutable_{event}
+                    BEFORE {event.upper()} ON {table}
+                    BEGIN SELECT RAISE(ABORT,'{table} is append-only'); END""")
         self.execute("""CREATE TABLE IF NOT EXISTS kyc_profiles (
             user_id TEXT PRIMARY KEY,
             status TEXT NOT NULL DEFAULT 'not_started'

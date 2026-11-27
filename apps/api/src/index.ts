@@ -632,6 +632,18 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  if (url.pathname === "/api/admin/approvals" && (request.method === "GET" || request.method === "POST")) {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const result = request.method === "GET"
+      ? await internalGet("/internal/admin/approvals", principal.userId)
+      : await internalRequest("POST", "/internal/admin/approvals", principal.userId, await requestJson(request));
+    send(response, result.status, result.body);
+    return;
+  }
+
   if (url.pathname === "/api/admin/controls" && request.method === "GET") {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });
