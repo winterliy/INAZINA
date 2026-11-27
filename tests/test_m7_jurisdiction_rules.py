@@ -230,3 +230,47 @@ class AdminApiTests(RuleBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DepositTaxRuleTests(unittest.TestCase):
+    """tax_bps of a country rule replaces the deposit interest tax rate only when a rule exists for the contract date."""
+    T0 = 1_800_000_000
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from database import DatabaseManager
+        from database.db_manager import DBManager
+        self.old_dir = DBManager.database_dir
+        self.tempdir = tempfile.TemporaryDirectory()
+        DBManager.database_dir = Path(self.tempdir.name)
+        self.db = DatabaseManager()
+        self.db.users.create_user("admin", "Admin", "낙원", 1_000_000, role="admin")
+        self.db.users.create_user("user", "User", "낙원", 5_000_000)
+        self.db.products.execute(
+            "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,interest_cycle,compound_type,issuer,quote_currency,rate_type,rate_nationality,"
+            "base_rate_spread,repricing_cycle_seconds) VALUES ('SX','SX',10,1,365,86400,0,'Bank','NWX','fixed','낙원',0,86400)")
+
+    def tearDown(self):
+        from database.db_manager import DBManager
+        self.db.close()
+        DBManager.database_dir = self.old_dir
+        self.tempdir.cleanup()
+
+    def interest(self, rule_bps=None):
+        from managers.bank_manager import BankManager
+        if rule_bps is not None:
+            with self.db.atomic() as conn:
+                rules.add_rule(conn, nationality="낙원", customer_type="*", product_type="deposit", effective_epoch=0, tax_bps=rule_bps,
+                               actor="admin", now=int(time.time()) - 5)
+        self.assertTrue(BankManager(self.db).open_account("user", "SX", "1234", 100_000)[0])
+        self.db.accounts.execute("UPDATE accounts SET created_at=datetime(?,'unixepoch'),last_payment_epoch=?", (self.T0, self.T0))
+        before = self.db.accounts.execute_one("SELECT balance FROM accounts")[0]
+        InterestManager(self.db).process_user_interests(now=self.T0 + 30 * DAY, user_id="user")
+        return self.db.accounts.execute_one("SELECT balance FROM accounts")[0] - before
+
+    def test_no_rule_keeps_the_current_country_tax(self):
+        self.assertEqual(self.interest(), 797)          # 821.9 gross, 3% withheld
+
+    def test_a_rule_in_force_at_signing_sets_the_tax_rate(self):
+        self.assertEqual(self.interest(rule_bps=0), 822)

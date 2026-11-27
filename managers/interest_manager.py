@@ -75,13 +75,21 @@ class InterestManager:
         return max(0, int(math.floor(elapsed_seconds / cycle_seconds + 1e-9)))
 
     @staticmethod
-    def _tax_rate(conn, user_id=None, source='saving_interest'):
+    def _tax_rate(conn, user_id=None, source='saving_interest', contract_epoch=None):
         row = (conn.execute("SELECT COALESCE((SELECT r.tax_percent FROM country_tax_rules r "
                             "WHERE r.nationality=u.nationality AND r.income_source=?),c.tax_percent) tax_percent "
                             "FROM users u LEFT JOIN country_currencies c "
                             "ON c.nationality=u.nationality WHERE u.user_id=?",
                             (str(source), str(user_id))).fetchone()
                if user_id is not None else None)
+        if contract_epoch is not None and user_id is not None and source == 'saving_interest':
+            # A dated country rule (jurisdiction_rate_rules.tax_bps) in force on the deposit's contract date; no rule keeps the current rate.
+            from functions.jurisdiction_rules import customer_type_for, resolve
+            holder = conn.execute("SELECT nationality FROM users WHERE user_id=?", (str(user_id),)).fetchone()
+            rule = (resolve(conn, holder["nationality"], customer_type=customer_type_for(user_id), product_type="deposit", epoch=int(contract_epoch))
+                    if holder and holder["nationality"] else None)
+            if rule is not None and rule["tax_bps"] is not None:
+                return ExactDecimal(rule["tax_bps"]) / 100
         fallback = conn.execute("SELECT value FROM settings WHERE key='tax_percent'").fetchone()
         try:
             rate = ExactDecimal(row["tax_percent"] if row and row["tax_percent"] is not None
@@ -299,7 +307,8 @@ class InterestManager:
             conn.execute("UPDATE accounts.accounts SET deferred_interest_units=deferred_interest_units+? "
                          "WHERE account_number=?", (int(round(ExactDecimal(gross)*SCALE)), account["account_number"]))
         tax = (round_currency(
-            conn, gross*cls._tax_rate(conn, account['user_id'], 'saving_interest')/100.0,
+            conn, gross*cls._tax_rate(conn, account['user_id'], 'saving_interest',
+                                      cls._utc_epoch(account['created_at']) if 'created_at' in account.keys() else None)/100.0,
             account["quote_currency"]
         ) if gross > 0 and not defer_tax else 0)
         net = max(-ExactDecimal(balance), gross-tax)
