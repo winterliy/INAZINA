@@ -1633,6 +1633,7 @@ class CurrencyDB(DBManager):
         ensure_contract_rate_schedules(self.execute)
         ensure_deposit_insurance_fund(self.execute)
         ensure_deposit_insurance_fund_policy(self.execute)
+        ensure_deposit_insurance_backstop(self.execute)
         ensure_accounting_line_repairs(self.execute)
         ensure_wallet_baseline_adjustments(self.execute)
         ensure_primary_recipient_overrides(self.execute)
@@ -3840,6 +3841,23 @@ def ensure_deposit_insurance_fund_policy(execute):
     execute("""CREATE TABLE IF NOT EXISTS deposit_insurance_fund_policy (
         nationality TEXT PRIMARY KEY, auto_record INTEGER NOT NULL DEFAULT 0 CHECK(auto_record IN (0,1)),
         updated_by TEXT NOT NULL, updated_epoch INTEGER NOT NULL)""")
+
+
+def ensure_deposit_insurance_backstop(execute):
+    """Treasury backstop of a fund shortfall (M7): per-jurisdiction opt-in with an administrator-set cap (default off), and an append-only
+    record of each cover paid from the country's treasury wallet into the fund."""
+    execute("""CREATE TABLE IF NOT EXISTS deposit_insurance_backstop_policy (
+        nationality TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+        limit_minor_units INTEGER NOT NULL DEFAULT 0 CHECK(typeof(limit_minor_units)='integer' AND limit_minor_units>=0),
+        updated_by TEXT NOT NULL, updated_epoch INTEGER NOT NULL)""")
+    execute("""CREATE TABLE IF NOT EXISTS deposit_insurance_backstops (
+        backstop_id INTEGER PRIMARY KEY AUTOINCREMENT, event_key TEXT NOT NULL UNIQUE, nationality TEXT NOT NULL, currency_code TEXT NOT NULL,
+        amount_minor_units INTEGER NOT NULL CHECK(typeof(amount_minor_units)='integer' AND amount_minor_units>0),
+        treasury_id TEXT NOT NULL, actor_id TEXT NOT NULL, created_epoch INTEGER NOT NULL)""")
+    for operation in ("UPDATE", "DELETE"):
+        execute(f"""CREATE TRIGGER IF NOT EXISTS trg_deposit_insurance_backstops_{operation.lower()}
+            BEFORE {operation} ON deposit_insurance_backstops
+            BEGIN SELECT RAISE(ABORT,'deposit insurance backstops are append-only'); END""")
 
 
 def ensure_accounting_line_repairs(execute):

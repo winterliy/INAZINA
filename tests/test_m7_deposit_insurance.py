@@ -175,6 +175,26 @@ class DepositInsuranceFundApiTests(Fixture):
             audit.assert_not_called()
         self.assertEqual(self.call("do_POST", policy, role="user")[0]["status"], 403)
 
+    def test_backstop_policy_and_cover_through_the_api_are_audited_and_validated(self):
+        self.db.accounts.execute("INSERT INTO deposit_insurance_claims(issuer,user_id,account_number,covered_amount,uninsured_amount,payout_currency,payout_amount,"
+                                 "payout_amount_minor_units,payout_decimal_places,resolved_epoch) VALUES ('Bank','u1','A1',300,0,'NWX',300,300,0,1800000000)")
+        self.assertEqual(self.call("do_POST", {"action": "record_payouts", "bankId": "BNK1"})[0]["status"], 200)
+        policy = {"action": "set_backstop_policy", "nationality": "낙원", "enabled": True, "limitMinorUnits": 250}
+        response, audit = self.call("do_POST", policy)
+        self.assertEqual(response["status"], 200, response)
+        self.assertEqual(audit.call_args[0][1], "deposit_insurance_fund.set_backstop_policy")
+        cover = {"action": "cover_shortfall", "nationality": "낙원", "eventKey": "api-cover-0001"}
+        response, audit = self.call("do_POST", cover)
+        self.assertEqual(response["value"]["result"]["amountMinorUnits"], 250)
+        self.assertEqual(audit.call_args[0][1], "deposit_insurance_fund.cover_shortfall")
+        report = self.call("do_GET")[0]["value"]
+        self.assertEqual([p["backstop_used_minor_units"] for p in report["policies"] if p["nationality"] == "낙원"], [250])
+        for bad in (dict(policy, enabled="yes"), dict(policy, limitMinorUnits=-1), dict(policy, extra=1), dict(cover, eventKey="short"), dict(cover, nationality="없는나라")):
+            response, audit = self.call("do_POST", bad)
+            self.assertEqual(response["status"], 400, bad)
+            audit.assert_not_called()
+        self.assertEqual(self.call("do_POST", cover, role="user")[0]["status"], 403)
+
     def test_non_admin_and_bad_payloads_are_refused_without_writing_or_audit(self):
         self.assertEqual(self.call("do_POST", self.PAYLOAD, role="user")[0]["status"], 403)
         self.assertEqual(self.call("do_GET", role="user")[0]["status"], 403)
@@ -223,3 +243,70 @@ class FundAutoRecordTests(Fixture):
                          dict(nationality="낙원", enabled=True, actor_id="u1")):
                 with self.assertRaises(ValueError):
                     fund.set_auto_record(conn, now=self.NOW, **args)
+
+
+class FundBackstopTests(Fixture):
+    NOW = 1_800_000_000
+
+    def setUp(self):
+        super().setUp()
+        self.db.users.create_user("admin", "Admin", "낙원", 0, role="admin")
+        self.db.accounts.execute("INSERT INTO deposit_insurance_claims(issuer,user_id,account_number,covered_amount,uninsured_amount,payout_currency,payout_amount,"
+                                 "payout_amount_minor_units,payout_decimal_places,resolved_epoch) VALUES ('Bank','u1','A1',300,0,'NWX',300,300,0,?)", (self.NOW,))
+        with self.db.atomic() as conn:
+            fund.record_claim_payouts(conn, "Bank", actor_id="admin", now=self.NOW)         # fund balance -300
+
+    def policy(self, conn, enabled=True, limit=200):
+        fund.set_backstop_policy(conn, "낙원", enabled, limit, actor_id="admin", now=self.NOW)
+
+    def treasury_cash(self):
+        from managers.currency_manager import CurrencyManager
+        with self.db.readonly() as conn:
+            return CurrencyManager.balance(conn, CurrencyManager.treasury_id(conn, "낙원"), "NWX")
+
+    def test_off_by_default_nothing_is_covered(self):
+        with self.db.atomic() as conn:
+            with self.assertRaises(ValueError):
+                fund.cover_shortfall(conn, "낙원", event_key="cover-0001-aaaa", actor_id="admin", now=self.NOW)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM deposit_insurance_backstops").fetchone()[0], 0)
+
+    def test_cover_is_capped_paid_from_the_treasury_recorded_once_and_reduces_the_shortfall(self):
+        before = self.treasury_cash()
+        with self.db.atomic() as conn:
+            self.policy(conn, limit=200)
+            first = fund.cover_shortfall(conn, "낙원", event_key="cover-0001-aaaa", actor_id="admin", now=self.NOW)
+            again = fund.cover_shortfall(conn, "낙원", event_key="cover-0001-aaaa", actor_id="admin", now=self.NOW)
+            overview = fund.fund_overview(conn)["NWX"]
+        self.assertEqual((first["amountMinorUnits"], first["duplicate"], again["duplicate"]), (200, False, True))   # shortfall 300, cap 200
+        self.assertEqual((overview["balanceMinorUnits"], overview["shortfallMinorUnits"], overview["backstopsMinorUnits"]), (-100, 100, 200))
+        self.assertEqual(before - self.treasury_cash(), 200 * 10 ** 6)
+        with self.db.atomic() as conn, self.assertRaises(ValueError):     # the cap is used up
+            fund.cover_shortfall(conn, "낙원", event_key="cover-0002-bbbb", actor_id="admin", now=self.NOW)
+        with self.db.atomic() as conn:
+            self.assertEqual(fund.reconcile(conn), [])
+
+    def test_a_failing_payment_rolls_back_and_a_retry_works(self):
+        before = self.treasury_cash()
+        from managers.currency_manager import CurrencyManager
+        with self.db.atomic() as conn:
+            self.policy(conn)
+            with patch.object(CurrencyManager, "treasury_pay", side_effect=RuntimeError("wallet failed")), self.assertRaises(RuntimeError):
+                fund.cover_shortfall(conn, "낙원", event_key="cover-0001-aaaa", actor_id="admin", now=self.NOW)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM deposit_insurance_backstops").fetchone()[0], 0)
+            self.assertEqual(fund.cover_shortfall(conn, "낙원", event_key="cover-0001-aaaa", actor_id="admin", now=self.NOW)["amountMinorUnits"], 200)
+        self.assertEqual(before - self.treasury_cash(), 200 * 10 ** 6)
+
+    def test_policy_and_cover_need_an_admin_and_valid_input_and_the_record_is_append_only(self):
+        with self.db.atomic() as conn:
+            for args in (("낙원", True, 5), ("없는나라", True, 5), ("낙원", "yes", 5), ("낙원", True, -1), ("낙원", True, True)):
+                with self.assertRaises(ValueError):
+                    fund.set_backstop_policy(conn, *args, actor_id="admin" if args != ("낙원", True, 5) else "u1", now=self.NOW)
+            self.policy(conn)
+            with self.assertRaises(ValueError):
+                fund.cover_shortfall(conn, "낙원", event_key="short", actor_id="admin", now=self.NOW)
+            with self.assertRaises(ValueError):
+                fund.cover_shortfall(conn, "낙원", event_key="cover-0001-aaaa", actor_id="u1", now=self.NOW)
+            fund.cover_shortfall(conn, "낙원", event_key="cover-0001-aaaa", actor_id="admin", now=self.NOW)
+        for sql in ("UPDATE deposit_insurance_backstops SET amount_minor_units=1", "DELETE FROM deposit_insurance_backstops"):
+            with self.assertRaises(Exception), self.db.atomic() as conn:
+                conn.execute(sql)

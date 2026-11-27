@@ -20,13 +20,15 @@ type Insurance = { currencyCode: string; decimalPlaces: number; limitMinorUnits:
 const CLAIMS: [string, string, number][] = [["insurer_subrogation", "보험 대위(보험금을 낸 만큼)", 1], ["uninsured_depositors", "비보험 예금자", 2], ["general_creditors", "일반 채권", 3]];
 
 type FundReport = { fund: Record<string, { premiumsMinorUnits: number; payoutsMinorUnits: number; balanceMinorUnits: number; shortfallMinorUnits: number; decimalPlaces: number }>;
-  problems: unknown[]; events: { event_id: number; kind: "premium" | "payout"; issuer: string; currency_code: string; amount_minor_units: number; reference: string; created_epoch: number }[] };
+  problems: unknown[]; policies: { nationality: string; currency_code: string; auto_record: number; backstop_enabled: number; backstop_limit_minor_units: number; backstop_used_minor_units: number }[]; events: { event_id: number; kind: "premium" | "payout"; issuer: string; currency_code: string; amount_minor_units: number; reference: string; created_epoch: number }[] };
 
 /** 예금보험기금: ledger of premiums collected from banks and payouts recorded from resolved claims (admin-triggered only). */
 function FundCard({ ctx, bankId }: { ctx: Ctx; bankId: string }) {
   const { busy, run, say } = ctx;
   const [data, setData] = useState<FundReport | null>(null);
   const [premium, setPremium] = useState("0.5");
+  const [country, setCountry] = useState("");
+  const [cap, setCap] = useState("");
   const load = useCallback(() => { api<FundReport>("/api/admin/deposit-insurance-fund").then(setData).catch((cause) => say(errorText(cause, "기금 정보를 불러오지 못했습니다."), true)); }, []);
   useEffect(load, []);
   const units = (value: number, places: number) => (value / 10 ** places).toLocaleString("ko-KR", { minimumFractionDigits: places, maximumFractionDigits: places });
@@ -42,6 +44,25 @@ function FundCard({ ctx, bankId }: { ctx: Ctx; bankId: string }) {
     if (!(await confirmAction(`${bankId} 은행의 정리 청구 가운데 아직 기금에 기록하지 않은 보험금 지급을 기금 원장에 기록할까요?`))) return;
     void post({ action: "record_payouts" }, "지급을 기록하지 못했습니다.", "지급을 기록했습니다.");
   }
+  const policy = data?.policies.find((p) => p.nationality === country);
+  const postCountry = (body: Record<string, unknown>, fallback: string, done: string) =>
+    run(() => api<{ success: boolean }>("/api/admin/deposit-insurance-fund", { method: "POST", body: JSON.stringify({ nationality: country, ...body }) }), fallback, () => { say(done); load(); });
+  async function toggleAuto() {
+    if (!policy) return;
+    const next = !policy.auto_record;
+    if (!(await confirmAction(`${country}에서 은행을 정리할 때 보험금 지급을 기금 원장에 ${next ? "자동으로 기록하도록 켭니다" : "자동 기록하지 않도록 끕니다"}. 계속할까요?`))) return;
+    void postCountry({ action: "set_policy", autoRecord: next }, "정책을 저장하지 못했습니다.", next ? "자동 기록을 켰습니다." : "자동 기록을 껐습니다.");
+  }
+  async function setBackstop(enabled: boolean) {
+    const limit = enabled ? Number(cap) : (policy?.backstop_limit_minor_units ?? 0);
+    if (enabled && (!/^\d{1,15}$/.test(cap) || limit < 1)) { say("보전 한도(최소단위 정수)를 입력해주세요.", true); return; }
+    if (!(await confirmAction(enabled ? `${country} 국고가 기금 부족분을 최대 ${limit}(최소단위)까지 보전할 수 있게 합니다. 계속할까요?` : `${country} 국고 보전을 끕니다. 계속할까요?`))) return;
+    void postCountry({ action: "set_backstop_policy", enabled, limitMinorUnits: limit }, "보전 정책을 저장하지 못했습니다.", enabled ? "국고 보전을 켰습니다." : "국고 보전을 껐습니다.");
+  }
+  async function cover() {
+    if (!(await confirmAction(`${country} 국고 지갑에서 기금 부족분을 한도 안에서 보전 지급합니다. 되돌릴 수 없습니다. 계속할까요?`))) return;
+    void postCountry({ action: "cover_shortfall", eventKey: `ui-${crypto.randomUUID()}` }, "보전하지 못했습니다.", "기금 부족분을 보전했습니다.");
+  }
   if (!data) return <p className="cap">불러오는 중…</p>;
   const currencies = Object.entries(data.fund);
   return <Card title="예금보험기금" caption="보험료를 모아 한도 안에서 지급합니다. 기능은 관리자가 실행할 때만 작동하며 자동으로 징수·지급하지 않습니다.">
@@ -56,6 +77,15 @@ function FundCard({ ctx, bankId }: { ctx: Ctx; bankId: string }) {
       <label className="rates-field"><span>보험료율 %</span><input inputMode="decimal" aria-label="보험료율(%)" placeholder="보험료율 %" value={premium} onChange={(event) => setPremium(event.target.value)} /></label>
       <button type="button" className="btn primary" disabled={busy || !bankId} onClick={collect}>선택한 은행에 보험료 징수</button>
       <button type="button" className="outline" disabled={busy || !bankId} onClick={record}>정리 청구 지급 기록</button>
+    </div>
+    <div className="alm-edit rates-edit">
+      <select aria-label="관할" value={country} onChange={(event) => setCountry(event.target.value)}><option value="">관할 선택</option>{data.policies.map((p) => <option key={p.nationality} value={p.nationality}>{p.nationality}</option>)}</select>
+      {policy && <span className="cap">자동 기록 {policy.auto_record ? "켜짐" : "꺼짐"} · 국고 보전 {policy.backstop_enabled ? `켜짐(한도 ${policy.backstop_limit_minor_units.toLocaleString("ko-KR")}, 사용 ${policy.backstop_used_minor_units.toLocaleString("ko-KR")} ${policy.currency_code})` : "꺼짐"}</span>}
+      <button type="button" className="outline" disabled={busy || !policy} onClick={() => void toggleAuto()}>{policy?.auto_record ? "정리 시 자동 기록 끄기" : "정리 시 자동 기록 켜기"}</button>
+      <input inputMode="numeric" aria-label="보전 한도(최소단위)" placeholder="보전 한도(최소단위)" style={{ minWidth: 170 }} value={cap} onChange={(event) => setCap(event.target.value)} />
+      <button type="button" className="outline" disabled={busy || !policy} onClick={() => void setBackstop(true)}>국고 보전 켜기</button>
+      <button type="button" className="outline" disabled={busy || !policy?.backstop_enabled} onClick={() => void setBackstop(false)}>국고 보전 끄기</button>
+      <button type="button" className="btn primary" disabled={busy || !policy?.backstop_enabled} onClick={() => void cover()}>기금 부족 보전 실행</button>
     </div>
   </Card>;
 }

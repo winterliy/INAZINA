@@ -121,8 +121,12 @@ def fund_overview(conn):
         entry = result.setdefault(row["currency_code"], {"premiumsMinorUnits": 0, "payoutsMinorUnits": 0, "events": 0})
         entry["premiumsMinorUnits" if row["kind"] == "premium" else "payoutsMinorUnits"] = int(row["total"])
         entry["events"] += int(row["n"])
+    for row in conn.execute("SELECT currency_code,SUM(amount_minor_units) total FROM deposit_insurance_backstops GROUP BY currency_code").fetchall():
+        entry = result.setdefault(row["currency_code"], {"premiumsMinorUnits": 0, "payoutsMinorUnits": 0, "events": 0})
+        entry["backstopsMinorUnits"] = int(row["total"])
     for currency, entry in result.items():
-        entry["balanceMinorUnits"] = entry["premiumsMinorUnits"] - entry["payoutsMinorUnits"]
+        entry.setdefault("backstopsMinorUnits", 0)
+        entry["balanceMinorUnits"] = entry["premiumsMinorUnits"] + entry["backstopsMinorUnits"] - entry["payoutsMinorUnits"]
         entry["shortfallMinorUnits"] = max(0, -entry["balanceMinorUnits"])
         entry["decimalPlaces"] = currency_precision(conn, currency)
     return result
@@ -142,6 +146,10 @@ def reconcile(conn):
         if row["payout_amount_minor_units"] is None or int(row["payout_amount_minor_units"]) != int(row["amount_minor_units"]):
             problems.append({"kind": "payout", "eventKey": row["event_key"], "fund": int(row["amount_minor_units"]),
                              "claim": None if row["payout_amount_minor_units"] is None else int(row["payout_amount_minor_units"])})
+    for row in conn.execute("SELECT b.nationality,SUM(b.amount_minor_units) total,COALESCE(MAX(p.limit_minor_units),0) cap FROM deposit_insurance_backstops b "
+                            "LEFT JOIN deposit_insurance_backstop_policy p ON p.nationality=b.nationality GROUP BY b.nationality").fetchall():
+        if int(row["total"]) > int(row["cap"]):
+            problems.append({"kind": "backstop", "nationality": row["nationality"], "covered": int(row["total"]), "cap": int(row["cap"])})
     return problems
 
 
@@ -169,3 +177,54 @@ def auto_record_if_enabled(conn, issuer, *, now):
                                  "VALUES (?,?,?,?,?,?,?,?)", (f"claim:{claim['claim_id']}", "payout", issuer, str(claim["payout_currency"]),
                                                              int(claim["payout_amount_minor_units"]), f"claim {claim['claim_id']} (resolution)", "resolution", int(now))).rowcount
     return recorded
+
+
+def set_backstop_policy(conn, nationality, enabled, limit_minor_units, *, actor_id, now):
+    """Allow (or stop) the country's treasury to cover a fund shortfall, up to an administrator-set total cap (default: not allowed)."""
+    ComplianceManager._require_admin(conn, actor_id)
+    nationality = str(nationality or "").strip()
+    if (type(enabled) is not bool or type(limit_minor_units) is not int or not 0 <= limit_minor_units <= SAFE or not nationality
+            or not conn.execute("SELECT 1 FROM country_currencies WHERE nationality=?", (nationality,)).fetchone()):
+        raise ValueError("invalid backstop policy")
+    conn.execute("INSERT INTO deposit_insurance_backstop_policy(nationality,enabled,limit_minor_units,updated_by,updated_epoch) VALUES (?,?,?,?,?) "
+                 "ON CONFLICT(nationality) DO UPDATE SET enabled=excluded.enabled,limit_minor_units=excluded.limit_minor_units,"
+                 "updated_by=excluded.updated_by,updated_epoch=excluded.updated_epoch", (nationality, int(enabled), limit_minor_units, str(actor_id), int(now)))
+
+
+def cover_shortfall(conn, nationality, *, event_key, actor_id, now):
+    """Pay the fund's shortfall in the country's currency from its treasury wallet, within the policy cap; recorded once per key."""
+    if not conn.in_transaction:
+        raise ValueError("caller must start a transaction")
+    ComplianceManager._require_admin(conn, actor_id)
+    from managers.currency_manager import CurrencyManager
+    key, nationality = str(event_key or "").strip(), str(nationality or "").strip()
+    if not 8 <= len(key) <= 120 or type(now) is not int or not nationality:
+        raise ValueError("invalid backstop")
+    policy = conn.execute("SELECT enabled,limit_minor_units FROM deposit_insurance_backstop_policy WHERE nationality=?", (nationality,)).fetchone()
+    country = conn.execute("SELECT currency_code FROM country_currencies WHERE nationality=?", (nationality,)).fetchone()
+    if not policy or not int(policy["enabled"]) or not country:
+        raise ValueError("treasury backstop is not enabled for this jurisdiction")
+    currency = str(country["currency_code"])
+    prior = conn.execute("SELECT * FROM deposit_insurance_backstops WHERE event_key=?", (key,)).fetchone()
+    if prior:
+        if (prior["nationality"], prior["currency_code"]) != (nationality, currency):
+            raise ValueError("backstop key already used with different details")
+        return {"backstopId": int(prior["backstop_id"]), "duplicate": True, "amountMinorUnits": int(prior["amount_minor_units"])}
+    shortfall = fund_overview(conn).get(currency, {}).get("shortfallMinorUnits", 0)
+    used = int(conn.execute("SELECT COALESCE(SUM(amount_minor_units),0) FROM deposit_insurance_backstops WHERE nationality=?", (nationality,)).fetchone()[0])
+    amount = min(shortfall, int(policy["limit_minor_units"]) - used)
+    if amount <= 0:
+        raise ValueError("no shortfall to cover or the backstop cap is used up")
+    places = currency_precision(conn, currency)
+    treasury = CurrencyManager.treasury_id(conn, nationality)
+    conn.execute("SAVEPOINT di_backstop")
+    try:
+        CurrencyManager.treasury_pay(conn, treasury, currency, amount * 10 ** (6 - places))
+        cursor = conn.execute("INSERT INTO deposit_insurance_backstops(event_key,nationality,currency_code,amount_minor_units,treasury_id,actor_id,created_epoch) "
+                              "VALUES (?,?,?,?,?,?,?)", (key, nationality, currency, amount, str(treasury), str(actor_id), now))
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT di_backstop")
+        conn.execute("RELEASE SAVEPOINT di_backstop")
+        raise
+    conn.execute("RELEASE SAVEPOINT di_backstop")
+    return {"backstopId": cursor.lastrowid, "duplicate": False, "amountMinorUnits": amount, "currencyCode": currency}

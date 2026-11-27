@@ -5263,6 +5263,11 @@ class Handler(BaseHTTPRequestHandler):
                     with connect_readonly() as plain:
                         connection = LegacyNames(plain)
                         report = {"fund": insurance_fund.fund_overview(connection), "problems": insurance_fund.reconcile(connection),
+                                  "policies": [dict(row) for row in connection.execute(
+                                      "SELECT c.nationality,COALESCE(p.auto_record,0) auto_record,COALESCE(b.enabled,0) backstop_enabled,COALESCE(b.limit_minor_units,0) backstop_limit_minor_units,"
+                                      "COALESCE((SELECT SUM(amount_minor_units) FROM deposit_insurance_backstops x WHERE x.nationality=c.nationality),0) backstop_used_minor_units,"
+                                      "c.currency_code FROM country_currencies c LEFT JOIN deposit_insurance_fund_policy p ON p.nationality=c.nationality "
+                                      "LEFT JOIN deposit_insurance_backstop_policy b ON b.nationality=c.nationality ORDER BY c.nationality").fetchall()],
                                   "events": [dict(row) for row in connection.execute(
                                       "SELECT event_id,event_key,kind,issuer,currency_code,amount_minor_units,reference,created_epoch "
                                       "FROM deposit_insurance_fund_events ORDER BY event_id DESC LIMIT 50").fetchall()]}
@@ -6156,6 +6161,21 @@ class Handler(BaseHTTPRequestHandler):
                 from functions.banks import bank_issuer
                 from managers import deposit_insurance_fund as insurance_fund
                 action = payload.get("action")
+                if action in ("set_backstop_policy", "cover_shortfall"):
+                    shape = ({"action", "nationality", "enabled", "limitMinorUnits"} if action == "set_backstop_policy" else {"action", "nationality", "eventKey"})
+                    if set(payload) != shape or not isinstance(payload["nationality"], str) or (action == "cover_shortfall" and not isinstance(payload["eventKey"], str)):
+                        raise ValueError("invalid_deposit_insurance_fund_payload")
+                    with domain().db.atomic() as connection:
+                        if action == "set_backstop_policy":
+                            insurance_fund.set_backstop_policy(connection, payload["nationality"], payload["enabled"], payload["limitMinorUnits"],
+                                                               actor_id=user["userId"], now=int(time.time()))
+                            outcome = {"enabled": payload["enabled"], "limitMinorUnits": payload["limitMinorUnits"]}
+                        else:
+                            outcome = insurance_fund.cover_shortfall(connection, payload["nationality"], event_key=payload["eventKey"],
+                                                                     actor_id=user["userId"], now=int(time.time()))
+                    audit_admin_access(user["userId"], f"deposit_insurance_fund.{action}", {"nationality": payload["nationality"], "event_key": payload.get("eventKey"), "result": outcome})
+                    self.send_json(200, {"success": True, "result": outcome})
+                    return
                 if action == "set_policy":
                     if set(payload) != {"action", "nationality", "autoRecord"} or type(payload["autoRecord"]) is not bool or not isinstance(payload["nationality"], str):
                         raise ValueError("invalid_deposit_insurance_fund_payload")
