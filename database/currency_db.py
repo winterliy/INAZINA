@@ -3854,6 +3854,15 @@ def ensure_deposit_insurance_backstop(execute):
         backstop_id INTEGER PRIMARY KEY AUTOINCREMENT, event_key TEXT NOT NULL UNIQUE, nationality TEXT NOT NULL, currency_code TEXT NOT NULL,
         amount_minor_units INTEGER NOT NULL CHECK(typeof(amount_minor_units)='integer' AND amount_minor_units>0),
         treasury_id TEXT NOT NULL, actor_id TEXT NOT NULL, created_epoch INTEGER NOT NULL)""")
+    execute("""CREATE TABLE IF NOT EXISTS deposit_insurance_claim_funding (
+        claim_id INTEGER PRIMARY KEY, currency_code TEXT NOT NULL,
+        payout_minor_units INTEGER NOT NULL CHECK(typeof(payout_minor_units)='integer' AND payout_minor_units>0),
+        fund_minor_units INTEGER NOT NULL CHECK(typeof(fund_minor_units)='integer' AND fund_minor_units>=0),
+        treasury_minor_units INTEGER NOT NULL CHECK(typeof(treasury_minor_units)='integer' AND treasury_minor_units>=0),
+        event_minor_units INTEGER NOT NULL CHECK(typeof(event_minor_units)='integer' AND event_minor_units>=0),
+        created_epoch INTEGER NOT NULL)""")
+    execute("""CREATE TRIGGER IF NOT EXISTS trg_deposit_insurance_claim_funding_update BEFORE UPDATE ON deposit_insurance_claim_funding
+        BEGIN SELECT RAISE(ABORT,'deposit insurance claim funding is append-only'); END""")
     for operation in ("UPDATE", "DELETE"):
         execute(f"""CREATE TRIGGER IF NOT EXISTS trg_deposit_insurance_backstops_{operation.lower()}
             BEFORE {operation} ON deposit_insurance_backstops

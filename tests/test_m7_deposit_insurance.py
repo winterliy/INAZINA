@@ -176,9 +176,7 @@ class DepositInsuranceFundApiTests(Fixture):
         self.assertEqual(self.call("do_POST", policy, role="user")[0]["status"], 403)
 
     def test_backstop_policy_and_cover_through_the_api_are_audited_and_validated(self):
-        self.db.accounts.execute("INSERT INTO deposit_insurance_claims(issuer,user_id,account_number,covered_amount,uninsured_amount,payout_currency,payout_amount,"
-                                 "payout_amount_minor_units,payout_decimal_places,resolved_epoch) VALUES ('Bank','u1','A1',300,0,'NWX',300,300,0,1800000000)")
-        self.assertEqual(self.call("do_POST", {"action": "record_payouts", "bankId": "BNK1"})[0]["status"], 200)
+        FundBackstopTests.shortfall_300(self)
         policy = {"action": "set_backstop_policy", "nationality": "낙원", "enabled": True, "limitMinorUnits": 250}
         response, audit = self.call("do_POST", policy)
         self.assertEqual(response["status"], 200, response)
@@ -207,42 +205,104 @@ class DepositInsuranceFundApiTests(Fixture):
 
 
 class FundAutoRecordTests(Fixture):
+    """Resolution financing: fund first, treasury only for the rest; both policy flags off keeps the old behaviour (treasury pays all)."""
     NOW = 1_800_000_000
 
-    def fail_and_resolve(self):
+    def setUp(self):
+        super().setUp()
+        self.db.users.create_user("admin", "Admin", "낙원", 0, role="admin")
+
+    def treasury_cash(self):
+        from managers.currency_manager import CurrencyManager
+        with self.db.readonly() as conn:
+            return CurrencyManager.balance(conn, CurrencyManager.treasury_id(conn, "낙원"), "NWX")
+
+    def policies(self, auto, backstop):
+        with self.db.atomic() as conn:
+            fund.set_auto_record(conn, "낙원", auto, actor_id="admin", now=self.NOW)
+            fund.set_backstop_policy(conn, "낙원", backstop, 10_000, actor_id="admin", now=self.NOW)
+
+    def resolve(self, premium_bps=0):
+        if premium_bps:
+            with self.db.atomic() as conn:
+                fund.collect_premium(conn, "Bank", premium_bps=premium_bps, event_key="premium-0001-aaaa", actor_id="admin", now=self.NOW)
         self.db.currency.execute("UPDATE financial_institutions SET status='failed' WHERE issuer='Bank'")
         from managers.bank_manager import BankManager
+        before = self.treasury_cash()
         with self.db.atomic() as conn:
-            return BankManager.resolve_failed_institution(conn, "Bank", now=self.NOW)
+            BankManager.resolve_failed_institution(conn, "Bank", now=self.NOW + 1)
+        paid = self.db.accounts.execute_one("SELECT COALESCE(SUM(payout_amount_minor_units),0) FROM deposit_insurance_claims")[0]
+        return int(paid), (before - self.treasury_cash()) // 10 ** 6
 
-    def events(self):
-        return [tuple(r) for r in self.db.currency.execute("SELECT event_key,kind,amount_minor_units FROM deposit_insurance_fund_events ORDER BY event_key")]
+    def fund_state(self):
+        with self.db.readonly() as conn:
+            overview = fund.fund_overview(conn).get("NWX", {"balanceMinorUnits": 0})
+            return overview["balanceMinorUnits"], fund.reconcile(conn)
 
-    def test_off_by_default_resolution_records_nothing_in_the_fund(self):
-        self.fail_and_resolve()
-        self.assertEqual(self.events(), [])
-        self.assertGreater(self.db.accounts.execute_one("SELECT COUNT(*) FROM deposit_insurance_claims")[0], 0)
+    def rows(self, table):
+        return self.db.currency.execute_one(f"SELECT COUNT(*) FROM {table}")[0]
 
-    def test_opted_in_resolution_records_each_claim_payout_once_and_reconciles(self):
-        self.db.users.create_user("admin", "Admin", "낙원", 0, role="admin")
+    def test_both_flags_off_the_treasury_pays_everything_and_nothing_is_recorded(self):
+        paid, treasury = self.resolve()
+        self.assertGreater(paid, 0)
+        self.assertEqual(treasury, paid)
+        self.assertEqual((self.rows("deposit_insurance_fund_events"), self.rows("deposit_insurance_claim_funding"), self.rows("deposit_insurance_backstops")), (0, 0, 0))
+
+    def test_backstop_alone_changes_nothing_at_resolution(self):
+        self.policies(False, True)
+        paid, treasury = self.resolve()
+        self.assertEqual(treasury, paid)
+        self.assertEqual((self.rows("deposit_insurance_fund_events"), self.rows("deposit_insurance_backstops")), (0, 0))
+
+    def test_fund_first_then_the_treasury_pays_only_the_rest_and_no_claim_is_charged_twice(self):
+        self.policies(True, False)
+        paid, treasury = self.resolve(premium_bps=5000)                 # premium = 50% of the covered deposits
+        fund_part = self.db.currency.execute_one("SELECT COALESCE(SUM(fund_minor_units),0) FROM deposit_insurance_claim_funding")[0]
+        treasury_part = self.db.currency.execute_one("SELECT COALESCE(SUM(treasury_minor_units),0) FROM deposit_insurance_claim_funding")[0]
+        self.assertGreater(fund_part, 0)
+        self.assertEqual((fund_part + treasury_part, treasury), (paid, paid - fund_part))
+        balance, problems = self.fund_state()
+        self.assertEqual((balance, problems), (0, []))                  # the fund never goes negative from resolution
+        self.assertEqual(self.rows("deposit_insurance_backstops"), 0)
+
+    def test_fund_and_backstop_on_record_the_treasury_part_as_a_backstop_and_the_fund_ends_at_zero(self):
+        self.policies(True, True)
+        paid, treasury = self.resolve(premium_bps=5000)
+        fund_part = self.db.currency.execute_one("SELECT COALESCE(SUM(fund_minor_units),0) FROM deposit_insurance_claim_funding")[0]
+        backstopped = self.db.currency.execute_one("SELECT COALESCE(SUM(amount_minor_units),0) FROM deposit_insurance_backstops")[0]
+        self.assertEqual((treasury, backstopped), (paid - fund_part, paid - fund_part))
+        balance, problems = self.fund_state()
+        self.assertEqual((balance, problems), (0, []))
+
+    def test_a_replayed_resolution_pays_and_records_nothing_twice(self):
+        self.policies(True, True)
+        self.resolve(premium_bps=5000)
+        before = (self.treasury_cash(), self.rows("deposit_insurance_fund_events"), self.rows("deposit_insurance_claim_funding"))
+        from managers.bank_manager import BankManager
         with self.db.atomic() as conn:
-            fund.set_auto_record(conn, "낙원", True, actor_id="admin", now=self.NOW)
-        self.fail_and_resolve()
-        paid = [tuple(r) for r in self.db.accounts.execute("SELECT claim_id,payout_amount_minor_units FROM deposit_insurance_claims WHERE payout_amount_minor_units>0")]
-        self.assertTrue(paid)
-        self.assertEqual(sorted((f"claim:{c}", "payout", a) for c, a in paid), self.events())
-        with self.db.atomic() as conn:                 # running the recorder again (or the manual action) adds nothing
-            self.assertEqual(fund.auto_record_if_enabled(conn, "Bank", now=self.NOW), 0)
+            BankManager.resolve_failed_institution(conn, "Bank", now=self.NOW + 2)
+        self.assertEqual((self.treasury_cash(), self.rows("deposit_insurance_fund_events"), self.rows("deposit_insurance_claim_funding")), before)
+
+    def test_the_manual_recorder_skips_financed_claims_and_a_legacy_claim_is_never_covered_again(self):
+        self.policies(True, True)
+        self.resolve(premium_bps=5000)
+        with self.db.atomic() as conn:
             self.assertEqual(fund.record_claim_payouts(conn, "Bank", actor_id="admin", now=self.NOW)["recorded"], 0)
-            self.assertEqual(fund.reconcile(conn), [])
+        # a legacy claim (treasury paid in full, no funding record) recorded by hand must not be backstopped a second time
+        self.db.accounts.execute("INSERT INTO deposit_insurance_claims(issuer,user_id,account_number,covered_amount,uninsured_amount,payout_currency,payout_amount,"
+                                 "payout_amount_minor_units,payout_decimal_places,resolved_epoch) VALUES ('Bank','u1','LEGACY',50,0,'NWX',50,50,0,?)", (self.NOW,))
+        with self.db.atomic() as conn:
+            self.assertEqual(fund.record_claim_payouts(conn, "Bank", actor_id="admin", now=self.NOW)["recorded"], 1)
+            with self.assertRaises(ValueError):
+                fund.cover_shortfall(conn, "낙원", event_key="cover-0001-aaaa", actor_id="admin", now=self.NOW)
 
     def test_the_policy_needs_an_admin_and_a_known_country(self):
-        self.db.users.create_user("admin", "Admin", "낙원", 0, role="admin")
         with self.db.atomic() as conn:
             for args in (dict(nationality="없는나라", enabled=True, actor_id="admin"), dict(nationality="낙원", enabled="yes", actor_id="admin"),
                          dict(nationality="낙원", enabled=True, actor_id="u1")):
                 with self.assertRaises(ValueError):
                     fund.set_auto_record(conn, now=self.NOW, **args)
+
 
 
 class FundBackstopTests(Fixture):
@@ -251,10 +311,17 @@ class FundBackstopTests(Fixture):
     def setUp(self):
         super().setUp()
         self.db.users.create_user("admin", "Admin", "낙원", 0, role="admin")
+        self.shortfall_300()                                                                  # fund balance -300
+
+    def shortfall_300(self):
+        """A fund-borne payout of 300 with an empty fund (the claim has a funding record, so it is the fund's to be covered)."""
         self.db.accounts.execute("INSERT INTO deposit_insurance_claims(issuer,user_id,account_number,covered_amount,uninsured_amount,payout_currency,payout_amount,"
-                                 "payout_amount_minor_units,payout_decimal_places,resolved_epoch) VALUES ('Bank','u1','A1',300,0,'NWX',300,300,0,?)", (self.NOW,))
-        with self.db.atomic() as conn:
-            fund.record_claim_payouts(conn, "Bank", actor_id="admin", now=self.NOW)         # fund balance -300
+                                 "payout_amount_minor_units,payout_decimal_places,resolved_epoch) VALUES ('Bank','u1','A1',300,0,'NWX',300,300,0,?)", (1_800_000_000,))
+        claim = self.db.accounts.execute_one("SELECT claim_id FROM deposit_insurance_claims WHERE account_number='A1'")[0]
+        self.db.currency.execute("INSERT INTO deposit_insurance_claim_funding(claim_id,currency_code,payout_minor_units,fund_minor_units,treasury_minor_units,event_minor_units,created_epoch) "
+                                 "VALUES (?,'NWX',300,300,0,300,1800000000)", (claim,))
+        self.db.currency.execute("INSERT INTO deposit_insurance_fund_events(event_key,kind,issuer,currency_code,amount_minor_units,reference,actor_id,created_epoch) "
+                                 "VALUES (?,'payout','Bank','NWX',300,'test','resolution',1800000000)", (f"claim:{claim}",))
 
     def policy(self, conn, enabled=True, limit=200):
         fund.set_backstop_policy(conn, "낙원", enabled, limit, actor_id="admin", now=self.NOW)

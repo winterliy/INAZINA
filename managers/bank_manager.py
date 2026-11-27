@@ -2368,10 +2368,15 @@ class BankManager:
                 payout_amount_minor_units = to_minor_units(
                     payout_amount, payout_decimal_places
                 )
+                # The fund (when the jurisdiction opted in) bears the payout first; the treasury pays only the rest. With the
+                # fund policy off the share is 0 and the treasury pays everything, as before.
+                from managers.deposit_insurance_fund import fund_share_minor
+                fund_share = fund_share_minor(conn, issuer, payout_currency, payout_amount_minor_units)
+                treasury_units = max(0, payout_units - fund_share * 10 ** (6 - payout_decimal_places))
                 CurrencyManager.change(conn, user_id, user_currency, payout_units)
                 CurrencyManager.treasury_pay(
                     conn, CurrencyManager.user_treasury_id(conn, user_id),
-                    user_currency, payout_units,
+                    user_currency, treasury_units,
                 )
                 if account_currency != user_currency:
                     conn.execute(
@@ -2410,12 +2415,14 @@ class BankManager:
                  payout_currency, payout_amount, payout_amount_minor_units,
                  payout_decimal_places, when),
             )
+            if covered:
+                from managers.deposit_insurance_fund import record_resolution_financing
+                record_resolution_financing(conn, issuer, account["account_number"], payout_currency,
+                                            payout_amount_minor_units, fund_share, int(when))
             covered_total += covered_base
             uninsured_total += uninsured_base
         conn.execute("UPDATE product.saving SET status='inactive' WHERE issuer=?", (issuer,))
         conn.execute("UPDATE product.liability SET status='inactive' WHERE issuer=?", (issuer,))
-        from managers.deposit_insurance_fund import auto_record_if_enabled
-        auto_record_if_enabled(conn, issuer, now=int(when))      # opt-in per jurisdiction; off by default
         return {
             "accounts": len(accounts),
             "covered": covered_total,

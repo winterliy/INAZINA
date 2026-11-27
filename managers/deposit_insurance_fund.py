@@ -82,6 +82,9 @@ def collect_premium(conn, issuer, *, premium_bps, event_key, actor_id, now):
         raise ValueError("assessed premium is zero")
     conn.execute("SAVEPOINT di_premium")
     try:
+        # PostgreSQL schema sync creates tables but not seed rows, so an existing database may lack this chart account.
+        conn.execute("INSERT OR IGNORE INTO bank_journal_accounts(account_code,display_name,category,normal_side) "
+                     "VALUES ('deposit_insurance_premium_expense','예금보험료비용','expense','debit')")
         posted = BankJournal.post(conn, issuer, "deposit_insurance_premium", f"di-premium:{key}", currency,
                                   [("deposit_insurance_premium_expense", "debit", Decimal(amount) / 10 ** places),
                                    ("settlement_asset", "credit", Decimal(amount) / 10 ** places)],
@@ -105,7 +108,8 @@ def record_claim_payouts(conn, issuer, *, actor_id, now):
     ComplianceManager._require_admin(conn, actor_id)
     recorded = 0
     for claim in conn.execute("SELECT claim_id,payout_currency,payout_amount_minor_units FROM deposit_insurance_claims WHERE issuer=? "
-                              "AND payout_currency IS NOT NULL AND payout_amount_minor_units>0 ORDER BY claim_id", (issuer,)).fetchall():
+                              "AND payout_currency IS NOT NULL AND payout_amount_minor_units>0 "
+                              "AND claim_id NOT IN (SELECT claim_id FROM deposit_insurance_claim_funding) ORDER BY claim_id", (issuer,)).fetchall():
         cursor = conn.execute("INSERT OR IGNORE INTO deposit_insurance_fund_events(event_key,kind,issuer,currency_code,amount_minor_units,reference,actor_id,created_epoch) "
                               "VALUES (?,?,?,?,?,?,?,?)", (f"claim:{claim['claim_id']}", "payout", issuer, str(claim["payout_currency"]),
                                                           int(claim["payout_amount_minor_units"]), f"claim {claim['claim_id']}", str(actor_id), now))
@@ -141,8 +145,9 @@ def reconcile(conn):
                                (row["issuer"], row["currency_code"])).fetchone()[0]
         if int(journal) != int(row["total"]):
             problems.append({"kind": "premium", "issuer": row["issuer"], "currency": row["currency_code"], "fund": int(row["total"]), "journal": int(journal)})
-    for row in conn.execute("SELECT e.event_key,e.amount_minor_units,c.payout_amount_minor_units FROM deposit_insurance_fund_events e "
-                            "LEFT JOIN deposit_insurance_claims c ON 'claim:'||c.claim_id=e.event_key WHERE e.kind='payout'").fetchall():
+    for row in conn.execute("SELECT e.event_key,e.amount_minor_units,COALESCE(f.event_minor_units,c.payout_amount_minor_units) payout_amount_minor_units "
+                            "FROM deposit_insurance_fund_events e LEFT JOIN deposit_insurance_claims c ON 'claim:'||c.claim_id=e.event_key "
+                            "LEFT JOIN deposit_insurance_claim_funding f ON f.claim_id=c.claim_id WHERE e.kind='payout'").fetchall():
         if row["payout_amount_minor_units"] is None or int(row["payout_amount_minor_units"]) != int(row["amount_minor_units"]):
             problems.append({"kind": "payout", "eventKey": row["event_key"], "fund": int(row["amount_minor_units"]),
                              "claim": None if row["payout_amount_minor_units"] is None else int(row["payout_amount_minor_units"])})
@@ -164,19 +169,45 @@ def set_auto_record(conn, nationality, enabled, *, actor_id, now):
                  (nationality, int(enabled), str(actor_id), int(now)))
 
 
-def auto_record_if_enabled(conn, issuer, *, now):
-    """Called by bank resolution: when the bank's jurisdiction opted in, record the fund payouts of its claims (once per claim)."""
-    row = conn.execute("SELECT p.auto_record FROM financial_institutions f JOIN deposit_insurance_fund_policy p ON p.nationality=f.nationality "
-                       "WHERE f.issuer=?", (issuer,)).fetchone()
-    if not row or not int(row["auto_record"]):
+def _policy(conn, issuer):
+    row = conn.execute("SELECT f.nationality,COALESCE(p.auto_record,0) auto_record,COALESCE(b.enabled,0) backstop FROM financial_institutions f "
+                       "LEFT JOIN deposit_insurance_fund_policy p ON p.nationality=f.nationality "
+                       "LEFT JOIN deposit_insurance_backstop_policy b ON b.nationality=f.nationality WHERE f.issuer=?", (issuer,)).fetchone()
+    return (row["nationality"], bool(row["auto_record"]), bool(row["backstop"])) if row else (None, False, False)
+
+
+def fund_share_minor(conn, issuer, currency, payout_minor):
+    """How much of one resolution payout the fund bears: nothing unless the jurisdiction opted in, then what the fund balance allows."""
+    _nationality, auto, _backstop = _policy(conn, issuer)
+    if not auto or not payout_minor or payout_minor <= 0:
         return 0
-    recorded = 0
-    for claim in conn.execute("SELECT claim_id,payout_currency,payout_amount_minor_units FROM deposit_insurance_claims WHERE issuer=? "
-                              "AND payout_currency IS NOT NULL AND payout_amount_minor_units>0 ORDER BY claim_id", (issuer,)).fetchall():
-        recorded += conn.execute("INSERT OR IGNORE INTO deposit_insurance_fund_events(event_key,kind,issuer,currency_code,amount_minor_units,reference,actor_id,created_epoch) "
-                                 "VALUES (?,?,?,?,?,?,?,?)", (f"claim:{claim['claim_id']}", "payout", issuer, str(claim["payout_currency"]),
-                                                             int(claim["payout_amount_minor_units"]), f"claim {claim['claim_id']} (resolution)", "resolution", int(now))).rowcount
-    return recorded
+    return max(0, min(int(payout_minor), fund_overview(conn).get(str(currency), {}).get("balanceMinorUnits", 0)))
+
+
+def record_resolution_financing(conn, issuer, account_number, currency, payout_minor, share, now):
+    """Record who financed one claim's payout (called by bank resolution; a no-op while the fund policy is off).
+
+    The fund bears ``share``; the treasury paid the rest directly at resolution. With the backstop policy on, the payout event is the full
+    payout and the treasury part is recorded as a backstop (net fund effect: minus ``share``); otherwise the event is just ``share``.
+    """
+    nationality, auto, backstop = _policy(conn, issuer)
+    claim = conn.execute("SELECT claim_id FROM deposit_insurance_claims WHERE issuer=? AND account_number=?", (issuer, account_number)).fetchone()
+    if not auto or not claim or not payout_minor or payout_minor <= 0:
+        return None
+    claim_id, treasury_part = int(claim["claim_id"]), int(payout_minor) - int(share)
+    event = int(payout_minor) if backstop else int(share)
+    if event > 0:
+        conn.execute("INSERT OR IGNORE INTO deposit_insurance_fund_events(event_key,kind,issuer,currency_code,amount_minor_units,reference,actor_id,created_epoch) "
+                     "VALUES (?,?,?,?,?,?,?,?)", (f"claim:{claim_id}", "payout", issuer, str(currency), event, f"claim {claim_id} (resolution)", "resolution", int(now)))
+    if backstop and treasury_part > 0:
+        from managers.currency_manager import CurrencyManager
+        conn.execute("INSERT OR IGNORE INTO deposit_insurance_backstops(event_key,nationality,currency_code,amount_minor_units,treasury_id,actor_id,created_epoch) "
+                     "VALUES (?,?,?,?,?,?,?)", (f"resolution-claim:{claim_id}", nationality, str(currency), treasury_part,
+                                                str(CurrencyManager.treasury_id(conn, nationality)), "resolution", int(now)))
+    conn.execute("INSERT OR IGNORE INTO deposit_insurance_claim_funding(claim_id,currency_code,payout_minor_units,fund_minor_units,treasury_minor_units,"
+                 "event_minor_units,created_epoch) VALUES (?,?,?,?,?,?,?)", (claim_id, str(currency), int(payout_minor), int(share), treasury_part, event, int(now)))
+    return claim_id
+
 
 
 def set_backstop_policy(conn, nationality, enabled, limit_minor_units, *, actor_id, now):
@@ -210,7 +241,12 @@ def cover_shortfall(conn, nationality, *, event_key, actor_id, now):
         if (prior["nationality"], prior["currency_code"]) != (nationality, currency):
             raise ValueError("backstop key already used with different details")
         return {"backstopId": int(prior["backstop_id"]), "duplicate": True, "amountMinorUnits": int(prior["amount_minor_units"])}
-    shortfall = fund_overview(conn).get(currency, {}).get("shortfallMinorUnits", 0)
+    # Payouts recorded for claims the treasury already paid in full at resolution (no funding record) are not the fund's to be covered again.
+    treasury_paid = int(conn.execute(
+        "SELECT COALESCE(SUM(e.amount_minor_units),0) FROM deposit_insurance_fund_events e WHERE e.kind='payout' AND e.currency_code=? AND e.event_key LIKE 'claim:%' "
+        "AND NOT EXISTS (SELECT 1 FROM deposit_insurance_claim_funding f WHERE 'claim:'||f.claim_id=e.event_key)", (currency,)).fetchone()[0])
+    balance = fund_overview(conn).get(currency, {}).get("balanceMinorUnits", 0)
+    shortfall = max(0, -(balance + treasury_paid))
     used = int(conn.execute("SELECT COALESCE(SUM(amount_minor_units),0) FROM deposit_insurance_backstops WHERE nationality=?", (nationality,)).fetchone()[0])
     amount = min(shortfall, int(policy["limit_minor_units"]) - used)
     if amount <= 0:
