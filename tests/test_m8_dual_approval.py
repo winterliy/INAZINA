@@ -50,6 +50,11 @@ class DualApprovalTests(unittest.TestCase):
         self.assertEqual(approval.risk_action("/internal/admin/db/tables/t/rows/3/delete", {}), "db.delete")
         self.assertEqual(approval.risk_action("/internal/admin/users/u1", {"role": "admin"}), "user.role")
         self.assertEqual(approval.risk_action("/internal/admin/users/u1", {"nickname": "x"}), None)
+        # the administrator UI posts {"changes": {...}} to /internal/admin/user/<id>
+        self.assertEqual(approval.risk_action("/internal/admin/user/u1", {"changes": {"role": "admin"}}), "user.role")
+        self.assertEqual(approval.risk_action("/internal/admin/user/u1", {"changes": {"cash": "5"}}), "user.cash")
+        self.assertIsNone(approval.risk_action("/internal/admin/user/u1", {"changes": {"nickname": "n"}}))
+        self.assertIsNone(approval.risk_action("/internal/admin/user/u1/web", {"action": "logout"}))
         self.assertEqual(approval.risk_action("/internal/admin/compliance", {"action": "prudential_parameter_set", "key": "ftp_apply_enabled"}), "prudential_parameter.set")
         self.assertIsNone(approval.risk_action("/internal/admin/compliance", {"action": "prudential_parameter_set", "key": "lcr_floor_bps"}))
         self.assertEqual(approval.risk_action("/internal/admin/approvals", {"action": "set_switch", "enabled": False}), "approval.switch_off")
@@ -150,6 +155,29 @@ class DualApprovalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "role_reason_required"):
             control.user("adm1", "citizen", {"role": "admin"})
         self.assertEqual(self.db.users.get_user("citizen")["role"], "user")        # refused: nothing changed
+
+
+class BootstrapRoleRecordTests(unittest.TestCase):
+    def test_the_bots_bootstrap_restore_is_recorded(self):
+        import asyncio
+        from main import NaconomicsBot
+        old = DBManager.database_dir
+        with tempfile.TemporaryDirectory() as folder:
+            DBManager.database_dir = Path(folder)
+            db = DatabaseManager()
+            try:
+                bot = object.__new__(NaconomicsBot)
+                bot.db = db
+                boot = sorted(approval.BOOTSTRAP_ADMIN_IDS)[0]
+                asyncio.run(bot.ensure_user(boot, "Boot"))                  # first registration as administrator
+                db.users.update_role(boot, "user")
+                asyncio.run(bot.ensure_user(boot, "Boot"))                  # restored by the bot
+                with db.atomic(("users", "system")) as conn:
+                    rows = [tuple(row) for row in conn.execute("SELECT old_role,new_role,actor_id FROM admin_role_changes ORDER BY change_id")]
+                self.assertEqual(rows, [("(없음)", "admin", "system:bootstrap"), ("user", "admin", "system:bootstrap")])
+            finally:
+                db.close()
+                DBManager.database_dir = old
 
 
 class GateWiringTests(unittest.TestCase):

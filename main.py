@@ -619,15 +619,23 @@ class InazinaBot(discord.Client):
             self.db.users.register_user(
                 user_id, nickname, "낙원", 1000000, role="admin"
             )
+            self._record_bootstrap_admin(user_id, "(없음)", "부트스트랩 관리자 최초 등록")
             return self.db.users.get_user(user_id)
         changed = False
         if user_id in BOOTSTRAP_ADMIN_IDS and str(user["role"] or "").lower() != "admin":
             self.db.users.update_role(user_id, "admin")
+            self._record_bootstrap_admin(user_id, str(user["role"] or "user"), "부트스트랩 관리자 권한 복원")
             changed = True
         if user["nickname"] != nickname:
             self.db.users.update_nickname(user_id, nickname)
             changed = True
         return self.db.users.get_user(user_id) if changed else user
+
+    def _record_bootstrap_admin(self, user_id, old_role, reason):
+        """The bootstrap administrator's role is set by the bot itself; keep it in the append-only role-change record."""
+        from functions import admin_approval
+        with self.db.atomic(("users", "system")) as conn:
+            admin_approval.record_role_change(conn, "system:bootstrap", user_id, old_role, "admin", reason)
 
     async def register_user(self, user_id, nickname, guild_id):
         """Create a citizen only after they accept the registration notice."""

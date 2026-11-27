@@ -3621,7 +3621,7 @@ def product_delete(actor, code):
 # ---------------------------------------------------------------------------
 # Users, web logins and countries
 # ---------------------------------------------------------------------------
-USER_FIELDS = ("nickname", "nationality", "cash", "credit_score", "credit_score_reason", "annual_income", "income_stability", "status", "role")
+USER_FIELDS = ("nickname", "nationality", "cash", "credit_score", "credit_score_reason", "annual_income", "income_stability", "status", "role", "role_reason")
 
 
 def admin_user_detail(user_id):

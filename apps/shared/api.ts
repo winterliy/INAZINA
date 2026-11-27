@@ -47,7 +47,7 @@ export class ApiError extends Error {
 }
 
 /** Builds the ApiError for a failed response. Callers throw the result. */
-export function apiError(status: number, body: { error?: string; message?: string }): ApiError {
+export function apiError(status: number, body: { error?: string; message?: string; approvalRequestId?: number }): ApiError {
   const messages: Record<string, string> = {
     authentication_required: "인증 토큰을 확인해주세요.",
     web_auth_not_configured: "서버에 웹 인증 토큰이 설정되지 않았습니다.",
@@ -67,7 +67,11 @@ export function apiError(status: number, body: { error?: string; message?: strin
     admin_required: "관리자 권한이 필요합니다.",
     python_service_unavailable: "Python 데이터 서비스에 연결할 수 없습니다.",
     database_unavailable: "데이터베이스를 읽지 못했습니다.",
+    role_reason_required: "관리자 권한을 바꾸는 사유를 입력해주세요(2인 승인이 켜져 있을 때 필수).",
   };
+  if (body.error === "approval_required" && body.approvalRequestId) {
+    return new ApiError(`승인 요청 번호 ${body.approvalRequestId} — 통제 · 복구에서 다른 관리자의 승인이 필요합니다. 승인된 뒤 같은 작업을 다시 실행하세요.`, status, body.error);
+  }
   const text = body.error === "database_unavailable" && body.message ? body.message : (body.error ? messages[body.error] : undefined) ?? body.message ?? body.error ?? `HTTP ${status}`;
   return new ApiError(text, status, body.error);
 }

@@ -47,6 +47,10 @@ def risk_action(path, payload):
         return "db.delete" if path.endswith("/delete") else "db.update"
     if path == "/internal/admin/accounting-close":
         return "accounting_close.write"
+    if path.startswith("/internal/admin/user/") and path.count("/") == 4 and isinstance(payload.get("changes"), dict):
+        # the administrator UI sends the edit as {"changes": {...}}
+        changes = payload["changes"]
+        return "user.role" if "role" in changes else "user.cash" if "cash" in changes else None
     if path.startswith("/internal/admin/users/") and path.count("/") == 4:
         if "role" in payload:
             return "user.role"

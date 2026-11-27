@@ -26,3 +26,21 @@ def test_runbook_backup_commands_spell_out_the_production_dsn():
     backup_lines = [line for line in RUNBOOK.splitlines() if "database.backup" in line and line.lstrip().startswith(("INAZINA", ".venv"))]
     assert backup_lines and all("INAZINA_PG_DSN=postgresql:///inazina " in line for line in backup_lines), backup_lines
     assert RUNBOOK.count("--expect-dbname inazina") >= 2
+
+
+def test_scheduled_backup_script_pins_the_production_dsn_and_installs_nothing():
+    script = (ROOT / "tools" / "scheduled_backup.sh").read_text(encoding="utf-8")
+    assert 'INAZINA_PG_DSN="postgresql:///inazina"' in script
+    assert "--expect-dbname inazina" in script and "backup_check.py" in script
+    assert "launchctl" not in script and "crontab" not in script
+    assert (ROOT / "tools" / "scheduled_backup.sh").stat().st_mode & 0o111, "must be executable"
+    doc = (ROOT / "docs" / "m8_backup_schedule.md").read_text(encoding="utf-8")
+    assert "설치하지 않음" in doc and "launchctl load" in doc
+    assert subprocess.run(["bash", "-n", str(ROOT / "tools" / "scheduled_backup.sh")]).returncode == 0
+
+
+def test_dual_approval_e2e_tool_refuses_anything_but_a_copy_database():
+    for dsn in ("postgresql:///inazina", "postgresql:///inazina_dev", ""):
+        run = subprocess.run([sys.executable, str(ROOT / "tools" / "m8_dual_approval_e2e.py")], capture_output=True, text=True,
+                             env={"PATH": "/usr/bin:/bin", "INAZINA_PG_DSN": dsn}, cwd=ROOT)
+        assert run.returncode != 0 and "inazina_m8_" in run.stderr, (dsn, run.stderr[-200:])

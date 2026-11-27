@@ -55,6 +55,7 @@ function UserTab({ ctx, countries, currentUserId, companies }: { ctx: Ctx; count
   const [htsId, setHtsId] = useState("");
   const [nationality, setNationality] = useState("");
   const [creditReason, setCreditReason] = useState("");
+  const [roleReason, setRoleReason] = useState("");
 
   const loadList = useCallback(async () => {
     const { users } = await api<{ users: Citizen[] }>(`/api/admin/users?search=${encodeURIComponent(query)}${companies ? "&kind=company" : ""}`);
@@ -82,6 +83,7 @@ function UserTab({ ctx, countries, currentUserId, companies }: { ctx: Ctx; count
       if (!creditReason.trim()) { say("신용점수 정정 사유를 입력해주세요.", true); return; }
       changes.credit_score_reason = creditReason.trim();
     }
+    if ("role" in changes && (changes.role === "admin" || detail.user.role === "admin") && roleReason.trim()) changes.role_reason = roleReason.trim();
     const id = String(detail.user.user_id);
     if (!await confirmAction(`${detail.user.nickname} (${id}) 설정을 저장할까요?\n\n${Object.entries(changes).map(([key, value]) => `${key}: ${show(detail.user[key])} → ${value}`).join("\n")}`)) return;
     void run(() => api<Result>(`/api/admin/user/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ changes }) }),
@@ -125,6 +127,9 @@ function UserTab({ ctx, countries, currentUserId, companies }: { ctx: Ctx; count
             <input maxLength={200} value={creditReason} onChange={(event) => setCreditReason(event.target.value)} />
           </Field>}
           <Field label="상태"><select value={form.status ?? ""} disabled={id === currentUserId} onChange={(event) => setForm({ ...form, status: event.target.value })}><option value="active">active (활성)</option><option value="inactive">inactive (비활성)</option><option value="bankrupt">bankrupt (파산)</option></select></Field>
+          {form.role !== text(detail.user.role) && (form.role === "admin" || detail.user.role === "admin") && <Field label="권한 변경 사유" hint="관리자 권한 부여·회수 기록(2인 승인이 켜져 있으면 필수)">
+            <input maxLength={200} value={roleReason} onChange={(event) => setRoleReason(event.target.value)} />
+          </Field>}
           <Field label="권한"><select value={form.role ?? ""} disabled={id === currentUserId || form.role === "company"} onChange={(event) => setForm({ ...form, role: event.target.value })}>{form.role === "company" && <option value="company">company (법인)</option>}<option value="user">user</option><option value="admin">admin</option><option value="nation">nation (국가)</option></select></Field>
           <button className="btn primary" disabled={busy}>저장</button>
         </form>
