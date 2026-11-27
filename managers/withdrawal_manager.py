@@ -155,6 +155,7 @@ COLUMN_BUCKETS = {
     'deposit_insurance_backstops': {'bucket': 'staff', 'columns': [], 'staff': ['actor_id']},
     'deposit_insurance_fund_policy': {'bucket': 'staff', 'columns': [], 'staff': ['updated_by']},
     'deposit_insurance_fund_events': {'bucket': 'staff', 'columns': [], 'staff': ['actor_id', 'issuer']},
+    'product_prepayment_mode': {'bucket': 'staff', 'columns': [], 'staff': ['updated_by']},
     'document_consents': {'bucket': 'rekey', 'columns': ['user_id'], 'staff': []},
     'announcement_seen': {'bucket': 'rekey', 'columns': ['user_id'], 'staff': []},
     'document_announcements': {'bucket': 'staff', 'columns': [], 'staff': ['actor_id']},
