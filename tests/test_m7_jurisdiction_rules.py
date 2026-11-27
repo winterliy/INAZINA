@@ -274,3 +274,41 @@ class DepositTaxRuleTests(unittest.TestCase):
 
     def test_a_rule_in_force_at_signing_sets_the_tax_rate(self):
         self.assertEqual(self.interest(rule_bps=0), 822)
+
+
+class AprDisplayLookupTests(unittest.TestCase):
+    """The user-facing product list carries the country rule's APR display setting (data only; no rule = None)."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from database import DatabaseManager
+        from database.db_manager import DBManager
+        from web_api import server
+        self.server = server
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.old_dir, self.old_database = DBManager.database_dir, server.DATABASE
+        DBManager.database_dir = Path(self.tempdir.name)
+        server.DATABASE = Path(self.tempdir.name) / "inazina.db"
+        self.db = DatabaseManager()
+        self.db.users.create_user("citizen", "시민", "낙원", 1000)
+        with self.db.atomic(("users", "accounts", "assets", "product", "company", "tax")) as conn:
+            conn.execute("INSERT INTO liability(product_code,name,interest_rate,loan_limit,maturity_days,issuer,status) VALUES ('LN1','대출',5,100000,90,'은행','active')")
+
+    def tearDown(self):
+        from database.db_manager import DBManager
+        self.db.close()
+        DBManager.database_dir, self.server.DATABASE = self.old_dir, self.old_database
+        self.tempdir.cleanup()
+
+    def loans(self):
+        return self.server.user_lookups({"userId": "citizen", "role": "user", "nationality": "낙원"})["loanProducts"]
+
+    def test_no_rule_means_no_apr_setting(self):
+        self.assertEqual([row["aprDisplay"] for row in self.loans()], [None])
+
+    def test_a_rule_in_force_sets_it(self):
+        with self.db.atomic() as conn:
+            rules.add_rule(conn, nationality="낙원", customer_type="*", product_type="loan", effective_epoch=0, apr_display="required",
+                           actor="admin", now=int(time.time()) - 5)
+        self.assertEqual([row["aprDisplay"] for row in self.loans()], ["required"])

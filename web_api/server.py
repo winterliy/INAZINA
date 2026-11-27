@@ -4702,9 +4702,11 @@ def user_lookups(user):
     with connect_readonly() as connection:
         def rows(sql, params=()):
             return [dict(row) for row in connection.execute(sql, params)] if _table_exists(connection, sql.split(" FROM ")[1].split()[0]) else []
+        from functions.jurisdiction_rules import apr_display_for
+        apr_display = apr_display_for(connection, user["userId"], epoch=int(time.time())) if _table_exists(connection, "jurisdiction_rate_rules") else None
         return {
             "savingProducts": [_with_kind_terms(row) for row in rows("SELECT product_code AS code,name,interest_rate,deposit_amount,maturity_days,quote_currency,product_kind,account_kind,kind_terms,transaction_policy FROM saving WHERE status='active' ORDER BY product_kind,name")],
-            "loanProducts": rows("SELECT product_code AS code,name,interest_rate,loan_limit,maturity_days,min_credit_score,quote_currency FROM liability WHERE status='active' AND issuer<>'국립정책금융공사' ORDER BY name"),
+            "loanProducts": [{**row, "aprDisplay": apr_display} for row in rows("SELECT product_code AS code,name,interest_rate,loan_limit,maturity_days,min_credit_score,quote_currency FROM liability WHERE status='active' AND issuer<>'국립정책금융공사' ORDER BY name")],
             "accounts": [_masked(_with_kind_terms(row)) for row in rows("SELECT account_number,product_code,account_type,quote_currency,balance,balance_units,principal,account_kind,kind_terms,overdraft_units,overdraft_limit_units,deferred_interest_units FROM accounts WHERE user_id=? ORDER BY account_number", (trader,))],
             "loans": rows("SELECT loan_id,product_code,outstanding_balance,quote_currency,maturity_epoch,status FROM loans WHERE user_id=? AND outstanding_balance>0 ORDER BY loan_id", (trader,)),
             "futures": rows("SELECT product_code AS code,name FROM investment WHERE product_type='stock_future' AND status='active' ORDER BY name"),

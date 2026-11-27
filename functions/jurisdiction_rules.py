@@ -98,3 +98,12 @@ def contract_max_rate_percent(conn, nationality, user_id, contract_date, *, prod
             return None
     return max_rate_percent(conn, nationality, customer_type=customer_type_for(user_id), product_type=product_type,
                             epoch=int(contract_date))
+
+
+def apr_display_for(conn, user_id, *, epoch, product_type="loan"):
+    """The country rule's APR display setting ('required', 'optional') for this user's country today, or None when no rule says."""
+    holder = conn.execute("SELECT nationality FROM users WHERE user_id=?", (str(user_id),)).fetchone()
+    if not holder or not holder["nationality"]:
+        return None
+    rule = resolve(conn, holder["nationality"], customer_type=customer_type_for(user_id), product_type=product_type, epoch=int(epoch))
+    return None if rule is None else rule["apr_display"]
