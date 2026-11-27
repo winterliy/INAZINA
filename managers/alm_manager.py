@@ -39,10 +39,20 @@ PRUDENTIAL_DEFAULTS = {
     "ftp_apply_enabled": 0,
     # Size of the parallel exchange-rate move used in the currency risk view (1000 = 10%).
     "fx_shock_bps": 1000,
+    # FTP term premium added to the funding curve beyond one year (bps at each anchor tenor, linear between anchors, flat past 10y).
+    # Default 0 keeps the funding curve as quoted (its last point is one year, so FTP is flat after that).
+    "ftp_term_premium_2y_bps": 0, "ftp_term_premium_3y_bps": 0, "ftp_term_premium_5y_bps": 0, "ftp_term_premium_10y_bps": 0,
+    # Explanatory interest-rate-risk assumptions beyond the contracts (default 0 = not assumed): the benchmark basis squeeze on
+    # floating-rate loans (bps of margin lost in every shock scenario) and the annual prepayment share of fixed-rate loans.
+    "basis_squeeze_bps": 0, "prepayment_bps": 0,
 }
+TERM_PREMIUM_ANCHORS = ((365, None), (730, "ftp_term_premium_2y_bps"), (1095, "ftp_term_premium_3y_bps"),
+                        (1825, "ftp_term_premium_5y_bps"), (3650, "ftp_term_premium_10y_bps"))
 # Largest value an administrator may store for a name (everything else: 100000). Shares and betas stop at 100%, years at 30.
 PARAMETER_MAX = {"deposit_beta_bps": 10000, "core_deposit_share_bps": 10000, "core_deposit_years": 30,
-                 "ftp_liquidity_premium_bps": 10000, "funding_auto_maturity_flag": 1, "ftp_apply_enabled": 1, "fx_shock_bps": 10000}
+                 "ftp_liquidity_premium_bps": 10000, "funding_auto_maturity_flag": 1, "ftp_apply_enabled": 1, "fx_shock_bps": 10000,
+                 "ftp_term_premium_2y_bps": 3000, "ftp_term_premium_3y_bps": 3000, "ftp_term_premium_5y_bps": 3000, "ftp_term_premium_10y_bps": 3000,
+                 "basis_squeeze_bps": 3000, "prepayment_bps": 10000}
 CURVE_TENORS_DAYS = (30, 90, 180, 365, 730, 1095, 1825, 3650)
 CURVE_KEYS = ("funding", "bank_bond", "treasury")
 SHOCKS_BPS = (-200, -100, 0, 100, 200)
@@ -119,12 +129,29 @@ class ALMManager:
         eve = {bp: Decimal(0) for bp in SHOCKS_BPS}
         contractual_nii = {bp: Decimal(0) for bp in SHOCKS_BPS}
         contractual_eve = {bp: Decimal(0) for bp in SHOCKS_BPS}
+        basis = Decimal(param["basis_squeeze_bps"]) / BPS
+        prepay = Decimal(param["prepayment_bps"]) / BPS
+        floating_asset_years = Decimal(0)           # balance-years of floating-rate loans, in base currency
+        basis_nii = {bp: Decimal(0) for bp in SHOCKS_BPS}
+        prepayment_eve = {bp: Decimal(0) for bp in SHOCKS_BPS}
         for scenario in RateManager.institution_rate_stress(conn, issuer, now=now)["scenarios"]:
+            floating_asset_years += cls._to_base(conn, cls._dec(scenario["assetBalanceYears"]), scenario["currency"], base)
             for shock in scenario["shocks"]:
                 contractual_nii[shock["basisPoints"]] += cls._to_base(conn, cls._dec(shock["netInterestIncomeChange"]), scenario["currency"], base)
         for scenario in RateManager.institution_fixed_rate_eve_stress(conn, issuer, now=now)["scenarios"]:
+            asset_d, liab_d = cls._dec(scenario["assetDurationAmountYears"]), cls._dec(scenario["liabilityDurationAmountYears"])
+            asset_c, liab_c = cls._dec(scenario["assetConvexityAmountYears2"]), cls._dec(scenario["liabilityConvexityAmountYears2"])
             for shock in scenario["shocks"]:
-                contractual_eve[shock["basisPoints"]] += cls._to_base(conn, cls._dec(shock["estimatedEveChange"]), scenario["currency"], base)
+                bp = shock["basisPoints"]
+                contractual_eve[bp] += cls._to_base(conn, cls._dec(shock["estimatedEveChange"]), scenario["currency"], base)
+                if prepay > 0:
+                    # prepayment shortens the fixed-rate loans: their duration and convexity amounts shrink by the prepaid share
+                    s_ = Decimal(bp) / BPS
+                    full = -(asset_d - liab_d) * s_ + (asset_c - liab_c) * s_ * s_ / 2
+                    adjusted = -(asset_d * (1 - prepay) - liab_d) * s_ + (asset_c * (1 - prepay) - liab_c) * s_ * s_ / 2
+                    prepayment_eve[bp] += cls._to_base(conn, adjusted - full, scenario["currency"], base)
+        for bp in SHOCKS_BPS:
+            basis_nii[bp] = Decimal(0) if bp == 0 else -basis * floating_asset_years
 
         behavioural = Decimal(0)     # non-term, non-floating deposits (base currency)
         behavioural_cost = {bp: Decimal(0) for bp in SHOCKS_BPS}
@@ -150,19 +177,36 @@ class ALMManager:
         rows = []
         for bp in SHOCKS_BPS:
             s = Decimal(bp) / BPS
-            nii[bp] = contractual_nii[bp] - behavioural_cost[bp]
-            eve[bp] = contractual_eve[bp] + core * core_years * s - core * core_years * core_years * s * s / 2
-            rows.append({"basisPoints": bp, "contractualNii": contractual_nii[bp], "depositBetaNii": -behavioural_cost[bp],
-                         "deltaNii": nii[bp], "contractualEve": contractual_eve[bp], "coreDepositEve": eve[bp] - contractual_eve[bp],
+            nii[bp] = contractual_nii[bp] - behavioural_cost[bp] + basis_nii[bp]
+            core_eve = core * core_years * s - core * core_years * core_years * s * s / 2
+            eve[bp] = contractual_eve[bp] + core_eve + prepayment_eve[bp]
+            rows.append({"basisPoints": bp, "contractualNii": contractual_nii[bp], "depositBetaNii": -behavioural_cost[bp], "basisNii": basis_nii[bp],
+                         "deltaNii": nii[bp], "contractualEve": contractual_eve[bp], "coreDepositEve": core_eve, "prepaymentEve": prepayment_eve[bp],
                          "deltaEve": eve[bp], "deltaEvePercentOfTier1": cls._percent(eve[bp], tier1) if tier1 > 0 else None})
         return {"horizonDays": 365, "shocks": rows, "behavioralDeposits": behavioural, "coreDeposits": core,
                 "assumptions": {"depositBetaBps": param["deposit_beta_bps"], "coreDepositShareBps": param["core_deposit_share_bps"],
-                                "coreDepositYears": param["core_deposit_years"]},
+                                "coreDepositYears": param["core_deposit_years"],
+                                "basisSqueezeBps": param["basis_squeeze_bps"], "prepaymentBps": param["prepayment_bps"]},
                 "method": ("explanatory assumptions, not a regulatory IRRBB filing: parallel shocks, constant balance sheet; floating loans and "
                            "floating deposits follow their contracts (floors and caps); other non-term deposits reprice by the deposit beta "
                            "with their rate floored at zero; fixed-term deposits do not reprice within the year; EVE uses durations and "
                            "convexity of fixed-rate loans and deposits plus the core part of non-term deposits at the assumed behavioural "
-                           "maturity; no hedges, basis risk, prepayment or wholesale funding rollover. The assumptions can be set per jurisdiction")}
+                           "maturity; no hedges or wholesale funding rollover. Beyond the contracts, two assumptions that default to 0: a benchmark basis squeeze (margin lost "
+                           "on floating-rate loans in every non-zero shock) and an annual prepayment share that shortens fixed-rate loans in the EVE (it "
+                           "does not model reinvestment income). All assumptions can be set per jurisdiction")}
+
+    @staticmethod
+    def term_premium_percent(param, days):
+        """FTP term premium (percent a year) at a tenor: 0 up to one year, linear between the anchors, flat after the last one."""
+        days = int(days)
+        points = [(tenor, Decimal(0) if key is None else Decimal(param[key]) / 100) for tenor, key in TERM_PREMIUM_ANCHORS]
+        if days <= points[0][0]:
+            return Decimal(0)
+        if days >= points[-1][0]:
+            return points[-1][1]
+        for (d1, p1), (d2, p2) in zip(points, points[1:]):
+            if d1 <= days <= d2:
+                return p1 + (p2 - p1) * Decimal(days - d1) / Decimal(d2 - d1)
 
     @classmethod
     def ftp_applications(cls, conn, issuer, limit=20):
@@ -361,15 +405,19 @@ class ALMManager:
     def ftp_preview(cls, conn, issuer, nationality, base, param, now):
         """Funds-transfer-pricing preview per product. Read-only: no product rate is changed or applied.
 
-        FTP(t) = the jurisdiction's funding curve at tenor t + the liquidity premium. Loans are charged FTP(term) and earn
+        FTP(t) = the jurisdiction's funding curve at tenor t + the liquidity premium + the term premium (default 0; the funding
+        curve's last quoted point is one year, so without it FTP is flat beyond a year). Loans are charged FTP(term) and earn
         rate - FTP; deposits are credited FTP(tenor) and earn FTP - rate paid. A non-term deposit uses the behavioural
         maturity assumption (core_deposit_years, at least 1 day); a loan without a term uses 365 days. Percent a year.
         """
         premium = Decimal(param["ftp_liquidity_premium_bps"]) / 100
         behavioural_days = max(1, int(param["core_deposit_years"]) * 365)
 
-        def ftp(days):
+        def ftp_before_term(days):
             return Decimal(str(RateManager.market_rate(conn, nationality, "funding", int(days)))) + premium
+
+        def ftp(days):
+            return ftp_before_term(days) + cls.term_premium_percent(param, days)
 
         products = []
         for kind, table, side in (("loan", "liability", "asset"), ("deposit", "saving", "liability")):
@@ -380,7 +428,10 @@ class ALMManager:
                 rate = cls._dec(row["interest_rate"])
                 transfer = ftp(tenor)
                 margin = rate - transfer if kind == "loan" else transfer - rate
-                products.append({"productCode": row["product_code"], "name": row["name"], "kind": kind, "ratePercent": rate,
+                before = ftp_before_term(tenor)
+                products.append({"termPremiumPercent": transfer - before, "ftpBeforeTermPercent": before,
+                                 "marginBeforeTermPercent": rate - before if kind == "loan" else before - rate,
+                                 "productCode": row["product_code"], "name": row["name"], "kind": kind, "ratePercent": rate,
                                  "tenorDays": tenor, "tenorBasis": "contract term" if term > 0 else (
                                      "default 365 days" if kind == "loan" else "behavioural maturity assumption"),
                                  "ftpPercent": transfer, "marginPercent": margin})
@@ -392,7 +443,7 @@ class ALMManager:
         return {"applyEnabled": int(param["ftp_apply_enabled"]) == 1,
                 "applications": cls.ftp_applications(conn, issuer) if table else [],
                 "liquidityPremiumPercent": premium, "wholesaleWeightedAverageRatePercent": wholesale,
-                "curve": [{"tenorDays": d, "ftpPercent": ftp(d)} for d in CURVE_TENORS_DAYS], "products": products,
+                "curve": [{"tenorDays": d, "ftpPercent": ftp(d), "ftpBeforeTermPercent": ftp_before_term(d)} for d in CURVE_TENORS_DAYS], "products": products,
                 "applied": False,
                 "method": ("a preview: nothing is changed by viewing it (an administrator may apply it, off by default, to new contracts only). FTP = funding curve + liquidity premium; loans: margin = rate - FTP, "
                            "deposits: margin = FTP - rate; the wholesale weighted average is shown for reference, not blended in; "

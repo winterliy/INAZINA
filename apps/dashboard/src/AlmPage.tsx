@@ -19,15 +19,15 @@ type Report = {
   lcr: { hqla: { total: string }; outflows: Row[]; totalOutflows: string; inflows: { performingLoanPayments30d: string; rateBps: number; grossInflows: string; capBps: number; countedInflows: string };
     netOutflows: string; ratioPercent: number | null; minimumPercent: number; status: Status };
   nsfr: { availableStableFunding: string; requiredStableFunding: string; asf: Row[]; rsf: Row[]; ratioPercent: number | null; minimumPercent: number; status: Status };
-  rateShock: { shocks: { basisPoints: number; contractualNii: string; depositBetaNii: string; deltaNii: string; contractualEve: string; coreDepositEve: string; deltaEve: string; deltaEvePercentOfTier1: number | null }[];
-    behavioralDeposits: string; coreDeposits: string; assumptions: { depositBetaBps: number; coreDepositShareBps: number; coreDepositYears: number }; method: string };
+  rateShock: { shocks: { basisPoints: number; contractualNii: string; depositBetaNii: string; basisNii: string; deltaNii: string; contractualEve: string; coreDepositEve: string; prepaymentEve: string; deltaEve: string; deltaEvePercentOfTier1: number | null }[];
+    behavioralDeposits: string; coreDeposits: string; assumptions: { depositBetaBps: number; coreDepositShareBps: number; coreDepositYears: number; basisSqueezeBps: number; prepaymentBps: number }; method: string };
   currencyRisk: { base: string; foreignLiabilityShare: number | null; longPosition: string; shortPosition: string; netOpenPosition: string; netOpenPositionPercentOfCet1: number | null;
     shockBps: number; worstCasePercentOfCet1: number | null; method: string; scenarios: { foreignDown: string; foreignUp: string; grossWorstCase: string };
     currencies: { currency: string; isBase: boolean; netLoans: string; deposits: string; wholesale: string; net: string; netInBase: string; decimalPlaces: number }[] };
   ftp: { applyEnabled: boolean; applications: { app_id: number; product_kind: "loan" | "deposit"; product_code: string; action: "apply" | "revert"; old_rate_bps: number; new_rate_bps: number; ftp_bps: number; margin_bps: number; actor: string; reason: string; recorded_epoch: number; reverted: boolean }[];
     liquidityPremiumPercent: string; wholesaleWeightedAverageRatePercent: string | null; applied: boolean; method: string;
     curve: { tenorDays: number; ftpPercent: string }[];
-    products: { productCode: string; name: string; kind: "loan" | "deposit"; ratePercent: string; tenorDays: number; tenorBasis: string; ftpPercent: string; marginPercent: string }[] } | null;
+    products: { productCode: string; name: string; kind: "loan" | "deposit"; ratePercent: string; tenorDays: number; tenorBasis: string; ftpPercent: string; marginPercent: string; termPremiumPercent: string; marginBeforeTermPercent: string }[] } | null;
   forwardCurves: { method: string; curves: { benchmark: string; zero: { tenorDays: number; ratePercent: string }[];
     forwards: { fromDays: number; toDays: number; forwardPercent: string; negative: boolean }[] }[] } | null;
   parameters: { values: Record<string, number>; overriddenForJurisdiction: string[] };
@@ -51,6 +51,8 @@ const PARAMETER: Record<string, string> = {
   asf_wholesale_1y_plus_bps: "ASF · 도매 1년 이상", asf_wholesale_6m_to_1y_bps: "ASF · 도매 6개월~1년", asf_wholesale_under_6m_bps: "ASF · 도매 6개월 미만",
   deposit_beta_bps: "금리 충격 · 예금 금리베타", core_deposit_share_bps: "금리 충격 · 핵심예금 비중", core_deposit_years: "금리 충격 · 핵심예금 행동만기(년)",
   ftp_liquidity_premium_bps: "FTP · 유동성 프리미엄", funding_auto_maturity_flag: "도매조달 자동 만기 처리 (옵트인)", ftp_apply_enabled: "FTP 상품 금리 적용 (옵트인)", fx_shock_bps: "환위험 · 환율 충격 크기",
+  ftp_term_premium_2y_bps: "FTP · 기간 프리미엄 2년", ftp_term_premium_3y_bps: "FTP · 기간 프리미엄 3년", ftp_term_premium_5y_bps: "FTP · 기간 프리미엄 5년", ftp_term_premium_10y_bps: "FTP · 기간 프리미엄 10년 이상",
+  basis_squeeze_bps: "금리 충격 · 기준금리 베이시스 축소", prepayment_bps: "금리 충격 · 고정금리 대출 조기상환 비중",
   rsf_cash_bps: "RSF · 현금", rsf_loan_under_1y_bps: "RSF · 대출 1년 미만", rsf_loan_1y_plus_bps: "RSF · 대출 1년 이상", rsf_defaulted_loan_bps: "RSF · 부실 대출",
 };
 
@@ -121,6 +123,8 @@ export function AlmPage({ ctx }: { ctx: Ctx }) {
     "되돌리지 못했습니다.", () => { say("되돌렸습니다."); loadReport(bankId); });
   }
 
+  const termShown = !!report?.ftp?.products.some((row) => Number(row.termPremiumPercent) !== 0);
+
   const gauge = (key: "cet1" | "tier1" | "total", label: string) => {
     const capital = report!.capital, value = capital.ratiosPercent[key], need = capital.requirementsPercent[key];
     const scale = Math.max(need * 2, (value ?? 0) * 1.1, 1);
@@ -164,11 +168,11 @@ export function AlmPage({ ctx }: { ctx: Ctx }) {
         </Card>
       </div>
 
-      <Card title="금리 충격 (ΔNII · ΔEVE)" caption={`평행 이동 충격. 가정: 예금 금리베타 ${bps(report.rateShock.assumptions.depositBetaBps)}, 핵심예금 ${bps(report.rateShock.assumptions.coreDepositShareBps)}를 ${report.rateShock.assumptions.coreDepositYears}년 행동만기로 봄 (설명용 가정, 관할 기준에서 조정)`}>
-        <div className="scroll-x"><table><thead><tr><th className="alm-num">충격</th><th className="alm-num">ΔNII 계약(대출−변동예금)</th><th className="alm-num">ΔNII 예금 금리베타</th><th className="alm-num">ΔNII 12개월</th><th className="alm-num">ΔEVE 고정금리</th><th className="alm-num">ΔEVE 핵심예금</th><th className="alm-num">ΔEVE</th><th className="alm-num">ΔEVE / Tier 1</th></tr></thead>
+      <Card title="금리 충격 (ΔNII · ΔEVE)" caption={`평행 이동 충격. 가정: 예금 금리베타 ${bps(report.rateShock.assumptions.depositBetaBps)}, 핵심예금 ${bps(report.rateShock.assumptions.coreDepositShareBps)}를 ${report.rateShock.assumptions.coreDepositYears}년 행동만기로 봄 · 베이시스 축소 ${bps(report.rateShock.assumptions.basisSqueezeBps)} · 조기상환 ${bps(report.rateShock.assumptions.prepaymentBps)} (설명용 가정, 관할 기준에서 조정, 기본 0은 가정 안 함)`}>
+        <div className="scroll-x"><table><thead><tr><th className="alm-num">충격</th><th className="alm-num">ΔNII 계약(대출−변동예금)</th><th className="alm-num">ΔNII 예금 금리베타</th>{report.rateShock.assumptions.basisSqueezeBps > 0 && <th className="alm-num">ΔNII 베이시스</th>}<th className="alm-num">ΔNII 12개월</th><th className="alm-num">ΔEVE 고정금리</th><th className="alm-num">ΔEVE 핵심예금</th>{report.rateShock.assumptions.prepaymentBps > 0 && <th className="alm-num">ΔEVE 조기상환</th>}<th className="alm-num">ΔEVE</th><th className="alm-num">ΔEVE / Tier 1</th></tr></thead>
           <tbody>{report.rateShock.shocks.map((row) => <tr key={row.basisPoints}><td className="alm-num">{row.basisPoints > 0 ? "+" : ""}{row.basisPoints}bp</td>
-            <td className="alm-num">{signed(row.contractualNii, money)}</td><td className="alm-num">{signed(row.depositBetaNii, money)}</td><td className="alm-num"><b>{signed(row.deltaNii, money)}</b></td>
-            <td className="alm-num">{signed(row.contractualEve, money)}</td><td className="alm-num">{signed(row.coreDepositEve, money)}</td><td className="alm-num"><b>{signed(row.deltaEve, money)}</b></td>
+            <td className="alm-num">{signed(row.contractualNii, money)}</td><td className="alm-num">{signed(row.depositBetaNii, money)}</td>{report.rateShock.assumptions.basisSqueezeBps > 0 && <td className="alm-num">{signed(row.basisNii, money)}</td>}<td className="alm-num"><b>{signed(row.deltaNii, money)}</b></td>
+            <td className="alm-num">{signed(row.contractualEve, money)}</td><td className="alm-num">{signed(row.coreDepositEve, money)}</td>{report.rateShock.assumptions.prepaymentBps > 0 && <td className="alm-num">{signed(row.prepaymentEve, money)}</td>}<td className="alm-num"><b>{signed(row.deltaEve, money)}</b></td>
             <td className="alm-num">{pct(row.deltaEvePercentOfTier1, 1)}</td></tr>)}</tbody></table></div>
         <p className="alm-note">{report.rateShock.method}</p>
       </Card>
@@ -191,11 +195,12 @@ export function AlmPage({ ctx }: { ctx: Ctx }) {
       </Card>
 
       {report.ftp && <Card title="FTP(자금이전가격) 미리보기" caption={`조달 곡선 + 유동성 프리미엄 ${rate2(report.ftp.liquidityPremiumPercent)}. 참고: 도매조달 가중평균 ${rate2(report.ftp.wholesaleWeightedAverageRatePercent)}. 미리보기일 뿐 상품 금리는 바뀌지 않습니다.`}>
-        <div className="scroll-x"><table><thead><tr><th>상품</th><th>구분</th><th className="alm-num">상품 금리</th><th className="alm-num">FTP 만기</th><th className="alm-num">FTP</th><th className="alm-num">마진</th>{report.ftp.applyEnabled && <th />}</tr></thead>
+        <div className="scroll-x"><table><thead><tr><th>상품</th><th>구분</th><th className="alm-num">상품 금리</th><th className="alm-num">FTP 만기</th><th className="alm-num">FTP</th><th className="alm-num">마진</th>{termShown && <th className="alm-num">기간 프리미엄 · 보정 전 마진</th>}{report.ftp.applyEnabled && <th />}</tr></thead>
           <tbody>{report.ftp.products.length === 0 ? <tr><td colSpan={6} className="cap">이 은행의 상품이 없습니다.</td></tr> : report.ftp.products.map((row) => <tr key={`${row.kind}-${row.productCode}`}>
             <td>{row.name} <span className="cap">{row.productCode}</span></td><td>{row.kind === "loan" ? "대출" : "예금"}</td><td className="alm-num">{rate2(row.ratePercent)}</td>
             <td className="alm-num">{tenorLabel(row.tenorDays)} <span className="cap">({row.tenorBasis === "contract term" ? "계약" : row.tenorBasis === "behavioural maturity assumption" ? "행동만기 가정" : "기본 365일"})</span></td>
             <td className="alm-num">{rate2(row.ftpPercent)}</td><td className="alm-num"><b className={Number(row.marginPercent) < 0 ? "alm-neg" : ""}>{rate2(row.marginPercent)}</b></td>
+            {termShown && <td className="alm-num">+{rate2(row.termPremiumPercent)} · {rate2(row.marginBeforeTermPercent)}</td>}
             {report.ftp?.applyEnabled && <td><button type="button" className="outline" disabled={busy} onClick={() => void applyFtp(row)}>적용</button></td>}</tr>)}</tbody></table></div>
         {report.ftp.applyEnabled ? <div className="alm-edit">
           <input inputMode="numeric" aria-label="목표 마진(bp)" placeholder="목표 마진 bp" value={ftpForm.margin} onChange={(event) => setFtpForm({ ...ftpForm, margin: event.target.value })} />

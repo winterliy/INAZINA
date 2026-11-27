@@ -29,7 +29,7 @@ class RateShockTests(unittest.TestCase):
         self.db.products.execute(
             "INSERT INTO liability(product_code,name,interest_rate,loan_limit,maturity_days,interest_cycle,min_credit_score,issuer,quote_currency) "
             "VALUES ('L1','loan',6,10000,400,86400,0,'Bank','NWX')")
-        for user in ("u1", "u2", "u3", "b1"):
+        for user in ("u1", "u2", "u3", "b1", "b2"):
             self.db.users.create_user(user, user, "낙원", 0)
         # non-term deposits: 1000 at 2% and 1000 at 0.4%; a 30-day fixed-term deposit of 500
         for number, user, code, balance, rate in (("A1", "u1", "S2", 1000, 2), ("A2", "u2", "S2", 1000, "0.4"), ("A3", "u3", "S1", 500, 2)):
@@ -86,7 +86,8 @@ class RateShockTests(unittest.TestCase):
         report, rows = self.shock()
         self.assertTrue(all(rows[bp]["depositBetaNii"] == 0 for bp in rows))
         self.assertTrue(all(rows[bp]["coreDepositEve"] == 0 for bp in rows))
-        self.assertEqual(report["rateShock"]["assumptions"], {"depositBetaBps": 0, "coreDepositShareBps": 6000, "coreDepositYears": 0})
+        self.assertEqual(report["rateShock"]["assumptions"], {"depositBetaBps": 0, "coreDepositShareBps": 6000, "coreDepositYears": 0,
+                                                                     "basisSqueezeBps": 0, "prepaymentBps": 0})
         with self.db.atomic() as conn:
             ALMManager.set_parameter(conn, "낙원", "deposit_beta_bps", 10000, actor="admin", now=NOW)
         _, rows = self.shock()
@@ -104,6 +105,33 @@ class RateShockTests(unittest.TestCase):
         with self.db.readonly() as conn:
             shock = ALMManager.report(conn, "Empty", now=NOW)["rateShock"]
         self.assertTrue(all(r["deltaNii"] == 0 and r["deltaEve"] == 0 and r["deltaEvePercentOfTier1"] == 0 for r in shock["shocks"]))
+
+    def test_basis_squeeze_and_prepayment_are_assumptions_that_default_to_zero(self):
+        _, rows = self.shock()
+        self.assertTrue(all(rows[bp]["basisNii"] == 0 and rows[bp]["prepaymentEve"] == 0 for bp in rows))      # not assumed unless set
+        self.db.accounts.execute(
+            "INSERT INTO loans(loan_id,user_id,product_code,principal,outstanding_balance,status,collection_status,created_at,maturity_epoch,"
+            "quote_currency,rate_type,contract_rate) VALUES (2,'b2','L1',1000,1000,'active','current',datetime(?,'unixepoch'),?,'NWX','fixed',6)",
+            (NOW, NOW + 730 * DAY))
+        with self.db.atomic() as conn:
+            ALMManager.set_parameter(conn, "낙원", "basis_squeeze_bps", 100, actor="admin", now=NOW)
+            ALMManager.set_parameter(conn, "낙원", "prepayment_bps", 5000, actor="admin", now=NOW)
+        report, rows = self.shock()
+        # basis: 1% of the 1000 balance-years of floating loans, lost in every non-zero shock and not in the 0bp row
+        self.assertEqual({bp: rows[bp]["basisNii"] for bp in rows}, {-200: -10, -100: -10, 0: 0, 100: -10, 200: -10})
+        self.assertEqual(rows[100]["deltaNii"], rows[100]["contractualNii"] + rows[100]["depositBetaNii"] - 10)
+        # prepayment: the fixed 1000 loan has 2 years (asset duration 2000, convexity 4000); half prepaid -> +A*p*s - 0.5*C*p*s^2
+        self.assertEqual(rows[100]["prepaymentEve"], Decimal(1000 * 2) * Decimal("0.5") * Decimal("0.01") - Decimal(4000) * Decimal("0.5") * Decimal("0.5") * Decimal("0.0001"))
+        self.assertEqual(rows[-100]["prepaymentEve"], Decimal("-10.1"))
+        self.assertEqual(rows[0]["prepaymentEve"], 0)
+        self.assertEqual(rows[100]["deltaEve"], rows[100]["contractualEve"] + rows[100]["coreDepositEve"] + rows[100]["prepaymentEve"])
+        self.assertEqual((report["rateShock"]["assumptions"]["basisSqueezeBps"], report["rateShock"]["assumptions"]["prepaymentBps"]), (100, 5000))
+
+    def test_new_assumption_ranges_are_validated_for_basis_and_prepayment(self):
+        with self.db.atomic() as conn:
+            for key, value in (("basis_squeeze_bps", 3001), ("prepayment_bps", 10001), ("basis_squeeze_bps", -1)):
+                with self.assertRaisesRegex(ValueError, "invalid_prudential_parameter_value"):
+                    ALMManager.set_parameter(conn, "낙원", key, value, actor="admin", now=NOW)
 
     def test_the_report_stays_read_only(self):
         with self.db.readonly() as conn:

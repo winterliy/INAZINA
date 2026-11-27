@@ -84,6 +84,40 @@ class FtpCurveTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "invalid_prudential_parameter_value"):
                 ALMManager.set_parameter(conn, "낙원", "ftp_liquidity_premium_bps", 10001, actor="admin", now=NOW)
 
+    def test_term_premium_defaults_to_zero_and_corrects_long_tenor_margins_when_set(self):
+        products = {p["productCode"]: p for p in self.report()["ftp"]["products"]}
+        for p in products.values():
+            self.assertEqual((p["termPremiumPercent"], p["marginBeforeTermPercent"]), (0, p["marginPercent"]))       # default keeps today's behaviour
+        with self.db.atomic() as conn:
+            for key, value in (("ftp_term_premium_2y_bps", 50), ("ftp_term_premium_3y_bps", 150), ("ftp_term_premium_5y_bps", 250), ("ftp_term_premium_10y_bps", 400)):
+                ALMManager.set_parameter(conn, "낙원", key, value, actor="admin", now=NOW)
+        ftp = self.report()["ftp"]
+        products = {p["productCode"]: p for p in ftp["products"]}
+        self.near(products["L1"]["termPremiumPercent"], 0.5)                 # 730 days -> the 2y anchor
+        self.near(products["L1"]["ftpPercent"], 3.8)                         # 3.0 curve + 0.3 liquidity + 0.5 term
+        self.near(products["L1"]["marginPercent"], 2.2)                      # 6 - 3.8, was 2.7
+        self.near(products["L1"]["marginBeforeTermPercent"], 2.7)
+        self.near(products["S2"]["termPremiumPercent"], 1.5)                 # behavioural 1095 days -> the 3y anchor
+        self.near(products["S2"]["marginPercent"], 2.8)                      # deposit credited 3.0 + 0.3 + 1.5 = 4.8, less 2.0 paid
+        self.near(products["S1"]["termPremiumPercent"], 0)                   # 30 days: no term premium
+        self.assertEqual([c["tenorDays"] for c in ftp["curve"]][-1], 3650)
+        self.near(ftp["curve"][-1]["ftpPercent"] - ftp["curve"][-1]["ftpBeforeTermPercent"], 4.0)
+
+    def test_term_premium_interpolates_linearly_and_is_flat_outside_the_anchors(self):
+        param = {"ftp_term_premium_2y_bps": 50, "ftp_term_premium_3y_bps": 150, "ftp_term_premium_5y_bps": 250, "ftp_term_premium_10y_bps": 400}
+        at = lambda days: ALMManager.term_premium_percent(param, days)
+        self.assertEqual((at(1), at(365)), (0, 0))
+        self.assertEqual(at(730), Decimal("0.5"))
+        self.assertEqual(at(547), Decimal(182) / 365 * Decimal("0.5"))                     # midway between 0 and the 2y anchor
+        self.assertEqual(at(1460), Decimal("1.5") + (Decimal("2.5") - Decimal("1.5")) * Decimal(365) / 730)
+        self.assertEqual((at(3650), at(10000)), (Decimal(4), Decimal(4)))
+
+    def test_term_premium_ranges_are_validated(self):
+        with self.db.atomic() as conn:
+            for value in (3001, -1):
+                with self.assertRaisesRegex(ValueError, "invalid_prudential_parameter_value"):
+                    ALMManager.set_parameter(conn, "낙원", "ftp_term_premium_5y_bps", value, actor="admin", now=NOW)
+
     def test_the_preview_never_changes_a_product_rate(self):
         before = [tuple(r) for r in self.db.products.execute("SELECT product_code,interest_rate FROM saving UNION SELECT product_code,interest_rate FROM liability ORDER BY 1")]
         self.report()
