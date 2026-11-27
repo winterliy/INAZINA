@@ -1830,14 +1830,20 @@ class AccountingJournal:
               AND NOT EXISTS(SELECT 1 FROM market_order_wallet_baselines b
                              WHERE b.order_id=o.order_id)
             ORDER BY o.order_id""").fetchall()
+        # One pass over the links and executions instead of two queries per order (the close check scales with the order count).
+        links_by_order = {}
+        for movement in conn.execute("""SELECT w.order_id,l.user_id,l.currency_code,l.decimal_places,
+                l.delta_minor_units FROM market_order_wallet_links w
+                JOIN customer_wallet_ledger l ON l.entry_id=w.wallet_entry_id
+                ORDER BY w.order_id,l.entry_id"""):
+            links_by_order.setdefault(int(movement["order_id"]), []).append(movement)
+        executed_gross = {int(row[0]): int(row[1]) for row in conn.execute(
+            "SELECT buy_order_id,SUM(gross_minor_units) FROM market_execution_events WHERE buy_order_id IS NOT NULL GROUP BY buy_order_id")}
         for order in tracked_cash_orders:
             order_id = int(order["order_id"])
             currency = str(order["quote_currency"] or base_currency_code(conn)).upper()
             places = currency_precision(conn, currency)
-            linked = conn.execute("""SELECT l.user_id,l.currency_code,l.decimal_places,
-                l.delta_minor_units FROM market_order_wallet_links w
-                JOIN customer_wallet_ledger l ON l.entry_id=w.wallet_entry_id
-                WHERE w.order_id=? ORDER BY l.entry_id""", (order_id,)).fetchall()
+            linked = links_by_order.get(order_id, [])
             linked_net_debit = 0
             for movement in linked:
                 if (str(movement["user_id"]) != str(order["user_id"])
@@ -1848,8 +1854,7 @@ class AccountingJournal:
                         "wallet_currency": movement["currency_code"],
                         "status": "incompatible_link"})
                 linked_net_debit -= int(movement["delta_minor_units"])
-            executed = int(conn.execute("""SELECT COALESCE(SUM(gross_minor_units),0)
-                FROM market_execution_events WHERE buy_order_id=?""", (order_id,)).fetchone()[0])
+            executed = executed_gross.get(order_id, 0)
             expected_net_debit = executed + int(order["reserved_cash_minor_units"] or 0)
             if linked_net_debit != expected_net_debit:
                 order_wallet_gaps.append({"order_id": order_id,
@@ -1875,19 +1880,14 @@ class AccountingJournal:
             COALESCE(b.baseline_execution_quantity,0) baseline_execution
             FROM market_orders o LEFT JOIN market_execution_order_baselines_v2 b USING(order_id)
             WHERE o.order_kind='asset' AND COALESCE(o.fractional_order,0)=0""").fetchall()
+        bought_quantity = {int(row[0]): int(row[1]) for row in conn.execute(
+            "SELECT buy_order_id,SUM(quantity) FROM market_execution_events WHERE buy_order_id IS NOT NULL GROUP BY buy_order_id")}
+        sold_quantity = {int(row[0]): int(row[1]) for row in conn.execute(
+            "SELECT sell_order_id,SUM(quantity) FROM market_execution_events "
+            "WHERE execution_type='secondary' AND sell_order_id IS NOT NULL GROUP BY sell_order_id")}
         for order in tracked_orders:
             order_id = int(order["order_id"])
-            field = "buy_order_id" if order["side"] == "buy" else "sell_order_id"
-            if field == "sell_order_id":
-                recorded = int(conn.execute(
-                    "SELECT COALESCE(SUM(quantity),0) FROM market_execution_events "
-                    "WHERE execution_type='secondary' AND sell_order_id=?", (order_id,)
-                ).fetchone()[0])
-            else:
-                recorded = int(conn.execute(
-                    "SELECT COALESCE(SUM(quantity),0) FROM market_execution_events "
-                    "WHERE buy_order_id=?", (order_id,)
-                ).fetchone()[0])
+            recorded = (sold_quantity if order["side"] != "buy" else bought_quantity).get(order_id, 0)
             expected = int(order["filled_quantity"])-int(order["baseline_filled"])
             recorded_delta = recorded - int(order["baseline_execution"])
             if expected != recorded_delta or expected < 0 or recorded_delta < 0:

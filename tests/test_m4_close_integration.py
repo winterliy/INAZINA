@@ -142,3 +142,101 @@ class PayoutRollbackTests(unittest.TestCase):
             with self.db.atomic() as conn:
                 action(conn, PayoutManager)
         self.assertEqual(self.snapshot()[0], before[0][0] + 1)
+
+
+class TaxRollbackTests(unittest.TestCase):
+    """Tax assessed in the citizen's own currency but withheld in the settlement currency keeps an exchange record;
+    when that record fails, the closing trade is undone entirely and the retry books it once."""
+    setUp = fixtures.MarketFeatureTests.setUp
+    tearDown = fixtures.MarketFeatureTests.tearDown
+    issue = fixtures.MarketFeatureTests.issue
+    issue_future = fixtures.MarketFeatureTests.issue_future
+    _foreign_future_trader = fixtures.MarketFeatureTests._foreign_future_trader
+    _nwx_units = fixtures.MarketFeatureTests._nwx_units
+
+    def state(self, number):
+        return (self._nwx_units(number),
+                self.db.assets.execute_one("SELECT COUNT(*) FROM futures_positions WHERE user_id='foreign-future'")[0],
+                self.db.accounts.execute_one("SELECT COUNT(*) FROM tax_transactions WHERE user_id='foreign-future'")[0],
+                self.db.currency.execute_one("SELECT COUNT(*) FROM cash_fx_settlements WHERE kind LIKE 'tax:%'")[0])
+
+    def test_futures_close_tax_exchange_record_failure_rolls_the_close_back(self):
+        number = self._foreign_future_trader(5000)
+        self.assertTrue(self.book.place_limit_order('foreign-future', 'FUT', 'buy', 2, 100)[0])
+        self.db.companies.update_share_price("CO", 110)
+        self.futures.settle_positions()
+        before = self.state(number)
+        self.assertEqual(before[1:], (1, 0, 0))
+        with patch.object(CurrencyManager, "record_fx_settlement", side_effect=RuntimeError("fx record failure")):
+            try:
+                result = self.book.place_limit_order('foreign-future', 'FUT', 'sell', 2, 110)
+                self.assertFalse(result[0], result)
+            except RuntimeError:
+                pass
+        self.assertEqual(self.state(number), before)
+        self.assertTrue(self.book.place_limit_order('foreign-future', 'FUT', 'sell', 2, 110)[0])
+        after = self.state(number)
+        self.assertEqual(after[1:], (0, 1, 1))
+        self.assertGreater(after[0], before[0])
+
+
+class ProductSettlementRollbackTests(unittest.TestCase):
+    """Product settlements are all-or-nothing: when the ledger posting or link fails the whole settlement is undone and the retry books it once."""
+    setUp = fixtures.MarketFeatureTests.setUp
+    tearDown = fixtures.MarketFeatureTests.tearDown
+    issue = fixtures.MarketFeatureTests.issue
+    issue_future = fixtures.MarketFeatureTests.issue_future
+    _foreign_future_trader = fixtures.MarketFeatureTests._foreign_future_trader
+    _nwx_units = fixtures.MarketFeatureTests._nwx_units
+
+    def test_option_exercise_posting_failure_rolls_the_exercise_back(self):
+        self.db.assets.add_user_asset('alice', 'CO', 2, unit_cost=100)
+        self.assertTrue(self.options.create_and_write('alice', 'CO', 'call', 100, 1, 1, 10)[0])
+        code = self.options.get_active_contracts()[0]['contract_code']
+        self.assertTrue(self.options.place_limit_order('bob', code, 'buy', 1, 10)[0])
+        self.db.companies.update_share_price('CO', 120)
+        self.db.assets.execute('UPDATE option_contracts SET expiration_epoch=? WHERE contract_code=?', (int(time.time()) - 1, code))
+
+        def state():
+            return (self.db.assets.execute_one("SELECT COUNT(*) FROM option_exercise_events")[0],
+                    self.db.assets.execute_one("SELECT COALESCE(SUM(quantity),0) FROM user_assets WHERE asset_code='CO'")[0],
+                    self.db.users.get_user('bob')['cash'], self.db.users.get_user('alice')['cash'],
+                    self.db.assets.execute_one("SELECT status FROM option_contracts WHERE contract_code=?", (code,))[0])
+        before = state()
+        with patch.object(AccountingJournal, 'post_option_exercise', side_effect=RuntimeError('posting failure')):
+            try:
+                self.options.expire_matured()
+            except RuntimeError:
+                pass
+        self.assertEqual(state(), before)
+        self.assertTrue(self.options.expire_matured())
+        self.assertEqual(state()[0], before[0] + 1)
+        self.assertEqual(self.options.expire_matured(), [])
+        self.assertEqual(state()[0], before[0] + 1)
+
+    def test_futures_closing_fill_link_failure_rolls_the_fill_back(self):
+        number = self._foreign_future_trader(5000)
+        self.assertTrue(self.book.place_limit_order('foreign-future', 'FUT', 'buy', 2, 100)[0])
+        self.db.companies.update_share_price("CO", 110)
+        self.futures.settle_positions()
+
+        def state():
+            return (self._nwx_units(number),
+                    self.db.assets.execute_one("SELECT COUNT(*) FROM futures_positions WHERE user_id='foreign-future'")[0],
+                    self.db.assets.execute_one("SELECT COUNT(*) FROM business_cash_events WHERE kind='fill'")[0])
+        before = state()
+        real = AccountingJournal.link_futures_cash
+
+        def failing(conn, tag, *args, **kwargs):
+            if tag == 'fill':
+                raise RuntimeError('link failure')
+            return real(conn, tag, *args, **kwargs)
+        with patch.object(AccountingJournal, 'link_futures_cash', staticmethod(failing)):
+            try:
+                result = self.book.place_limit_order('foreign-future', 'FUT', 'sell', 2, 110)
+                self.assertFalse(result[0], result)
+            except RuntimeError:
+                pass
+        self.assertEqual(state(), before)
+        self.assertTrue(self.book.place_limit_order('foreign-future', 'FUT', 'sell', 2, 110)[0])
+        self.assertEqual(state()[1], 0)

@@ -190,6 +190,21 @@ M8 진행: 통제-증빙 추적표([controls_laplace.md](controls_laplace.md))�
 
 2026-11-25 M4 4차: 청산 지급·복권 당첨·지급 출금 수수료·지급 전환/반환은 환전 기록이 실패하면 지급 전체가 되돌려지고 재시도는 한 건만 기록하는 시험을 갖췄다. 마감 개요에 '금액 계보' 게이트(원장에 연결되지 않은 금액 표)와 '기준선 수정 방지' 게이트가 있다. 새 모듈·표(약관 동의, 탈퇴, FTP 금리 적용, 계약 금리표, 예금보험 기금 이벤트 등)는 `audit_amount_field_coverage`가 미분류 0으로 확인했다. 과거 잔액 재구성은 원칙을 유지한다: 지갑 원장으로 증명되는 시점(`BaselineReport.wallet_as_of`)만 재구성하고, 근거 없는 과거는 거래를 만들지 않고 불변 기준선으로 남기며 그 크기를 마감 개요 '기준선 현황'에 드러낸다.
 
+2026-11-27 M4 6차: 상품 정산 경로별 환전·분개 기록과 롤백 증빙.
+
+| 경로 | 환전·원장 기록 위치 | 롤백(기록 실패 시 전체 취소·재시도 1건) 증빙 |
+|---|---|---|
+| 선물 체결·청산·만기 | 지갑 변동을 `link_futures_cash`로 연결, 대기 지급은 `PayoutManager`, 세금은 `_tax_in_home_currency` | `test_m4_close_integration`의 선물 체결 연결 실패·세금 환전 기록 실패·지급 전환/반환 시험 |
+| 옵션 프리미엄·행사·담보 | `post_option_premium`·`post_option_exercise`·`post_option_collateral_cash`(기준통화 한정 상품이라 환전 없음, 사유: 상품 규칙) | 행사 분개 실패 시험 `test_option_exercise_posting_failure_rolls_the_exercise_back` |
+| 펀드 | 펀드 현금 원장(`fund_cash_ledger`) 전기, 환전 없음(펀드 통화 현금) | 기존 `test_fund_accounting::test_cash_or_position_failure_rolls_back_subscription` |
+| ELS | `link_cash`(청약·정산), 외화 청약자는 FX 통장 경유 | 기존 `test_els::test_failed_settlement_keeps_snapshot_and_retries_without_duplicate_pay` |
+| 스왑 | 계약·정산 전용 원장 없음(`swap_contracts`는 계약 표만 연결). 별도 정산 경로가 생기기 전까지 해당 없음 | 해당 없음 |
+| 회사채 이자·만기, 청산 지급, 복권, 지급 출금 수수료 | 5차까지 정리(위 항목) | 각 경로 시험 보유 |
+
+공통 분개 없는 거래 유형: 금액 계보 대사에서 `unconnected` 0건, `unclassified` 0건이다. 남은 `reference` 25개 표(AML 규칙, 시세 이력, 시장 상태, 펀드 구성 등)는 돈이 움직이는 표가 아니라 기준·이력 데이터다. 돈이 움직이는 새 거래 유형은 분개 없이 `consumer_coverage`에 올릴 수 없으며, 올리지 않으면 마감 게이트('금액 계보')가 닫힌다.
+
+스트레스(운영 사본, 지갑 원장 45,465행·공통 분개 50,685건·분개 줄 101,573줄): 통합 대사 34.5초에서 8.3초로 단축(주문 단위 N+1 질의 7만 건을 일괄 집계로 변경), 결과는 동일하게 matched·close_ready true·finding 0. FX 마감 점검 0.04초, 기준선 점검 0.17초. 남은 질의 대부분은 주문·체결 단위 600건대다.
+
 ## #80 종료 범위
 
 #80은 내부 시뮬레이터 범위에서 완료다. HTS 의결권 위임/투표, DR 수탁 요청·예약·지연·수수료·재시도/만료, 세무거주지 스냅샷, 국가별 배당 원천징수, 불변 이벤트·내부 복식분개 및 관리자 대사를 포함한다. 실제 수탁/예탁/은행/세무기관 연결, 신분·거주지 증빙, 법적 조약 판정과 외부 송금은 제외한다.
