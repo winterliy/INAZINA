@@ -151,11 +151,11 @@ def render(record, stage, limit=3500):
 
 # ---- the channels ---------------------------------------------------------------------------------------------------------------
 def notify_members(conn, record, stage, now=None):
-    """One bell notification for every active member (kept in the bell: the Discord copy is marked as already sent). Returns how many."""
+    """One bell notification for every active member and operator (kept in the bell: the Discord copy is marked as already sent). Returns how many."""
     from managers.notification_manager import NotificationManager
     title, body = render(record, stage, limit=900)
     count = 0
-    for row in conn.execute("SELECT user_id FROM users WHERE role='user' AND status='active'").fetchall():
+    for row in conn.execute("SELECT user_id FROM users WHERE role IN ('user','admin') AND status='active'").fetchall():
         added = NotificationManager.add(conn, row[0], "policy", title, body, action_path="/announcements", dedupe_key=f"policy:{record['id']}:{stage}:{row[0]}",
                                         payload={"announcementId": record["id"], "stage": stage}, now=now, discord_sent=True)
         count += 1 if added else 0

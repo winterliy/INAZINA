@@ -4925,7 +4925,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, {"user": user})
             elif path in ("/internal/me/announcements", "/internal/me/announcements/all"):
                 user = identity(internal_user_id(self))
-                if not user or user["role"] != "user":
+                if not user or user["role"] not in ("user", "admin"):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     from web_api import announcements
@@ -5693,7 +5693,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/internal/me/announcements/seen":
                 user = identity(verified_id)
-                if not user or user["role"] != "user" or _DELEGATION.by:
+                if not user or user["role"] not in ("user", "admin") or _DELEGATION.by:
                     self.send_json(403, {"error": "active_user_required"})
                     return
                 ids = payload.get("ids")

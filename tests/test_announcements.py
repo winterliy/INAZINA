@@ -99,8 +99,8 @@ class AnnouncementTests(unittest.TestCase):
             again = announcements.notify_members(conn, announcements.get(conn, record), "announced", now=NOW)
             who = {row[0] for row in conn.execute("SELECT user_id FROM notifications WHERE kind='policy'")}
             unsent = conn.execute("SELECT COUNT(*) FROM notifications WHERE kind='policy' AND discord_sent_epoch IS NULL").fetchone()[0]
-        self.assertTrue({"citizen", "m1"} <= who)
-        self.assertFalse(who & {"gone", "boss"})
+        self.assertTrue({"citizen", "m1", "boss"} <= who, "operators read the announcement too (they are only never asked to consent)")
+        self.assertFalse(who & {"gone"})
         self.assertEqual(first, len(who))
         self.assertEqual(again, 0, "the same stage is never notified twice")
         self.assertEqual(unsent, 0, "the bell only: the Discord delivery loop must not send these again")
