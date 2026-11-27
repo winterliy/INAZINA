@@ -133,6 +133,26 @@ class RateShockTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "invalid_prudential_parameter_value"):
                     ALMManager.set_parameter(conn, "낙원", key, value, actor="admin", now=NOW)
 
+    def test_prefetched_schedules_and_cached_curve_rates_give_identical_results(self):
+        from managers.rate_manager import RateManager
+        self.db.accounts.execute(
+            "INSERT INTO loans(loan_id,user_id,product_code,principal,outstanding_balance,status,collection_status,created_at,maturity_epoch,"
+            "quote_currency,rate_type,contract_rate) VALUES (2,'b2','L1',900,900,'active','current',datetime(?,'unixepoch'),?,'NWX','fixed',6)",
+            (NOW, NOW + 300 * DAY))
+        for number, days, principal in ((1, 100, 300), (2, 200, 300), (3, 300, 300), (4, 400, 50)):      # the last one falls after maturity
+            self.db.accounts.execute(
+                "INSERT INTO loan_payment_schedule(loan_id,installment_number,due_epoch,principal_due,interest_due,fee_due,amount_paid,status) "
+                "VALUES (2,?,?,?,0,0,0,'scheduled')", (number, NOW + days * DAY, principal))
+        with self.db.readonly() as conn:
+            plain = RateManager.institution_fixed_rate_eve_stress(conn, "Bank", now=NOW)
+            fast = RateManager.institution_fixed_rate_eve_stress(conn, "Bank", now=NOW, prefetch_schedules=True)
+            self.assertEqual(plain, fast)
+            self.assertGreater(plain["scenarios"][0]["assetDurationAmountYears"], 0)
+            rates = {}
+            self.assertEqual(ALMManager._market_rate(conn, "낙원", "funding", 365, rates), RateManager.market_rate(conn, "낙원", "funding", 365))
+            rates[("funding", 365)] = "remembered"
+            self.assertEqual(ALMManager._market_rate(conn, "낙원", "funding", 365, rates), "remembered")      # a second ask reads nothing
+
     def test_the_report_stays_read_only(self):
         with self.db.readonly() as conn:
             ALMManager.report(conn, "Bank", now=NOW)

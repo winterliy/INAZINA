@@ -1323,8 +1323,11 @@ class RateManager:
                 "method": "100% benchmark pass-through after next reset with contractual rate floor/cap; capped by maturity; constant balance, no behavioral beta, amortization, legal-cap recalculation, hedges or basis risk"}
 
     @staticmethod
-    def institution_fixed_rate_eve_stress(conn, issuer, *, now=None):
-        """Estimate fixed-rate value sensitivity using principal timing moments."""
+    def institution_fixed_rate_eve_stress(conn, issuer, *, now=None, prefetch_schedules=False):
+        """Estimate fixed-rate value sensitivity using principal timing moments.
+
+        ``prefetch_schedules`` reads every qualifying loan's open instalments in one query instead of one per loan; the result is
+        identical (same rows, same order), only the round trips differ."""
         issuer = str(issuer or "").strip()
         if not issuer:
             raise ValueError("financial_institution_not_found")
@@ -1343,6 +1346,16 @@ class RateManager:
                                          "loansWithoutMaturity": 0})
             return currency, exposure[currency], counts[currency]
 
+        prefetched = None
+        if prefetch_schedules:
+            prefetched = {}
+            for row in conn.execute(
+                "SELECT s.loan_id,s.principal_due,s.principal_paid,s.due_epoch FROM loan_payment_schedule s "
+                "JOIN loans l ON l.loan_id=s.loan_id JOIN liability p ON p.product_code=l.product_code "
+                "WHERE p.issuer=? AND l.status='active' AND l.collection_status='current' AND l.rate_type='fixed' "
+                "AND l.outstanding_balance>0 AND s.status IN ('scheduled','partial') AND s.due_epoch>? "
+                "ORDER BY s.loan_id,s.due_epoch,s.installment_number", (issuer, epoch)):
+                prefetched.setdefault(row["loan_id"], []).append(row)
         for loan in conn.execute(
             "SELECT l.loan_id,l.quote_currency,l.outstanding_balance,l.maturity_epoch "
             "FROM loans l JOIN liability p ON p.product_code=l.product_code "
@@ -1358,13 +1371,16 @@ class RateManager:
                 count["loansWithoutMaturity"] += 1
                 continue
             remaining_years = max(0.0, (maturity-epoch)/year_seconds)
-            cashflows = conn.execute(
-                "SELECT principal_due,principal_paid,due_epoch FROM loan_payment_schedule "
-                "WHERE loan_id=? AND status IN ('scheduled','partial') AND due_epoch>? "
-                "AND due_epoch<=? "
-                "ORDER BY due_epoch,installment_number",
-                (loan["loan_id"], epoch, maturity),
-            ).fetchall()
+            if prefetched is not None:
+                cashflows = [row for row in prefetched.get(loan["loan_id"], ()) if row["due_epoch"] <= maturity]
+            else:
+                cashflows = conn.execute(
+                    "SELECT principal_due,principal_paid,due_epoch FROM loan_payment_schedule "
+                    "WHERE loan_id=? AND status IN ('scheduled','partial') AND due_epoch>? "
+                    "AND due_epoch<=? "
+                    "ORDER BY due_epoch,installment_number",
+                    (loan["loan_id"], epoch, maturity),
+                ).fetchall()
             principal_total = 0.0
             amount_years = 0.0
             amount_years_squared = 0.0

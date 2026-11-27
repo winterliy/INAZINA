@@ -138,7 +138,7 @@ class ALMManager:
             floating_asset_years += cls._to_base(conn, cls._dec(scenario["assetBalanceYears"]), scenario["currency"], base)
             for shock in scenario["shocks"]:
                 contractual_nii[shock["basisPoints"]] += cls._to_base(conn, cls._dec(shock["netInterestIncomeChange"]), scenario["currency"], base)
-        for scenario in RateManager.institution_fixed_rate_eve_stress(conn, issuer, now=now)["scenarios"]:
+        for scenario in RateManager.institution_fixed_rate_eve_stress(conn, issuer, now=now, prefetch_schedules=True)["scenarios"]:
             asset_d, liab_d = cls._dec(scenario["assetDurationAmountYears"]), cls._dec(scenario["liabilityDurationAmountYears"])
             asset_c, liab_c = cls._dec(scenario["assetConvexityAmountYears2"]), cls._dec(scenario["liabilityConvexityAmountYears2"])
             for shock in scenario["shocks"]:
@@ -381,8 +381,18 @@ class ALMManager:
                            "currency moves by the shock against the base (foreignDown / foreignUp), or each against its position (grossWorstCase); "
                            "no hedges, derivatives or securities; converted at the current rate in whole base units")}
 
+    @staticmethod
+    def _market_rate(conn, nationality, key, days, rates):
+        """RateManager.market_rate, remembered for the duration of one report (``rates`` is that report's dict) to save round trips."""
+        if rates is None:
+            return RateManager.market_rate(conn, nationality, key, days)
+        slot = (key, int(days))
+        if slot not in rates:
+            rates[slot] = RateManager.market_rate(conn, nationality, key, days)
+        return rates[slot]
+
     @classmethod
-    def forward_curves(cls, conn, nationality, *, now):
+    def forward_curves(cls, conn, nationality, *, now, rates=None):
         """Implied forward rates between standard tenors from the jurisdiction's zero curves (read-only, explanatory).
 
         Curve points are continuously compounded zero rates z(t) in percent, so the forward from t1 to t2 (years) is
@@ -390,7 +400,7 @@ class ALMManager:
         """
         curves = []
         for key in CURVE_KEYS:
-            zero = [(days, Decimal(str(RateManager.market_rate(conn, nationality, key, days)))) for days in CURVE_TENORS_DAYS]
+            zero = [(days, Decimal(str(cls._market_rate(conn, nationality, key, days, rates)))) for days in CURVE_TENORS_DAYS]
             segments = []
             for (d1, z1), (d2, z2) in zip(zero, zero[1:]):
                 t1, t2 = Decimal(d1) / 365, Decimal(d2) / 365
@@ -402,7 +412,7 @@ class ALMManager:
                            "jurisdiction's quoted points (log-discount interpolation between them); not a tradable rate")}
 
     @classmethod
-    def ftp_preview(cls, conn, issuer, nationality, base, param, now):
+    def ftp_preview(cls, conn, issuer, nationality, base, param, now, rates=None):
         """Funds-transfer-pricing preview per product. Read-only: no product rate is changed or applied.
 
         FTP(t) = the jurisdiction's funding curve at tenor t + the liquidity premium + the term premium (default 0; the funding
@@ -414,7 +424,7 @@ class ALMManager:
         behavioural_days = max(1, int(param["core_deposit_years"]) * 365)
 
         def ftp_before_term(days):
-            return Decimal(str(RateManager.market_rate(conn, nationality, "funding", int(days)))) + premium
+            return Decimal(str(cls._market_rate(conn, nationality, "funding", int(days), rates))) + premium
 
         def ftp(days):
             return ftp_before_term(days) + cls.term_premium_percent(param, days)
@@ -625,6 +635,7 @@ class ALMManager:
                 "ratioPercent": nsfr_ratio, "minimumPercent": param["nsfr_min_bps"] / 100,
                 "status": "ok" if required <= 0 else cls._status(nsfr_ratio, param["nsfr_min_bps"] / 100, warn_margin_percent=10)}
 
+        rates = {}      # curve points read once per report
         return {
             "issuer": issuer, "jurisdiction": nationality, "currency": base, "decimalPlaces": places, "asOfEpoch": now,
             "balanceSheet": {"cashAndReserves": cash, "grossLoans": gross_loans, "allowance": allowance, "netLoans": net_loans,
@@ -635,8 +646,8 @@ class ALMManager:
             "capital": capital, "leverage": leverage, "lcr": lcr, "nsfr": nsfr,
             "rateShock": cls.rate_shock(conn, issuer, base, param, tier1, now=now),
             "currencyRisk": cls.currency_breakdown(conn, issuer, base, param, cet1, now=now),
-            "ftp": cls.ftp_preview(conn, issuer, nationality, base, param, now) if nationality else None,
-            "forwardCurves": cls.forward_curves(conn, nationality, now=now) if nationality else None,
+            "ftp": cls.ftp_preview(conn, issuer, nationality, base, param, now, rates) if nationality else None,
+            "forwardCurves": cls.forward_curves(conn, nationality, now=now, rates=rates) if nationality else None,
             "parameters": {"values": param, "overriddenForJurisdiction": overridden},
             "method": ("simulator policy, not a regulatory filing; no asset ledger: cash and reserves (HQLA level 1) are what deposits, "
                        "wholesale funding and equity fund beyond net loans; Tier 2 = stage 1-2 allowances up to the cap; AT1 and "
