@@ -1916,11 +1916,22 @@ class AccountingJournal:
         market_events = conn.execute("""SELECT e.* FROM market_execution_events e
             LEFT JOIN market_execution_journal_baselines b USING(execution_key)
             WHERE b.execution_key IS NULL ORDER BY e.execution_key""").fetchall()
+        # Whole-table lookups once, not one query per execution (the check must scale with the number of fills).
+        market_mapping = {}
+        for row in conn.execute("SELECT local_code,common_code FROM accounting_account_mappings "
+                                "WHERE ledger_scope='market' AND active=1"):
+            market_mapping.setdefault(str(row[0]), row[1])
+        market_entries = {}
+        for row in conn.execute("""SELECT entry_id,entity_id,source_key,currency_code,decimal_places,recorded_epoch
+                FROM accounting_entries WHERE ledger_scope='market' AND entity_type='market_trade'"""):
+            market_entries.setdefault((str(row["entity_id"]), str(row["source_key"])), row)
+        market_lines = {}
+        for line in conn.execute("""SELECT l.entry_id,l.account_code,l.debit_units,l.credit_units
+                FROM accounting_lines l JOIN accounting_entries a ON a.entry_id=l.entry_id
+                WHERE a.ledger_scope='market' AND a.entity_type='market_trade' ORDER BY l.entry_id,l.line_id"""):
+            market_lines.setdefault(int(line["entry_id"]), []).append(line)
         for event in market_events:
-            journal = conn.execute("""SELECT entry_id,currency_code,decimal_places,recorded_epoch
-                FROM accounting_entries WHERE ledger_scope='market' AND entity_type='market_trade'
-                  AND entity_id=? AND source_key=?""",
-                (event["asset_code"], event["execution_key"])).fetchone()
+            journal = market_entries.get((str(event["asset_code"]), str(event["execution_key"])))
             expected_local = ([
                 ("buyer_trade_receivable", int(event["gross_minor_units"]), 0),
                 ("issuer_proceeds_clearing", 0, int(event["gross_minor_units"])),
@@ -1933,19 +1944,17 @@ class AccountingJournal:
             for local, debit, credit in expected_local:
                 if debit == 0 and credit == 0:
                     continue
-                mapping = conn.execute("""SELECT common_code FROM accounting_account_mappings
-                    WHERE ledger_scope='market' AND local_code=? AND active=1""", (local,)).fetchone()
-                if not mapping:
+                mapping = market_mapping.get(local)
+                if mapping is None:
                     market_journal_gaps.append({"execution_key": event["execution_key"],
                                                 "missing_mapping": local})
                     continue
-                code = str(mapping[0])
+                code = str(mapping)
                 old_debit, old_credit = expected.get(code, (0, 0))
                 expected[code] = (old_debit+debit, old_credit+credit)
             actual = {}
             if journal:
-                for line in conn.execute("SELECT account_code,debit_units,credit_units "
-                    "FROM accounting_lines WHERE entry_id=?", (journal["entry_id"],)):
+                for line in market_lines.get(int(journal["entry_id"]), []):
                     code = str(line["account_code"])
                     debit, credit = actual.get(code, (0, 0))
                     actual[code] = (debit+int(line["debit_units"]),
@@ -2008,39 +2017,50 @@ class AccountingJournal:
                                      "status": "mismatch"})
         primary_settlement_gaps = []
         from managers.currency_manager import CurrencyManager
+        overrides = {str(row[0]): row for row in conn.execute(
+            "SELECT execution_key,recipient_id FROM market_execution_primary_recipient_overrides")}
+        issuer_funded = {str(row[0]): row[1] for row in conn.execute(
+            "SELECT company_code,COALESCE(parent_company_code,company_code) FROM company WHERE dividend_funding='issuer'")}
+        bond_issuers = {str(row[0]): row[1] for row in conn.execute(
+            "SELECT product_code,issuer_code FROM product.investment WHERE product_type='corporate_bond'")}
+        company_cash_users = {}
+        for row in conn.execute("SELECT company_code,user_id FROM company_accounts"):
+            company_cash_users.setdefault(str(row[0]), row[1])
+        treasuries = {}
+        primary_receipts = {}
+        for row in conn.execute("""SELECT w.execution_key,l.user_id,l.currency_code,l.decimal_places,
+                SUM(l.delta_minor_units) amount_minor_units
+                FROM market_execution_wallet_links w
+                JOIN customer_wallet_ledger l ON l.entry_id=w.wallet_entry_id
+                WHERE l.delta_minor_units>0
+                GROUP BY w.execution_key,l.user_id,l.currency_code,l.decimal_places"""):
+            primary_receipts.setdefault((str(row["execution_key"]), str(row["user_id"])), []).append(row)
         for event in market_events:
             if event["execution_type"] != "primary":
                 continue
             asset_code = str(event["asset_code"])
             counterparty_kind = "treasury"
             recipient_id = None
-            override = conn.execute("""SELECT recipient_id FROM market_execution_primary_recipient_overrides
-                WHERE execution_key=?""", (event["execution_key"],)).fetchone()
-            issuer = None if override else conn.execute("""SELECT COALESCE(parent_company_code,company_code)
-                FROM company WHERE company_code=? AND dividend_funding='issuer'""",
-                (asset_code,)).fetchone()
-            corporate_bond = None if override else conn.execute("""SELECT issuer_code FROM product.investment
-                WHERE product_code=? AND product_type='corporate_bond'""",
-                (asset_code,)).fetchone()
+            override = overrides.get(str(event["execution_key"]))
+            issuer = None if override or asset_code not in issuer_funded else (issuer_funded[asset_code],)
+            corporate_bond = None if override or asset_code not in bond_issuers else (bond_issuers[asset_code],)
             if override:
                 counterparty_kind = "recorded_recipient"
-                recipient_id = str(override[0])
+                recipient_id = str(override[1])
             elif issuer:
                 counterparty_kind = "issuer_cash"
                 issuer_code = str(issuer[0])
-                company_account = conn.execute(
-                    "SELECT user_id FROM company_accounts WHERE company_code=?",
-                    (issuer_code,)).fetchone()
-                recipient_id = str(company_account[0]) if company_account else None
+                company_account = company_cash_users.get(issuer_code)
+                recipient_id = str(company_account) if company_account else None
             elif corporate_bond:
                 counterparty_kind = "issuer_cash"
                 issuer_code = str(corporate_bond[0])
-                company_account = conn.execute(
-                    "SELECT user_id FROM company_accounts WHERE company_code=?",
-                    (issuer_code,)).fetchone()
-                recipient_id = str(company_account[0]) if company_account else None
+                company_account = company_cash_users.get(issuer_code)
+                recipient_id = str(company_account) if company_account else None
             else:
-                recipient_id = str(CurrencyManager.exchange_treasury(conn, asset_code))
+                if asset_code not in treasuries:
+                    treasuries[asset_code] = str(CurrencyManager.exchange_treasury(conn, asset_code))
+                recipient_id = treasuries[asset_code]
             if not recipient_id:
                 primary_settlement_gaps.append({
                     "execution_key": event["execution_key"],
@@ -2049,13 +2069,7 @@ class AccountingJournal:
                     "status": "counterparty_cash_not_wallet_linkable",
                 })
                 continue
-            receipt_rows = conn.execute("""SELECT l.currency_code,l.decimal_places,
-                SUM(l.delta_minor_units) amount_minor_units
-                FROM market_execution_wallet_links w
-                JOIN customer_wallet_ledger l ON l.entry_id=w.wallet_entry_id
-                WHERE w.execution_key=? AND l.user_id=? AND l.delta_minor_units>0
-                GROUP BY l.currency_code,l.decimal_places""",
-                (event["execution_key"], recipient_id)).fetchall()
+            receipt_rows = primary_receipts.get((str(event["execution_key"]), str(recipient_id)), [])
             if (len(receipt_rows) != 1
                     or str(receipt_rows[0]["currency_code"]).upper() != str(event["currency_code"]).upper()
                     or int(receipt_rows[0]["decimal_places"]) != int(event["decimal_places"])
@@ -2073,19 +2087,20 @@ class AccountingJournal:
         holding_events = conn.execute("""SELECT e.* FROM market_execution_events e
             LEFT JOIN market_execution_holding_baselines b USING(execution_key)
             WHERE b.execution_key IS NULL ORDER BY e.execution_key""").fetchall()
+        movements_by_key = {}
+        for row in conn.execute("""SELECT execution_key,party_role,user_id,inventory_type,signed_quantity
+                FROM market_execution_holding_movements ORDER BY execution_key,party_role"""):
+            movements_by_key.setdefault(str(row["execution_key"]), []).append(row)
+        bond_codes = {str(row[0]) for row in conn.execute("SELECT product_code FROM product.treasury_bond_products")}
         for event in holding_events:
-            movements = conn.execute("""SELECT party_role,user_id,inventory_type,signed_quantity
-                FROM market_execution_holding_movements WHERE execution_key=?
-                ORDER BY party_role""", (event["execution_key"],)).fetchall()
+            movements = movements_by_key.get(str(event["execution_key"]), [])
             expected = {"buyer": (str(event["buyer_id"]), int(event["quantity"]))}
             if event["execution_type"] == "secondary":
                 expected["seller"] = (str(event["seller_id"]), -int(event["quantity"]))
             actual = {str(row["party_role"]): (
                 str(row["user_id"]), int(row["signed_quantity"]),
                 str(row["inventory_type"])) for row in movements}
-            expected_type = ("treasury_bond" if conn.execute(
-                "SELECT 1 FROM product.treasury_bond_products WHERE product_code=?",
-                (event["asset_code"],)).fetchone() else "user_asset")
+            expected_type = "treasury_bond" if str(event["asset_code"]) in bond_codes else "user_asset"
             normalized = {role: (user_id, quantity, expected_type)
                           for role, (user_id, quantity) in expected.items()}
             if actual != normalized:
