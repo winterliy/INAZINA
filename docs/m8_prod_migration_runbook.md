@@ -70,3 +70,16 @@ INAZINA_PG_DSN=postgresql:///inazina .venv/bin/python -m database.backup
 | 이관 후 | 발견 5건. `insolvency_policies.exempt_amount` 발견은 해소됨 |
 | 남은 5건 (2026-11-27 운영 복사본, `--sync-schema --reconcile`, `source_dbname: inazina`, 36.5초, `cleanup_ok: true`) | 금액 필드 미분류 3건: `market_price_anchor.anchor_price`, `price_floor_events.from_price`, `price_floor_events.to_price`. 공통 분개 `common_journals`(customer): `posting_gaps` 6건(지갑 항목 45,465 = 공통 항목 45,465, `balance_gaps` 0). 기관 보조원장 `institution_subledgers`: 낙원시민은행 `customer_deposits` NWX, 계정 합 0, 분개 합 500, 차이 -500 |
 남은 5건의 원인은 이 문서에서 조사하지 않았다(M4 담당이 조사 중). 새로 생긴 가격 안전장치 표 3개 열의 분류, 공통 분개 6건, 낙원시민은행 500은 각각 사실만 적는다.
+
+## 운영 쓰기 기록 (2026-11-27, 사용자 승인 하에 통합관리 세션이 `postgresql:///inazina`에 실행)
+이 문서의 작성자는 실행하지 않았고, 아래는 통합관리 세션의 보고를 그대로 옮긴 것이다. 운영 쓰기는 3건이다.
+| # | 내용 | 결과 |
+|---|---|---|
+| 1 | 금액 등록부 이관 2차 | 면제 23 → 26행. 추가된 행: `market_price_anchor.anchor_price`, `price_floor_events.from_price`, `price_floor_events.to_price` |
+| 2 | 낙원시민은행 탈퇴 시험 회원 계좌 `4094375218`의 누락된 `deposit_close` 은행 분개 1건 소급 추가 | 500 NWX, `entry_id` 78. 복사본에서 리허설한 뒤 운영에 실행 |
+| 3 | 낙원 관할 `funding_auto_maturity_flag=1` 저장 | 행위자 `system:integration-manager`, 감사 `prudential_parameter.set`, `admin_audit` 2100. 현재 낙원 은행의 도매조달이 0건이라 동작하는 것은 없다. 봇 재시작 시 10분 주기에 반영된다 |
+확인: 위 반영 뒤 운영 덤프 복사본(백업 `inazina-pg-20261127-192056.dump`, `source_dbname: inazina`)에 `--sync-schema --reconcile`을 돌린 결과 `matched`, `close_ready: true`, 발견 0건이다. 위 '남은 5건'은 모두 해소됐다.
+
+## 정기 점검
+서버 재시작이나 큰 반영(스키마·등록부·관할 기준 변경) 뒤마다 4절의 `--sync-schema --reconcile`을 돌려 `matched`, `close_ready: true`, 발견 0건인지 확인하고 `docs/m8_records/drills.json`에 날짜와 함께 기록한다. 발견이 있으면 그 사실을 기록하고 담당에게 넘긴다. 관리자 접근 검토는 `docs/m8_access_review_procedure.md`를 따른다.
+

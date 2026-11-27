@@ -44,3 +44,11 @@ def test_controls_screen_data_marks_every_control_verified():
     assert data["summary"]["total"] >= 10
     assert [row["id"] for row in data["controls"] if row["status"] != "verified"] == []
     assert data["restoreDrills"] and data["accessReviews"] and len(data["stress"]["scenarios"]) == 6
+
+
+def test_production_writes_name_who_ran_them_and_when():
+    writes = RECORDS["production_writes"]
+    assert len(writes) >= 3
+    for write in writes:
+        date.fromisoformat(write["date"])
+        assert write["executor"] and write["target"] == "postgresql:///inazina" and write["description"] and write["result"]

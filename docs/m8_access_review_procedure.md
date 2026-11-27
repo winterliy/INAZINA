@@ -10,3 +10,5 @@
 
 환경: 부트스트랩 관리자 ID는 `INAZINA_BOOTSTRAP_ADMIN_IDS`(쉼표 구분)로 바꾼다. 비우면 기본값(기존 계정)을 쓴다.
 백업 점검: 가장 최근 `database/backups/inazina-pg-*.dump`가 48시간(`INAZINA_BACKUP_MAX_AGE_HOURS`)보다 오래되면 화면에 '오래됨', 없으면 '없음'으로 표시한다. 점검은 읽기 전용이며 백업을 만들지 않는다.
+
+서버 재시작·큰 반영 뒤에는 접근 검토와 별도로 `docs/m8_prod_migration_runbook.md`의 '정기 점검'(복원본 `--reconcile`이 matched인지)을 한다.
