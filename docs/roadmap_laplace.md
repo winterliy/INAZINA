@@ -167,6 +167,8 @@ M7 진행(보증인 청구): `managers/guarantor_recovery.py`와 관리자 POST 
 
 M7 진행(APR 표시 값): `functions/jurisdiction_rules.apr_display_for`가 사용자 국가 규칙의 `apr_display`('required'/'optional')를 사용자 상품 목록(`user_lookups`의 `loanProducts[].aprDisplay`)에 실어 보낸다. 규칙이 없으면 None이며 화면 렌더링은 HTS 쪽 몫이다.
 
+M7 진행(보증인 탈퇴): 보증인은 청구될 수 있는 보증이 남아 있는 동안 탈퇴할 수 없고(`BLOCKERS`), 추가 전용 보증·지급·배분 기록의 사용자 ID 열은 `rekey`로 분류해 트리거가 막는 행은 ID를 유지한다. 탈퇴 분류 시험은 첫 사용 때 생기는 표도 검사한다([m7_guarantor_withdrawal.md](m7_guarantor_withdrawal.md)).
+
 **M7 현재 상태(2026-11-29)**: 완료 — 계약일·고객유형별 금리 규칙(최고금리·연체·재산정·연장·예금 세율, APR 표시는 사용자 상품 목록의 `aprDisplay` 값으로 노출), 금리 일정의 대출·예금 계약 연결(기본 꺼짐, 고지 알림), 부분상환 선택(기본 꺼짐), 회수 우선순위 배분 전기·회수 곡선 미리보기·보증인 청구, 예금보험 미리보기·기금 원장·정리 지급 자금 출처(기금 먼저, 부족분만 국고)·국고 보전, 채권 포트폴리오 위험지표. 남음 — 한도대출 보강, NPL 매각·파산 절차 연결, 보증인·waterfall 관리자 화면, HTS 상품 화면의 APR 표시 렌더링. 모든 새 동작은 기본 꺼짐이거나 관리자가 호출해야 작동한다.
 
 ### M8 — 보안·준법·완료 검증

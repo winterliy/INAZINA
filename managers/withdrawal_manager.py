@@ -156,6 +156,12 @@ COLUMN_BUCKETS = {
     'deposit_insurance_fund_policy': {'bucket': 'staff', 'columns': [], 'staff': ['updated_by']},
     'deposit_insurance_fund_events': {'bucket': 'staff', 'columns': [], 'staff': ['actor_id', 'issuer']},
     'product_prepayment_mode': {'bucket': 'staff', 'columns': [], 'staff': ['updated_by']},
+    # Guarantor claims and recovery postings (created on first use). The rows are append-only, so a rekey is refused by their triggers and
+    # the row keeps the ID (the documented retained-ledger case). Withdrawal is not blocked forever by the rows: only by a guarantee that can
+    # still be claimed (BLOCKERS, "미결 보증").
+    'loan_guarantees': {'bucket': 'rekey', 'columns': ['guarantor_user_id'], 'staff': ['created_by']},
+    'loan_guarantor_payments': {'bucket': 'rekey', 'columns': ['guarantor_user_id'], 'staff': ['actor_id']},
+    'recovery_waterfall_events': {'bucket': 'rekey', 'columns': ['user_id'], 'staff': ['actor_id']},
     'document_consents': {'bucket': 'rekey', 'columns': ['user_id'], 'staff': []},
     'announcement_seen': {'bucket': 'rekey', 'columns': ['user_id'], 'staff': []},
     'document_announcements': {'bucket': 'staff', 'columns': [], 'staff': ['actor_id']},
@@ -180,6 +186,9 @@ BLOCKERS = (
     ("insolvency_cases", "user_id=?", "도산 절차"),
     ("insolvency_restrictions", "user_id=?", "도산 제한"),
     ("loan_credit_support", "party_user_id=?", "대출 보증"),
+    ("loan_guarantees", "guarantor_user_id=? AND loan_id IN (SELECT loan_id FROM loans WHERE status IN ('active','defaulted','charged_off')) "
+     "AND max_minor_units > COALESCE((SELECT SUM(p.amount_minor_units) FROM loan_guarantor_payments p WHERE p.guarantee_id=loan_guarantees.guarantee_id),0)",
+     "아직 청구될 수 있는 대출 보증(보증 한도가 남은 미상환 대출)"),
     ("loan_collateral_assets", "user_id=?", "담보가 설정된 대출"),
     ("naturalization_requests", "user_id=? AND status='pending'", "처리 중인 귀화 신청"),
     ("payout_requests", "user_id=? AND status='pending'", "선택하지 않은 정산"),

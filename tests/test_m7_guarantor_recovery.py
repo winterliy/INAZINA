@@ -8,6 +8,7 @@ from database import DatabaseManager
 from database.db_manager import DBManager
 from managers.credit_risk_manager import CreditRiskManager
 from managers import guarantor_recovery as guarantor
+import test_inazina as fixtures
 
 NOW = 1800000000
 
@@ -140,6 +141,47 @@ class GuarantorApiTests(GuarantorBase):
             response, audit = self.call(bad)
             self.assertEqual(response["status"], 400, bad)
             audit.assert_not_called()
+
+
+class GuarantorWithdrawalTests(unittest.TestCase):
+    """A member who guarantees a loan cannot withdraw while the guarantee can still be claimed; afterwards the append-only rows stay."""
+    setUp = fixtures.InazinaTests.setUp
+    tearDown = fixtures.InazinaTests.tearDown
+
+    def make_loan(self):
+        self.db.users.create_user("debtor", "Debtor", "낙원", 0)
+        self.db.products.execute("INSERT INTO liability(product_code,name,interest_rate,loan_limit,maturity_days,interest_cycle,min_credit_score,issuer,quote_currency) "
+                                 "VALUES ('LW','LW',5,1000,365,86400,0,'Bank','NWX')")
+        self.db.accounts.execute("INSERT INTO loans(user_id,product_code,principal,outstanding_balance,status,created_at,collection_status,quote_currency) "
+                                 "VALUES ('debtor','LW',200,200,'defaulted',datetime('now'),'defaulted','NWX')")
+        loan = self.db.accounts.execute_one("SELECT loan_id FROM loans WHERE user_id='debtor'")[0]
+        with self.db.atomic() as conn:
+            CreditRiskManager.charge_off_loan(conn, loan_id=loan, event_key="cow1", actor_id="admin", now=NOW)
+            guarantor.register_guarantee(conn, loan_id=loan, guarantor_id="citizen", max_minor_units=100, actor_id="admin", now=NOW)
+        return loan
+
+    def test_an_open_guarantee_blocks_withdrawal_and_a_used_up_one_does_not(self):
+        from managers.withdrawal_manager import WithdrawalManager
+        loan = self.make_loan()
+        manager = WithdrawalManager(self.bot)
+        self.assertTrue(any("보증" in reason for reason in manager.plan("citizen")["blockers"]))
+        with self.assertRaisesRegex(ValueError, "보증"):
+            manager.withdraw("citizen")
+        self.assertIsNotNone(self.db.users.get_user("citizen"))
+        with self.db.atomic() as conn:
+            guarantor.claim_from_guarantor(conn, loan_id=loan, guarantor_id="citizen", amount_minor_units=100, event_key="wd-claim-0001", actor_id="admin", now=NOW + 1)
+        self.assertFalse(any("보증" in reason for reason in manager.plan("citizen")["blockers"]))
+        manager.withdraw("citizen")
+        self.assertIsNone(self.db.users.get_user("citizen"))
+        # the append-only guarantee and payment rows stay (their triggers refuse a re-key), so the books still show who paid
+        self.assertEqual(self.db.accounts.execute_one("SELECT COUNT(*) FROM loan_guarantees")[0], 1)
+        self.assertEqual(self.db.accounts.execute_one("SELECT COUNT(*) FROM loan_guarantor_payments")[0], 1)
+
+    def test_a_guarantee_on_a_loan_that_is_fully_settled_does_not_block(self):
+        from managers.withdrawal_manager import WithdrawalManager
+        loan = self.make_loan()
+        self.db.accounts.execute("UPDATE loans SET status='repaid' WHERE loan_id=?", (loan,))
+        self.assertFalse(any("보증" in reason for reason in WithdrawalManager(self.bot).plan("citizen")["blockers"]))
 
 
 if __name__ == "__main__":

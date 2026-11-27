@@ -9,6 +9,16 @@ from managers.currency_manager import CurrencyManager
 from managers.withdrawal_manager import WithdrawalManager, COLUMN_BUCKETS, USER_COLUMN_PATTERN
 
 
+LAZY_TABLE_MODULES = ("guarantor_recovery", "recovery_waterfall_posting", "insolvency_manager")
+
+
+def lazy_tables(conn):
+    """Create the tables that managers only make on first use, so the classification test sees them."""
+    import importlib
+    for name in LAZY_TABLE_MODULES:
+        importlib.import_module(f"managers.{name}").ensure_tables(conn)
+
+
 class WithdrawalTests(unittest.TestCase):
     setUp = fixtures.InazinaTests.setUp
     tearDown = fixtures.InazinaTests.tearDown
@@ -178,12 +188,21 @@ class WithdrawalTests(unittest.TestCase):
     def test_every_column_that_holds_a_user_id_is_classified(self):
         """A new table with a user column must be put in a bucket, or this fails (so withdrawal never silently skips it)."""
         with self.db.atomic() as conn:
+            lazy_tables(conn)                                   # tables created on first use must be checked too
             found = {(row[0], row[1]) for row in conn.execute(
                 "SELECT c.table_name, c.column_name FROM information_schema.columns c JOIN information_schema.tables t "
                 "USING (table_schema, table_name) WHERE c.table_schema=current_schema() AND t.table_type='BASE TABLE'")
                 if re.search(USER_COLUMN_PATTERN, row[1])}
         classified = {(table, column) for table, info in COLUMN_BUCKETS.items() for column in info['columns'] + info['staff']}
         self.assertEqual(sorted(found - classified), [], 'put these columns in COLUMN_BUCKETS')
+
+
+    def test_every_manager_that_creates_tables_lazily_is_covered_by_the_classification_test(self):
+        """A new manager with an ensure_tables(conn) must be added to LAZY_TABLE_MODULES, or its tables escape the classification test."""
+        import pathlib
+        found = sorted(path.stem for path in pathlib.Path(__file__).resolve().parents[1].joinpath('managers').glob('*.py')
+                       if re.search(r'^def ensure_tables\(conn\)', path.read_text(encoding='utf-8'), re.M))
+        self.assertEqual(sorted(set(found) - set(LAZY_TABLE_MODULES)), [], 'add these modules to LAZY_TABLE_MODULES')
 
 
 if __name__ == '__main__':
