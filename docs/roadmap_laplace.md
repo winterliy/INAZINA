@@ -153,6 +153,8 @@ M7 진행(예금보험기금 원장): 기금 원장 `deposit_insurance_fund_even
 
 M7 진행(고지·채권 위험지표): 금리 일정으로 계약 금리가 바뀌면 `notification_manager` 종 알림을 계약·재산정 시각당 한 번 보낸다(일정 없는 계약은 영향 없음). 보유자별 국채 포트폴리오의 DV01·듀레이션·컨벡서티 합산을 읽기 전용 관리자 조회(`managers/bond_portfolio_risk.py`)로 추가했다. 모형 추정치이며 회계 평가액이 아니다.
 
+M7 진행(정리 시 기금 지급 자동 기록): `deposit_insurance_fund_policy`(관할별, 기본 꺼짐)를 관리자가 켜면 `BankManager.resolve_failed_institution`이 같은 트랜잭션에서 청구별 기금 지급을 한 번씩 기록한다(`auto_record_if_enabled`). 꺼져 있으면 기존 정리 동작과 같다. 기금 부족 시 국고 보전은 만들지 않았다.
+
 ### M8 — 보안·준법·완료 검증
 
 M8 진행: 통제-증빙 추적표([controls_laplace.md](controls_laplace.md))를 만들고 각 행의 구현 파일과 증빙 테스트가 실제로 있는지 `tests/test_control_evidence_matrix.py`로 검증한다. 테스트 실행 중 기본 DB 경로를 임시 폴더로 격리해 운영 DB를 열지 않게 했다.

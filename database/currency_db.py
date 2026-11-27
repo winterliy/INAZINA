@@ -1632,6 +1632,7 @@ class CurrencyDB(DBManager):
         ensure_jurisdiction_rate_rules(self.execute)
         ensure_contract_rate_schedules(self.execute)
         ensure_deposit_insurance_fund(self.execute)
+        ensure_deposit_insurance_fund_policy(self.execute)
         ensure_accounting_line_repairs(self.execute)
         ensure_wallet_baseline_adjustments(self.execute)
         ensure_primary_recipient_overrides(self.execute)
@@ -3832,6 +3833,13 @@ def ensure_deposit_insurance_fund(execute):
         execute(f"""CREATE TRIGGER IF NOT EXISTS trg_deposit_insurance_fund_events_{operation.lower()}
             BEFORE {operation} ON deposit_insurance_fund_events
             BEGIN SELECT RAISE(ABORT,'deposit insurance fund events are append-only'); END""")
+
+
+def ensure_deposit_insurance_fund_policy(execute):
+    """Per-jurisdiction opt-in (default off): record fund payouts automatically when a failed bank is resolved."""
+    execute("""CREATE TABLE IF NOT EXISTS deposit_insurance_fund_policy (
+        nationality TEXT PRIMARY KEY, auto_record INTEGER NOT NULL DEFAULT 0 CHECK(auto_record IN (0,1)),
+        updated_by TEXT NOT NULL, updated_epoch INTEGER NOT NULL)""")
 
 
 def ensure_accounting_line_repairs(execute):

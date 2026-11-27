@@ -6124,6 +6124,14 @@ class Handler(BaseHTTPRequestHandler):
                 from functions.banks import bank_issuer
                 from managers import deposit_insurance_fund as insurance_fund
                 action = payload.get("action")
+                if action == "set_policy":
+                    if set(payload) != {"action", "nationality", "autoRecord"} or type(payload["autoRecord"]) is not bool or not isinstance(payload["nationality"], str):
+                        raise ValueError("invalid_deposit_insurance_fund_payload")
+                    with domain().db.atomic() as connection:
+                        insurance_fund.set_auto_record(connection, payload["nationality"], payload["autoRecord"], actor_id=user["userId"], now=int(time.time()))
+                    audit_admin_access(user["userId"], "deposit_insurance_fund.set_policy", {"nationality": payload["nationality"], "auto_record": payload["autoRecord"]})
+                    self.send_json(200, {"success": True})
+                    return
                 shapes = {"collect_premium": {"action", "bankId", "premiumBps", "eventKey"}, "record_payouts": {"action", "bankId"}}
                 if action not in shapes or set(payload) != shapes[action] or not isinstance(payload["bankId"], str) or not 1 <= len(payload["bankId"]) <= 100:
                     raise ValueError("invalid_deposit_insurance_fund_payload")

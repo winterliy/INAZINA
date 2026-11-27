@@ -2414,6 +2414,8 @@ class BankManager:
             uninsured_total += uninsured_base
         conn.execute("UPDATE product.saving SET status='inactive' WHERE issuer=?", (issuer,))
         conn.execute("UPDATE product.liability SET status='inactive' WHERE issuer=?", (issuer,))
+        from managers.deposit_insurance_fund import auto_record_if_enabled
+        auto_record_if_enabled(conn, issuer, now=int(when))      # opt-in per jurisdiction; off by default
         return {
             "accounts": len(accounts),
             "covered": covered_total,

@@ -143,3 +143,29 @@ def reconcile(conn):
             problems.append({"kind": "payout", "eventKey": row["event_key"], "fund": int(row["amount_minor_units"]),
                              "claim": None if row["payout_amount_minor_units"] is None else int(row["payout_amount_minor_units"])})
     return problems
+
+
+def set_auto_record(conn, nationality, enabled, *, actor_id, now):
+    """Opt a jurisdiction in or out of automatic fund payout recording at bank resolution (default: out)."""
+    ComplianceManager._require_admin(conn, actor_id)
+    nationality = str(nationality or "").strip()
+    if type(enabled) is not bool or not nationality or not conn.execute("SELECT 1 FROM country_currencies WHERE nationality=?", (nationality,)).fetchone():
+        raise ValueError("invalid deposit insurance fund policy")
+    conn.execute("INSERT INTO deposit_insurance_fund_policy(nationality,auto_record,updated_by,updated_epoch) VALUES (?,?,?,?) "
+                 "ON CONFLICT(nationality) DO UPDATE SET auto_record=excluded.auto_record,updated_by=excluded.updated_by,updated_epoch=excluded.updated_epoch",
+                 (nationality, int(enabled), str(actor_id), int(now)))
+
+
+def auto_record_if_enabled(conn, issuer, *, now):
+    """Called by bank resolution: when the bank's jurisdiction opted in, record the fund payouts of its claims (once per claim)."""
+    row = conn.execute("SELECT p.auto_record FROM financial_institutions f JOIN deposit_insurance_fund_policy p ON p.nationality=f.nationality "
+                       "WHERE f.issuer=?", (issuer,)).fetchone()
+    if not row or not int(row["auto_record"]):
+        return 0
+    recorded = 0
+    for claim in conn.execute("SELECT claim_id,payout_currency,payout_amount_minor_units FROM deposit_insurance_claims WHERE issuer=? "
+                              "AND payout_currency IS NOT NULL AND payout_amount_minor_units>0 ORDER BY claim_id", (issuer,)).fetchall():
+        recorded += conn.execute("INSERT OR IGNORE INTO deposit_insurance_fund_events(event_key,kind,issuer,currency_code,amount_minor_units,reference,actor_id,created_epoch) "
+                                 "VALUES (?,?,?,?,?,?,?,?)", (f"claim:{claim['claim_id']}", "payout", issuer, str(claim["payout_currency"]),
+                                                             int(claim["payout_amount_minor_units"]), f"claim {claim['claim_id']} (resolution)", "resolution", int(now))).rowcount
+    return recorded

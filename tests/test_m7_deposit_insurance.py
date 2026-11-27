@@ -163,6 +163,18 @@ class DepositInsuranceFundApiTests(Fixture):
         self.assertEqual(response["value"]["problems"], [])
         self.assertEqual(audit.call_args[0][1], "deposit_insurance_fund.read")
 
+    def test_admin_opts_a_jurisdiction_in_with_audit_and_bad_policy_is_refused(self):
+        policy = {"action": "set_policy", "nationality": "낙원", "autoRecord": True}
+        response, audit = self.call("do_POST", policy)
+        self.assertEqual(response["status"], 200, response)
+        self.assertEqual(audit.call_args[0][1], "deposit_insurance_fund.set_policy")
+        self.assertEqual(self.db.currency.execute_one("SELECT auto_record FROM deposit_insurance_fund_policy WHERE nationality='낙원'")[0], 1)
+        for bad in (dict(policy, autoRecord="yes"), dict(policy, nationality="없는나라"), dict(policy, extra=1)):
+            response, audit = self.call("do_POST", bad)
+            self.assertEqual(response["status"], 400, bad)
+            audit.assert_not_called()
+        self.assertEqual(self.call("do_POST", policy, role="user")[0]["status"], 403)
+
     def test_non_admin_and_bad_payloads_are_refused_without_writing_or_audit(self):
         self.assertEqual(self.call("do_POST", self.PAYLOAD, role="user")[0]["status"], 403)
         self.assertEqual(self.call("do_GET", role="user")[0]["status"], 403)
@@ -172,3 +184,42 @@ class DepositInsuranceFundApiTests(Fixture):
             self.assertEqual(response["status"], 400, bad)
             audit.assert_not_called()
         self.assertEqual(self.db.currency.execute_one("SELECT COUNT(*) FROM deposit_insurance_fund_events")[0], 0)
+
+
+class FundAutoRecordTests(Fixture):
+    NOW = 1_800_000_000
+
+    def fail_and_resolve(self):
+        self.db.currency.execute("UPDATE financial_institutions SET status='failed' WHERE issuer='Bank'")
+        from managers.bank_manager import BankManager
+        with self.db.atomic() as conn:
+            return BankManager.resolve_failed_institution(conn, "Bank", now=self.NOW)
+
+    def events(self):
+        return [tuple(r) for r in self.db.currency.execute("SELECT event_key,kind,amount_minor_units FROM deposit_insurance_fund_events ORDER BY event_key")]
+
+    def test_off_by_default_resolution_records_nothing_in_the_fund(self):
+        self.fail_and_resolve()
+        self.assertEqual(self.events(), [])
+        self.assertGreater(self.db.accounts.execute_one("SELECT COUNT(*) FROM deposit_insurance_claims")[0], 0)
+
+    def test_opted_in_resolution_records_each_claim_payout_once_and_reconciles(self):
+        self.db.users.create_user("admin", "Admin", "낙원", 0, role="admin")
+        with self.db.atomic() as conn:
+            fund.set_auto_record(conn, "낙원", True, actor_id="admin", now=self.NOW)
+        self.fail_and_resolve()
+        paid = [tuple(r) for r in self.db.accounts.execute("SELECT claim_id,payout_amount_minor_units FROM deposit_insurance_claims WHERE payout_amount_minor_units>0")]
+        self.assertTrue(paid)
+        self.assertEqual(sorted((f"claim:{c}", "payout", a) for c, a in paid), self.events())
+        with self.db.atomic() as conn:                 # running the recorder again (or the manual action) adds nothing
+            self.assertEqual(fund.auto_record_if_enabled(conn, "Bank", now=self.NOW), 0)
+            self.assertEqual(fund.record_claim_payouts(conn, "Bank", actor_id="admin", now=self.NOW)["recorded"], 0)
+            self.assertEqual(fund.reconcile(conn), [])
+
+    def test_the_policy_needs_an_admin_and_a_known_country(self):
+        self.db.users.create_user("admin", "Admin", "낙원", 0, role="admin")
+        with self.db.atomic() as conn:
+            for args in (dict(nationality="없는나라", enabled=True, actor_id="admin"), dict(nationality="낙원", enabled="yes", actor_id="admin"),
+                         dict(nationality="낙원", enabled=True, actor_id="u1")):
+                with self.assertRaises(ValueError):
+                    fund.set_auto_record(conn, now=self.NOW, **args)
