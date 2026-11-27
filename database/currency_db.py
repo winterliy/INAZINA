@@ -1634,6 +1634,7 @@ class CurrencyDB(DBManager):
         ensure_deposit_insurance_fund(self.execute)
         ensure_deposit_insurance_fund_policy(self.execute)
         ensure_deposit_insurance_backstop(self.execute)
+        ensure_prepayment_modes(self.execute)
         ensure_accounting_line_repairs(self.execute)
         ensure_wallet_baseline_adjustments(self.execute)
         ensure_primary_recipient_overrides(self.execute)
@@ -3867,6 +3868,19 @@ def ensure_deposit_insurance_backstop(execute):
         execute(f"""CREATE TRIGGER IF NOT EXISTS trg_deposit_insurance_backstops_{operation.lower()}
             BEFORE {operation} ON deposit_insurance_backstops
             BEGIN SELECT RAISE(ABORT,'deposit insurance backstops are append-only'); END""")
+
+
+def ensure_prepayment_modes(execute):
+    """Optional partial-prepayment mode of a loan product and its per-contract copy (M7, default: no row = installments are paid ahead)."""
+    execute("""CREATE TABLE IF NOT EXISTS product_prepayment_mode (
+        product_code TEXT PRIMARY KEY, mode TEXT NOT NULL CHECK(mode IN ('shorten','reduce_installment')),
+        updated_by TEXT NOT NULL, updated_epoch INTEGER NOT NULL)""")
+    execute("""CREATE TABLE IF NOT EXISTS contract_prepayment_mode (
+        loan_id INTEGER PRIMARY KEY, mode TEXT NOT NULL CHECK(mode='reduce_installment'), created_epoch INTEGER NOT NULL)""")
+    for operation in ("UPDATE", "DELETE"):
+        execute(f"""CREATE TRIGGER IF NOT EXISTS trg_contract_prepayment_mode_{operation.lower()}
+            BEFORE {operation} ON contract_prepayment_mode
+            BEGIN SELECT RAISE(ABORT,'contract prepayment modes are append-only'); END""")
 
 
 def ensure_accounting_line_repairs(execute):

@@ -230,6 +230,12 @@ function ScheduleCard({ ctx }: { ctx: Ctx }) {
     void run(() => api<{ success: boolean }>("/api/admin/product-rate-schedule", { method: "POST", body: JSON.stringify({ action: "set", productType: type, productCode: code.trim(), schedule, enabled }) }),
       "금리 일정을 저장하지 못했습니다.", () => { say(enabled ? "금리 일정을 켰습니다." : "금리 일정을 껐습니다."); load(); });
   }
+  const [prepay, setPrepay] = useState({ code: "", mode: "shorten" });
+  async function savePrepay() {
+    if (!(await confirmAction(`${prepay.code} 상품의 부분상환 방식을 '${prepay.mode === "shorten" ? "기간 단축(기본)" : "기간 유지 · 회차 감액"}'으로 바꿉니다. 이후 새로 체결하는 계약부터 적용되고 이미 체결한 계약은 바뀌지 않습니다. 계속할까요?`))) return;
+    void run(() => api<{ success: boolean }>("/api/admin/prepayment-mode", { method: "POST", body: JSON.stringify({ action: "set", productCode: prepay.code.trim(), mode: prepay.mode }) }),
+      "부분상환 방식을 저장하지 못했습니다.", () => say("부분상환 방식을 저장했습니다."));
+  }
   if (!rows) return <p className="cap">불러오는 중…</p>;
   return <Card title="상품별 금리 일정" caption="고정→변동 전환, 하한·상한, 1회 변동폭 제한. 기본은 꺼짐이며 켠 뒤 새로 체결하는 계약에만 적용됩니다.">
     <div className="scroll-x"><table><thead><tr><th>상품</th><th>종류</th><th>일정</th><th>상태</th><th>수정</th><th /></tr></thead><tbody>
@@ -243,6 +249,13 @@ function ScheduleCard({ ctx }: { ctx: Ctx }) {
       <input aria-label="상품 코드" placeholder="상품 코드" value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value })} />
       <textarea aria-label="금리 일정(JSON)" rows={8} cols={46} value={form.json} onChange={(event) => setForm({ ...form, json: event.target.value })} />
       <button type="button" className="btn primary" disabled={busy} onClick={() => save(form.code, form.type, form.json, true)}>일정 저장하고 켜기</button>
+    </div>
+    <div className="alm-edit rates-edit">
+      <span className="cap">부분상환 방식(대출 상품)</span>
+      <input aria-label="부분상환 상품 코드" placeholder="대출 상품 코드" value={prepay.code} onChange={(event) => setPrepay({ ...prepay, code: event.target.value })} />
+      <select aria-label="부분상환 방식" value={prepay.mode} onChange={(event) => setPrepay({ ...prepay, mode: event.target.value })}>
+        <option value="shorten">회차 금액 유지 · 기간 단축 (기본)</option><option value="reduce_installment">기간 유지 · 회차 감액</option></select>
+      <button type="button" className="outline" disabled={busy || !prepay.code.trim()} onClick={() => void savePrepay()}>부분상환 방식 저장</button>
     </div>
     <p className="alm-note">일정 구간은 계약 체결일 기준 일수로 시작하며, 변동 구간은 상품의 지표금리에 스프레드를 더합니다. 최고금리 규칙과 법정최고이자가 항상 상한으로 적용됩니다.</p>
   </Card>;

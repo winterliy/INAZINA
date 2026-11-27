@@ -1326,6 +1326,8 @@ class BankManager:
                 if schedule_plan is not None:
                     from managers.rate_schedule_contracts import attach as _attach_schedule
                     _attach_schedule(conn, 'loan', loan_id, schedule_plan, contract_country, opened_epoch)
+                from managers.prepayment_mode import attach_at_signing as _attach_prepayment_mode
+                _attach_prepayment_mode(conn, loan_id, product_code, opened_epoch)
                 conn.execute(
                     "UPDATE accounts.loans SET underwriting_fx_stress_shock_percent=? "
                     "WHERE loan_id=?", (fx_stress_shock_percent, loan_id),
@@ -1608,9 +1610,18 @@ class BankManager:
                         repayment_ref,
                         currency_code=loan["quote_currency"],
                     )
-                self._allocate_schedule_payment(
-                    conn, loan["loan_id"], payment, now
-                )
+                from managers.prepayment_mode import reduces_installment
+                overdue_installment = conn.execute(
+                    "SELECT 1 FROM accounts.loan_payment_schedule WHERE loan_id=? AND due_epoch<=? AND status NOT IN ('paid','waived')",
+                    (loan["loan_id"], now)).fetchone()
+                if reduces_installment(conn, loan["loan_id"]) and remaining_units > 0 and not overdue_installment:
+                    # optional product mode: keep the term, recast the remaining installments on the lower balance
+                    fresh_loan = conn.execute("SELECT * FROM accounts.loans WHERE loan_id=?", (loan["loan_id"],)).fetchone()
+                    self._recast_payment_schedule(conn, fresh_loan, float(fresh_loan["contract_rate"]), now, outstanding_balance=remaining)
+                else:
+                    self._allocate_schedule_payment(
+                        conn, loan["loan_id"], payment, now
+                    )
                 if remaining_units <= 0:
                     CreditScoreManager.record(
                         conn, user_id, "loan_closed", f"loan:{loan['loan_id']}",

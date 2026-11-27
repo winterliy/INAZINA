@@ -5311,6 +5311,16 @@ class Handler(BaseHTTPRequestHandler):
                     audit_admin_access(user["userId"], "funding.read", {
                         "bank_id": bank_id, "draws": len(report["draws"]), "overdue": report["overdue_count"]})
                     self.send_json(200, report)
+            elif path == "/internal/admin/prepayment-mode":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    with connect_readonly() as plain:
+                        rows = [dict(row) for row in LegacyNames(plain).execute(
+                            "SELECT product_code,mode,updated_by,updated_epoch FROM product_prepayment_mode ORDER BY product_code").fetchall()]
+                    audit_admin_access(user["userId"], "prepayment_mode.read", {"result_count": len(rows)})
+                    self.send_json(200, {"modes": rows})
             elif path == "/internal/admin/product-rate-schedule":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -6134,6 +6144,19 @@ class Handler(BaseHTTPRequestHandler):
                     "user_id": payload["userId"], "event_key": payload["eventKey"], "proceeds_minor_units": payload["proceedsMinorUnits"],
                     "allocations": result["allocations"], "duplicate": result["duplicate"]})
                 self.send_json(200, {"success": True, "result": result})
+                return
+            if path == "/internal/admin/prepayment-mode":
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                    return
+                from managers.prepayment_mode import set_product_mode
+                if (set(payload) != {"action", "productCode", "mode"} or payload["action"] != "set" or not isinstance(payload["productCode"], str)
+                        or not 1 <= len(payload["productCode"]) <= 100 or not isinstance(payload["mode"], str)):
+                    raise ValueError("invalid_prepayment_mode_payload")
+                with domain().db.atomic() as connection:
+                    set_product_mode(connection, payload["productCode"], payload["mode"], actor=user["userId"], now=int(time.time()))
+                audit_admin_access(user["userId"], "prepayment_mode.set", {"product_code": payload["productCode"], "mode": payload["mode"]})
+                self.send_json(200, {"success": True})
                 return
             if path == "/internal/admin/product-rate-schedule":
                 if user["role"] != "admin":
