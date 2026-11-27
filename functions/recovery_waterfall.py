@@ -69,3 +69,34 @@ def preview_charged_off_loan(conn, *, loan_id, proceeds, bank_rank, other_claims
             "allocations": result.allocations, "shortfalls": result.shortfalls,
             "unallocatedMinorUnits": result.unallocated, "simulationOnly": True,
             "otherClaimsAreAssumptions": True}
+
+
+def recovery_curve_preview(balance, tranches, annual_discount_bps):
+    """Explanatory present value of an assumed recovery curve for one charged-off claim (never posted, not a legal or accounting result).
+
+    ``tranches`` are ``(label, month, amount)`` with a non-negative integer month and integer minor-unit amount (collateral
+    sale, guarantor payment, borrower instalments ...). Each amount is discounted ``month/12`` years at the given annual rate and
+    rounded half up to a whole minor unit; recovery rates are in basis points of the balance.
+    """
+    from decimal import Decimal, ROUND_HALF_UP
+
+    def integer(value, low, high):
+        return type(value) is int and low <= value <= high
+
+    safe = 9007199254740991
+    if not integer(balance, 1, safe) or not integer(annual_discount_bps, 0, 100000):
+        raise ValueError("invalid recovery curve input")
+    tranches = list(tranches)
+    if not 1 <= len(tranches) <= 60:
+        raise ValueError("invalid recovery curve input")
+    rate, rows, nominal, present = Decimal(annual_discount_bps) / 10000, [], 0, 0
+    for label, month, amount in tranches:
+        if not isinstance(label, str) or not 1 <= len(label) <= 60 or not integer(month, 0, 1200) or not integer(amount, 0, safe):
+            raise ValueError("invalid recovery curve input")
+        value = int((Decimal(amount) / (1 + rate) ** (Decimal(month) / 12)).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+        rows.append({"label": label, "month": month, "amountMinorUnits": amount, "presentValueMinorUnits": value})
+        nominal += amount
+        present += value
+    return {"tranches": rows, "balanceMinorUnits": balance, "nominalRecoveryMinorUnits": nominal, "presentValueMinorUnits": present,
+            "nominalRecoveryBps": nominal * 10000 // balance, "presentValueRecoveryBps": present * 10000 // balance,
+            "presentValueLossMinorUnits": max(0, balance - present), "simulationOnly": True}

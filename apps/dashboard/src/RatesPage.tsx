@@ -84,6 +84,40 @@ function BondRiskCard({ ctx }: { ctx: Ctx }) {
   </Card>;
 }
 
+type CurveResult = { tranches: { label: string; month: number; amountMinorUnits: number; presentValueMinorUnits: number }[]; balanceMinorUnits: number; nominalRecoveryMinorUnits: number;
+  presentValueMinorUnits: number; nominalRecoveryBps: number; presentValueRecoveryBps: number; presentValueLossMinorUnits: number };
+
+/** 회수 곡선 미리보기: explanatory present value of assumed collateral/guarantor/borrower recoveries (nothing is posted). */
+function CurveCard({ ctx }: { ctx: Ctx }) {
+  const { busy, run, say } = ctx;
+  const [form, setForm] = useState({ balance: "", discount: "5", lines: "담보 매각 6 400\n보증인 12 300" });
+  const [result, setResult] = useState<CurveResult | null>(null);
+  const pct = (bps: number) => `${(bps / 100).toFixed(2)}%`;
+  function calc() {
+    const tranches = form.lines.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => { const parts = line.split(/\s+/); return { label: parts.slice(0, -2).join(" "), month: Number(parts[parts.length - 2]), amountMinorUnits: Number(parts[parts.length - 1]) }; });
+    const discountBps = Math.round(Number(form.discount) * 100);
+    if (!/^\d{1,15}$/.test(form.balance) || Number(form.balance) < 1 || !Number.isInteger(discountBps) || discountBps < 0 || tranches.length === 0
+      || tranches.some((t) => !t.label || !Number.isInteger(t.month) || t.month < 0 || !Number.isInteger(t.amountMinorUnits) || t.amountMinorUnits < 0)) { say("잔액(최소단위 정수), 할인율, 회수 줄(이름 월 금액)을 확인해주세요.", true); return; }
+    void run(() => api<{ success: boolean; result: CurveResult }>("/api/admin/compliance", { method: "POST", body: JSON.stringify({ action: "recovery_curve_preview", balanceMinorUnits: Number(form.balance), annualDiscountBps: discountBps, tranches }) }),
+      "회수 곡선을 계산하지 못했습니다.", (response) => setResult(response.result));
+  }
+  return <Card title="회수 곡선 미리보기" caption="담보 매각·보증인·차주 상환 같은 가정한 회수를 회수 시점까지 할인해 현재가치와 손실을 계산합니다. 설명용 가정이며 전기하지 않습니다.">
+    <div className="alm-edit rates-edit">
+      <label className="rates-field"><span>상각 잔액(최소단위)</span><input inputMode="numeric" aria-label="상각 잔액" value={form.balance} onChange={(event) => setForm({ ...form, balance: event.target.value })} /></label>
+      <label className="rates-field"><span>연 할인율 %</span><input inputMode="decimal" aria-label="연 할인율" value={form.discount} onChange={(event) => setForm({ ...form, discount: event.target.value })} /></label>
+      <label className="rates-field"><span>회수 줄: 이름 월 금액</span><textarea aria-label="회수 줄" rows={4} value={form.lines} onChange={(event) => setForm({ ...form, lines: event.target.value })} /></label>
+      <button type="button" className="btn primary" disabled={busy} onClick={calc}>계산</button>
+    </div>
+    {result && <>
+      <div className="alm-tiles"><div><span>명목 회수</span><b>{result.nominalRecoveryMinorUnits.toLocaleString("ko-KR")}</b><span>{pct(result.nominalRecoveryBps)}</span></div>
+        <div><span>현재가치 회수</span><b>{result.presentValueMinorUnits.toLocaleString("ko-KR")}</b><span>{pct(result.presentValueRecoveryBps)}</span></div>
+        <div><span>현재가치 손실</span><b>{result.presentValueLossMinorUnits.toLocaleString("ko-KR")}</b></div></div>
+      <div className="scroll-x"><table><thead><tr><th>회수</th><th className="alm-num">월</th><th className="alm-num">명목</th><th className="alm-num">현재가치</th></tr></thead><tbody>
+        {result.tranches.map((t, i) => <tr key={i}><td>{t.label}</td><td className="alm-num">{t.month}</td><td className="alm-num">{t.amountMinorUnits.toLocaleString("ko-KR")}</td><td className="alm-num">{t.presentValueMinorUnits.toLocaleString("ko-KR")}</td></tr>)}
+      </tbody></table></div></>}
+  </Card>;
+}
+
 /** 회수 배분 전기: priority recovery across one borrower's charged-off loans, funded from the borrower's home-currency wallet. */
 function WaterfallCard({ ctx }: { ctx: Ctx }) {
   const { busy, run, say } = ctx;
@@ -239,6 +273,7 @@ export function RatesPage({ ctx }: { ctx: Ctx }) {
     </Card>
     <InsurancePreview ctx={ctx} />
     <WaterfallCard ctx={ctx} />
+    <CurveCard ctx={ctx} />
     <BondRiskCard ctx={ctx} />
   </>;
 }

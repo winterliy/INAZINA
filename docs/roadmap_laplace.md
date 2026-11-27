@@ -155,6 +155,8 @@ M7 진행(고지·채권 위험지표): 금리 일정으로 계약 금리가 바
 
 M7 진행(정리 시 기금 지급 자동 기록): `deposit_insurance_fund_policy`(관할별, 기본 꺼짐)를 관리자가 켜면 `BankManager.resolve_failed_institution`이 같은 트랜잭션에서 청구별 기금 지급을 한 번씩 기록한다(`auto_record_if_enabled`). 꺼져 있으면 기존 정리 동작과 같다. 기금 부족 시 국고 보전은 만들지 않았다.
 
+M7 진행(회수 곡선): `recovery_curve_preview`와 관리자 카드 '회수 곡선 미리보기'가 가정한 담보·보증인·차주 회수를 시점까지 할인해 현재가치·손실·회수율을 계산한다(설명용, 전기 없음). 보증인 청구 원장과 NPL 매각·파산 절차 연결은 아직 없다.
+
 ### M8 — 보안·준법·완료 검증
 
 M8 진행: 통제-증빙 추적표([controls_laplace.md](controls_laplace.md))를 만들고 각 행의 구현 파일과 증빙 테스트가 실제로 있는지 `tests/test_control_evidence_matrix.py`로 검증한다. 테스트 실행 중 기본 DB 경로를 임시 폴더로 격리해 운영 DB를 열지 않게 했다.

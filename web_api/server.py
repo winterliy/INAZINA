@@ -6416,6 +6416,16 @@ class Handler(BaseHTTPRequestHandler):
                                   "simulationOnly": True}
                         audit_admin_access(user["userId"], "recovery_waterfall.preview", {
                             "claim_count": len(payload["claims"])})
+                    elif action == "recovery_curve_preview":
+                        if (set(payload) != {"action", "balanceMinorUnits", "annualDiscountBps", "tranches"} or not isinstance(payload["tranches"], list)
+                                or len(payload["tranches"]) > 60
+                                or any(not isinstance(item, dict) or set(item) != {"label", "month", "amountMinorUnits"} for item in payload["tranches"])):
+                            raise ValueError("invalid_recovery_curve_payload")
+                        from functions.recovery_waterfall import recovery_curve_preview
+                        result = recovery_curve_preview(payload["balanceMinorUnits"], [(i["label"], i["month"], i["amountMinorUnits"]) for i in payload["tranches"]],
+                                                        payload["annualDiscountBps"])
+                        audit_admin_access(user["userId"], "recovery_curve.preview", {
+                            "tranche_count": len(payload["tranches"]), "balance": payload["balanceMinorUnits"]})
                     elif action == "prudential_parameter_set":
                         if set(payload) != {"action", "nationality", "key", "valueBps"}:
                             raise ValueError("invalid_prudential_parameter_payload")

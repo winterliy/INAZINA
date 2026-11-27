@@ -121,6 +121,23 @@ class RecoveryApiTests(unittest.TestCase):
                         dict(base, schedule={"segments": [], "unknown": 1})]:
             self.assertEqual(self.request(invalid)["status"], 400)
 
+    def test_recovery_curve_preview_is_admin_only_audited_and_validated(self):
+        from unittest.mock import Mock
+        payload = {"action": "recovery_curve_preview", "balanceMinorUnits": 1000, "annualDiscountBps": 1000,
+                   "tranches": [{"label": "담보 매각", "month": 0, "amountMinorUnits": 400}, {"label": "보증인", "month": 12, "amountMinorUnits": 300}]}
+        self.assertEqual(self.request(payload, "user")["status"], 403)
+        audit = Mock()
+        response = self.request(payload, audit=audit)
+        self.assertEqual(response["status"], 200, response)
+        self.assertEqual(response["value"]["result"]["presentValueMinorUnits"], 673)
+        self.assertEqual(audit.call_args[0][1], "recovery_curve.preview")
+        for bad in (dict(payload, extra=1), dict(payload, balanceMinorUnits=0), dict(payload, annualDiscountBps=-1),
+                    dict(payload, tranches=[{"label": "a", "month": 0}]), dict(payload, tranches="x"),
+                    dict(payload, tranches=[{"label": "a", "month": 0, "amountMinorUnits": 9007199254740992}])):
+            audit = Mock()
+            self.assertEqual(self.request(bad, audit=audit)["status"], 400)
+            audit.assert_not_called()
+
     def test_preview_rejects_unsafe_json_integers(self):
         for amount in [9007199254740992, 1.5, True]:
             payload = {"action": "recovery_waterfall_preview", "proceedsMinorUnits": amount,
@@ -171,3 +188,25 @@ class RecoveryApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RecoveryCurveTests(unittest.TestCase):
+    def test_zero_rate_keeps_nominal_and_discounting_lowers_later_money(self):
+        from functions.recovery_waterfall import recovery_curve_preview
+        flat = recovery_curve_preview(1000, [("담보 매각", 6, 400), ("보증인", 12, 300)], 0)
+        self.assertEqual((flat["presentValueMinorUnits"], flat["nominalRecoveryBps"], flat["presentValueLossMinorUnits"]), (700, 7000, 300))
+        disc = recovery_curve_preview(1000, [("담보 매각", 0, 400), ("보증인", 12, 300)], 1000)
+        self.assertEqual([r["presentValueMinorUnits"] for r in disc["tranches"]], [400, 273])     # 300 / 1.10 = 272.7 -> 273
+        self.assertEqual(disc["presentValueMinorUnits"], 673)
+        self.assertLess(disc["presentValueRecoveryBps"], disc["nominalRecoveryBps"])
+
+    def test_recoveries_above_the_balance_show_no_loss(self):
+        from functions.recovery_waterfall import recovery_curve_preview
+        self.assertEqual(recovery_curve_preview(100, [("a", 0, 150)], 500)["presentValueLossMinorUnits"], 0)
+
+    def test_bad_input_is_rejected(self):
+        from functions.recovery_waterfall import recovery_curve_preview
+        for args in ((0, [("a", 0, 1)], 0), (100, [], 0), (100, [("a", -1, 1)], 0), (100, [("a", 0, 1.5)], 0), (100, [("a", 0, True)], 0),
+                     (100, [("", 0, 1)], 0), (100, [("a", 0, 1)], -1), (True, [("a", 0, 1)], 0), (100, [("a", 1201, 1)], 0)):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                recovery_curve_preview(*args)
