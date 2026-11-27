@@ -48,6 +48,7 @@ class MarketFlowHistoryTests(unittest.TestCase):
     def test_price_engine_records_each_new_auto_target(self):
         import time
         self.seed()
+        self.db.system.set_setting("price_floor_won", "0")      # seeded stocks sit under 100 won; a floor lift would redraw their targets
         now = int(time.time())
         self.bot.market_mgr.update_prices(now=now)
         count = lambda: self.db.system.execute_one("SELECT COUNT(*) FROM market_auto_target_history")[0]

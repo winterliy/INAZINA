@@ -1132,6 +1132,7 @@ class EconomyTests(unittest.TestCase):
         )
 
     def test_market_reads_latest_sql_price_for_all_asset_tables(self):
+        self.db.system.set_setting("price_floor_won", "0")      # the 88-won stock below must stay as written (the floor has its own tests)
         self.db.assets.register_asset("MKT", "Market", "EX", 10, "stock")
         self.db.companies.create_company("CO", "Company", "Industry", 1000, 100, 20, "citizen-1", "EX")
         self.db.products.register_investment("ETF", "Fund", "ETF", 100, 30, 0, "Manager", "EX")

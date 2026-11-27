@@ -40,6 +40,7 @@ class MarketFeatureTests(unittest.TestCase):
         DBManager.database_dir = Path(self.tempdir.name)
         self.db = DatabaseManager()
         self.db.system.set_setting("auto_target_enabled", "0")
+        self.db.system.set_setting("price_floor_won", "0")      # these tests use sub-100 prices; the floor is tested in test_price_guard_market
         self.db.users.create_user("admin", "Admin", "Nac", 1000000, role="admin")
         self.db.users.create_user("alice", "Alice", "Nac", 10000)
         self.db.users.create_user("bob", "Bob", "Nac", 10000)
