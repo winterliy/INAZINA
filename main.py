@@ -225,7 +225,7 @@ class InazinaBot(discord.Client):
         from functions.consent_views import ConsentButton
         self.add_dynamic_items(ConsentButton)  # the consent DM's button keeps working after a restart
         self.tree.error(self.on_app_command_error)
-        print(f"Prepared {len(self.tree.get_commands())} slash commands for guild sync.")
+        print(f"Prepared {len(self.tree.get_commands())} slash commands for global sync.")
 
     async def on_app_command_error(self, interaction, error):
         original = getattr(error, "original", error)
@@ -258,9 +258,8 @@ class InazinaBot(discord.Client):
             try:
                 from functions.command_sync import policy_command, sync_slash_commands
                 guilds = list(self.guilds)
-                synced, global_count = await sync_slash_commands(self.tree, guilds, [policy_command()])
-                print(f"Slash commands: {synced} guild commands across {len(guilds)} server(s); {global_count} global "
-                      "(one global command earns the app its Supports Commands badge).")
+                cleared, global_count = await sync_slash_commands(self.tree, guilds, [policy_command()])
+                print(f"Slash commands: {global_count} global (shown on the app profile); old per-server copies cleared on {cleared} server(s).")
                 self._guild_commands_cleaned = True
             except discord.HTTPException as exc:
                 print(f"[Guild Slash Command Sync Error] {exc}")

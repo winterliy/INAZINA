@@ -1,8 +1,9 @@
 """Slash command registration.
 
-Every command is registered per server: guild commands update at once and are not duplicated. Exactly one command stays global, because
-Discord gives an app the "Supports Commands" badge only when it has a global command. That one is ``/약관`` (terms and privacy policy
-links), which no server has as a guild copy, so nobody sees it twice; it also keeps the policy links one command away, as Discord asks.
+Every command is global: Discord lists an app's global commands on its profile (the "명령어" box) and gives it the "Supports Commands"
+badge, so the profile shows them all. The bot used to register everything per server and keep only ``/약관`` global; those per-server copies
+are removed here so nobody sees a command twice. Commands registered per server never worked in DMs, so every command except ``/약관``
+(terms and privacy links, which Discord asks to keep one command away) is marked guild-only to keep that behaviour.
 """
 import discord
 from discord import app_commands
@@ -26,17 +27,19 @@ def policy_command():
 
 
 async def sync_slash_commands(tree, guilds, global_commands):
-    """Register every command per server and keep only ``global_commands`` global. Returns (guild commands synced, global commands)."""
-    if not guilds:
-        # Without any server to copy to, everything stays global.
-        for command in global_commands:
-            tree.add_command(command)
-        return 0, len(await tree.sync())
-    synced = 0
-    for guild in guilds:
-        tree.copy_global_to(guild=guild)
-        synced += len(await tree.sync(guild=guild))
-    tree.clear_commands(guild=None)  # the guild copies replace the global ones
+    """Make every command global and clear the old per-server copies. Returns (server copies cleared, global commands)."""
+    known = {command.name for command in tree.get_commands()}
     for command in global_commands:
-        tree.add_command(command)
-    return synced, len(await tree.sync())
+        if command.name not in known:
+            tree.add_command(command)
+    only_anywhere = {command.name for command in global_commands}
+    for command in tree.get_commands():
+        if command.name not in only_anywhere:
+            command.guild_only = True
+    global_count = len(await tree.sync())  # global first, so there is never a moment without the commands
+    cleared = 0
+    for guild in guilds:
+        tree.clear_commands(guild=guild)
+        await tree.sync(guild=guild)  # an empty set replaces (deletes) the copies registered earlier
+        cleared += 1
+    return cleared, global_count
