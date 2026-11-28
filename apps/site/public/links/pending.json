@@ -1,12 +1,17 @@
 {
   "terms": {
     "effectiveEpoch": 1798383600,
-    "announcedEpoch": 1795870250,
+    "announcedEpoch": 1795871220,
     "important": true
   },
   "privacy": {
     "effectiveEpoch": 1798383600,
-    "announcedEpoch": 1795870252,
+    "announcedEpoch": 1795871223,
     "important": true
+  },
+  "internal": {
+    "effectiveEpoch": 1796396400,
+    "announcedEpoch": 1795871223,
+    "important": false
   }
 }
