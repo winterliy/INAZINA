@@ -1,5 +1,6 @@
 -- work.inazina.localhost schema (MySQL 8.4, database inazina_work). Separate from the main PostgreSQL on purpose.
--- user_ref = the account id from the main INAZINA login (id.); there is no cross-database foreign key, the work API checks it per request.
+-- work has its own accounts and login (login_id + password hash, sessions below); nothing is shared with the game's login.
+-- user_ref is an internal random id of the member (never shown, kept so the withdrawal procedure has a stable key).
 SET NAMES utf8mb4;
 
 CREATE TABLE IF NOT EXISTS schema_version (version INT PRIMARY KEY, applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);
@@ -7,6 +8,8 @@ CREATE TABLE IF NOT EXISTS schema_version (version INT PRIMARY KEY, applied_at D
 -- 계정/조직
 CREATE TABLE IF NOT EXISTS members (
   id BIGINT AUTO_INCREMENT PRIMARY KEY, user_ref VARCHAR(64) NOT NULL UNIQUE, display_name VARCHAR(80) NOT NULL,
+  login_id VARCHAR(32) NULL UNIQUE, password_hash VARCHAR(300) NULL, must_change_password TINYINT(1) NOT NULL DEFAULT 0,
+  failed_logins INT NOT NULL DEFAULT 0, locked_until DATETIME NULL,
   job_title VARCHAR(80) NULL, phone VARCHAR(40) NULL, status ENUM('active','leave','retired') NOT NULL DEFAULT 'active',
   role ENUM('admin','member','guest') NOT NULL DEFAULT 'member', created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
@@ -165,16 +168,26 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 INSERT IGNORE INTO schema_version (version) VALUES (1);
 
--- 입장 제어: 허용 목록은 members(status active)이고, 목록에 없는 계정은 초대 코드로 들어오거나 가입 신청 후 관리자 승인을 기다린다.
+-- 입장 제어: 계정은 초대 코드로 가입하거나, 가입 신청 후 관리자 승인으로 만들어진다. 로그인은 work 자체(아이디/비밀번호).
 CREATE TABLE IF NOT EXISTS invites (
   id BIGINT AUTO_INCREMENT PRIMARY KEY, code_hash CHAR(64) NOT NULL UNIQUE, created_by BIGINT NOT NULL, note VARCHAR(120) NULL,
-  expires_at DATETIME NOT NULL, used_by_ref VARCHAR(64) NULL, used_at DATETIME NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at DATETIME NOT NULL, used_by_ref VARCHAR(64) NULL, -- login id of whoever used it
+   used_at DATETIME NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (created_by) REFERENCES members(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 CREATE TABLE IF NOT EXISTS access_requests (
-  id BIGINT AUTO_INCREMENT PRIMARY KEY, user_ref VARCHAR(64) NOT NULL, display_name VARCHAR(80) NOT NULL, message VARCHAR(300) NULL,
+  id BIGINT AUTO_INCREMENT PRIMARY KEY, user_ref VARCHAR(64) NOT NULL, -- the login id asked for
+  display_name VARCHAR(80) NOT NULL, password_hash VARCHAR(300) NULL, message VARCHAR(300) NULL,
   status ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending', requested_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   decided_by BIGINT NULL, decided_at DATETIME NULL, KEY (user_ref, status), KEY (status, requested_at),
   FOREIGN KEY (decided_by) REFERENCES members(id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 INSERT IGNORE INTO schema_version (version) VALUES (2);
+
+-- 로그인 세션: 쿠키에는 무작위 토큰만 있고 DB에는 그 해시만 있다.
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash CHAR(64) PRIMARY KEY, member_id BIGINT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at DATETIME NOT NULL, last_seen DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, KEY (member_id), KEY (expires_at),
+  FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+INSERT IGNORE INTO schema_version (version) VALUES (3);

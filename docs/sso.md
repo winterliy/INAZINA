@@ -15,10 +15,10 @@
 | `console.inazina.localhost` | 4310 + `/api/*` → 4312 | 관리자 콘솔. 로그인은 최근 15분 이내여야 한다(`max_age`) |
 | `inazina.localhost`, `www.`, `corp.` | (서비스 없음) | 공식 사이트는 GitHub Pages(`https://winterliy.github.io/INAZINA/`)로 옮겼다. 이 이름들은 그곳으로 302 리디렉션만 한다(`INAZINA_PUBLIC_SITE`). 4314는 더 이상 실행하지 않는다 |
 | `inazina.localhost` | `www.` 로 301 | |
-| `work.inazina.localhost` | 화면 4316, `/api/work/*` → work API 4317, 로그인 `/api/auth`·`/api/me` → 4312 | 워크 플랫폼(`apps/work`). 자체 MySQL(`tools/work_mysql.sh`, 127.0.0.1:3307). OIDC 클라이언트 `work` |
+| `work.inazina.localhost` | 화면 4316, `/api/*` → work API 4317 | 워크 플랫폼(`apps/work`). **SSO 대상이 아니다**: 자체 아이디/비밀번호와 세션을 자체 MySQL(`tools/work_mysql.sh`, 127.0.0.1:3307)에 둔다 |
 | `wl.localhost` | 4315 | 위키 뷰어. **이 이름 하나만** 쓴다. SSO 대상이 아니고 자체 진입 비밀번호가 있다. `INAZINA_WL=off` 로 끈다 |
 | `api.…` , 4313 | **공개하지 않음** | 앱은 API 를 자기 호스트의 `/api/*` 로 부른다. `/api/internal*` 은 404 |
-| `work.`, `mc.` | **보류** | Caddyfile 에 자리만 있다(주석) |
+| `mc.` | **보류** | Caddyfile 에 자리만 있다(주석). `work.` 는 위 표처럼 별도 로그인으로 운영한다 |
 
 `*.localhost` 는 이 맥에서 자동으로 자기 자신(127.0.0.1)으로 풀린다. Safari 를 위해 `/etc/hosts` 에도 같은 이름들을 넣어 두었다(`127.0.0.1 id.inazina.localhost naru.… console.… www.… corp.… wl.localhost inazina.localhost`).
 
@@ -67,7 +67,7 @@
 
 ## 남은 결정·한계
 - **API 실행 방식(결정 2026-11-22): 빌드 방식.** `start_all` 이 시작할 때 현재 작업 폴더의 코드로 API 를 빌드(`apps/api/dist`, 없거나 소스가 더 새로우면)해서 `node dist/index.js` 로 돌린다. 소스를 고쳐도 자동으로 다시 시작되지 않으니 `start_all` 을 다시 시작해야 반영된다. 별도 운영용 폴더 없이 **지금 작업 폴더의 코드를 그대로 실행**한다. (빌드본을 실제로 띄우면 데이터 서비스가 운영 DB 에 붙으므로 여기서는 빌드와 구문 검사까지만 했다.) 터미널을 닫아도 계속 돌게 할지(`launchd`)는 아직 정하지 않았다.
-- `work.`(신규 업무 플랫폼), `mc.`(마인크래프트 TCP 25565: Caddy 기본 기능 밖, `caddy-l4` 가 필요)는 보류.
+- `mc.`(마인크래프트 TCP 25565: Caddy 기본 기능 밖, `caddy-l4` 가 필요)는 보류.
 - 비밀번호 변경·로그아웃은 모든 앱 세션을 끊지만, 다른 곳에 남은 id 서버 세션(최대 12시간, 브라우저를 닫으면 사라짐)은 조용히 다시 로그인시킬 수 있다. 콘솔은 15분 규칙으로 보완된다.
 
 ## 확인된 것과 아직 확인하지 못한 것

@@ -113,20 +113,12 @@ wl.localhost {
 	import wl_{$INAZINA_WL:proxy}
 }
 
-# The work platform: sign-in (/api/auth, /api/me) is the main API's, the work API (own MySQL) answers /api/work/*, the screen is apps/work.
+# The work platform has its OWN login (id + password in its own MySQL, nothing shared with the game's single sign-on): every /api/* is the work API.
 work.{$INAZINA_DOMAIN:inazina.localhost} {
 	import common
-	@internal path /api/internal*
-	handle @internal {
-		respond 404
-	}
-	@workapi path /api/work/*
-	handle @workapi {
-		reverse_proxy 127.0.0.1:4317
-	}
 	@api path /api/*
 	handle @api {
-		reverse_proxy 127.0.0.1:4312
+		reverse_proxy 127.0.0.1:4317
 	}
 	handle {
 		import frontend_{$INAZINA_FRONTEND:dev} 4316 {$INAZINA_ROOT:.}/apps/work/dist

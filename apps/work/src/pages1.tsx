@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { del, get, post } from "./api.ts";
 import { Attempt, Empty, Err, Field, useLoad, when } from "./ui.tsx";
 
-export type Me = { member: { id: number; name: string; role: string } };
+export type Me = { member: { id: number; name: string; role: string; mustChange?: boolean } };
 type Member = { id: number; display_name: string; job_title: string | null; phone: string | null; role: string };
 export const useMembers = () => useLoad<Member[]>(() => get("/members"));
 

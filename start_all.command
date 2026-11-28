@@ -155,7 +155,6 @@ if [[ -d "$ROOT/database/work-mysql/data" && -n "${WORK_DB_PASSWORD:-}" ]]; then
   fi
   start work-api npm run start:api --workspace @inazina/work
   [[ "$FRONTEND" != "static" ]] && start work npm run dev --workspace @inazina/work
-  ( sleep 8; "$ROOT/tools/work_mysql.sh" withdraw-pending >/dev/null 2>&1 ) &  # withdrawals that could not reach work MySQL earlier
 else
   print -u2 "work 플랫폼은 건너뜁니다. (tools/work_mysql.sh init 과 .env 의 WORK_DB_* 가 필요합니다.)"
 fi

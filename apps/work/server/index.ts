@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
-import { adminAccess, bootstrapCount, openRoutes } from "./access.ts";
-import { authenticate, identify } from "./auth.ts";
+import { adminAccess, openRoutes, selfRoutes, sessionRoutes } from "./access.ts";
+import { authenticate, clientIp } from "./auth.ts";
 import { migrate, pool, one } from "./db.ts";
 import { bad, HttpError, readBody, send } from "./http.ts";
 import { routes1, type Route } from "./routes1.ts";
@@ -9,11 +9,11 @@ import { routes2 } from "./routes2.ts";
 const port = Number(process.env.WORK_API_PORT ?? 4317);
 const domain = process.env.INAZINA_DOMAIN || "inazina.localhost";
 const origin = `https://work.${domain}`;
-const routes: Route[] = [...routes1, ...routes2, ...adminAccess.map(([m, re, h]): Route => [m, re, async (ctx) => { if (ctx.member.role !== "admin") throw new HttpError(403, "forbidden"); return h(ctx); }])];
+const routes: Route[] = [...routes1, ...routes2, ...selfRoutes, ...adminAccess.map(([m, re, h]): Route => [m, re, async (ctx) => { if (ctx.member.role !== "admin") throw new HttpError(403, "forbidden"); return h(ctx); }])];
 
 if (!process.env.WORK_DB_PASSWORD) { console.error("WORK_DB_PASSWORD is not set (see .env.example)"); process.exit(1); }
 await migrate();
-if (!bootstrapCount && !(await one("SELECT 1 FROM members LIMIT 1"))) console.warn("WORK_BOOTSTRAP_ADMINS is empty and there are no members: nobody can enter work yet (set it in .env).");
+if (!(await one("SELECT 1 FROM members WHERE login_id IS NOT NULL LIMIT 1"))) console.warn("work has no accounts yet: create the first administrator with  npm run admin --workspace @inazina/work -- create-admin <id>");
 if (!(await one("SELECT 1 FROM boards LIMIT 1"))) {
   await pool.query("INSERT INTO boards (name,notice_only) VALUES ('공지사항',1),('자유게시판',0)");
   await pool.query("INSERT INTO approval_forms (name,template) VALUES ('일반 기안','목적:\n내용:\n'),('지출 결의','항목:\n금액:\n사유:\n'),('휴가 신청','기간:\n사유:\n')");
@@ -33,19 +33,22 @@ createServer(async (request, response) => {
       const from = request.headers.origin;
       if (from && from !== origin && !from.startsWith("http://127.0.0.1")) throw new HttpError(403, "origin");
     }
+    const reply = (result: any) => {
+      const { __cookie, ...rest } = result ?? { ok: true };
+      send(response, 200, rest, __cookie ? { "set-cookie": __cookie } : {});
+    };
     const open = openRoutes.find(([m, re]) => m === method && re.test(path));
-    if (open) {
-      const user = await identify(request);
-      const body = method === "GET" ? {} : await readBody(request, 8 * 1024);
-      return send(response, 200, await open[2]({ user, query: url.searchParams, body }));
-    }
+    if (open) return reply(await open[2]({ request, ip: clientIp(request), body: await readBody(request, 8 * 1024) }));
+    const mine = sessionRoutes.find(([m, re]) => m === method && re.test(path));
+    if (mine) return reply(await mine[2]({ request, member: await authenticate(request), body: await readBody(request, 8 * 1024) }));
     const found = routes.find(([m, re]) => m === method && re.test(path));
     if (!found) throw new HttpError(404, "not_found");
     const member = await authenticate(request);
+    if (member.mustChange && path !== "/me") throw new HttpError(403, "password_change_required");
     const isUpload = path === "/drive/files";
     const body = method === "GET" || method === "DELETE" ? {} : await readBody(request, isUpload ? 24 * 1024 * 1024 : 1024 * 1024);
     if (body === null || typeof body !== "object") throw bad("invalid_body");
-    const result: any = await found[2]({ member, params: path.match(found[1])!.slice(1), query: url.searchParams, body });
+    const result: any = await found[2]({ member, ip: clientIp(request), params: path.match(found[1])!.slice(1), query: url.searchParams, body });
     if (result?.__file) {
       response.writeHead(200, { "content-type": "application/octet-stream", "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(result.name)}`, "x-content-type-options": "nosniff", "cache-control": "no-store" });
       return response.end(result.data);

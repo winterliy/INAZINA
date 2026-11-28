@@ -43,16 +43,21 @@ Google Workspace / Microsoft 365 / NAVER WORKS / Dooray 공통 요소를 모은 
 - 제외: 화상회의, 전화, 앱 연동
 - 앱: `apps/work` 로 분리
 - DB: 보안상 본 DB(PostgreSQL)와 분리한 MySQL 8.4. 데이터 폴더 `database/work-mysql/`, `127.0.0.1:3307` 전용, 관리 스크립트 `tools/work_mysql.sh`, 스키마 `apps/work/db/schema.sql`
-- 구현됨(2026-11-28): work API(`apps/work/server`, 4317), OIDC 클라이언트 `work`, Caddy `work.` 블록, 화면 12개(`apps/work/src`), start_all 연결
-- 안전장치: 백업(`scheduled_backup.sh`에 MySQL 덤프 + `database/work-files` 증분 복사), 탈퇴(`tools/work_mysql.sh withdraw`: 드라이브 파일 삭제 → `work_withdraw` 프로시저로 익명화, 실패 시 대기열 재시도), 스키마(API 시작 시 자동 생성)
+- 구현됨(2026-11-28): work API(`apps/work/server`, 4317), Caddy `work.` 블록, 화면 12개(`apps/work/src`), start_all 연결
+- 안전장치: 백업(`scheduled_backup.sh`에 MySQL 덤프 + `database/work-files` 증분 복사), 탈퇴(work API: 드라이브 파일 삭제 → `work_withdraw` 프로시저로 익명화), 스키마(API 시작 시 자동 생성)
 - 탈퇴 정책: 개인 데이터(받은 메일, 메신저, 드라이브, 문서, 연락처 등) 삭제, 결재·근태·휴가·게시글·감사 로그는 '탈퇴한 사용자'로 익명화 후 보존
 - 대외 메일: `docs/work-external-mail-plan.md`
-- 남은 일: 실제 로그인으로 end-to-end 확인, `/etc/hosts`에 `work.inazina.localhost` 추가(Safari), 첫 사용 후 UX 다듬기
+- 남은 일: 첫 관리자 생성 후 화면에서 end-to-end 확인, 첫 사용 후 UX 다듬기
 
-## 5. 입장 제어 (2026-11-28)
+## 5. 로그인과 입장 제어 (2026-11-28, 별도 로그인으로 변경)
 
-- 허용 목록 방식: `members`에 있는 계정만 들어온다. INAZINA에 로그인했다는 것만으로는 들어올 수 없고, 게임 관리자라고 work 관리자가 되지도 않는다.
-- 첫 관리자: `.env`의 `WORK_BOOTSTRAP_ADMINS`(쉼표로 구분한 계정 ID)에 적힌 계정이 첫 방문에 관리자로 들어온다.
-- 초대: 관리자가 코드를 만든다(1회용, 기본 7일·최대 14일, 화면에 한 번만 표시, DB에는 해시만 저장). 코드를 입력하면 바로 멤버가 된다.
-- 가입 신청: 목록에 없고 코드도 없는 계정은 신청을 남기고 대기한다. 관리자가 승인하면 멤버가 되고, 거절되면 하루 뒤 다시 신청할 수 있다.
-- 신청과 초대 사용 기록은 탈퇴 프로시저가 함께 정리한다.
+work는 게임의 SSO(id.)를 쓰지 않는다. 아이디/비밀번호와 세션 모두 work 전용 MySQL에 있다.
+
+- 계정: 영문 소문자·숫자·`._-` 3~32자 아이디, 비밀번호 10자 이상(아이디 포함·한 글자 반복 금지). 비밀번호는 scrypt 해시로만 저장한다.
+- 세션: 쿠키에는 무작위 토큰만, DB에는 그 해시만 둔다. HttpOnly, SameSite=Strict, HTTPS일 때 Secure. 12시간 미사용 시 만료, 최대 7일.
+- 로그인 보호: 같은 계정 5회 실패 시 15분 잠금, 같은 주소 10분에 20회 제한, 없는 아이디도 같은 시간이 걸리도록 처리, 오류 문구는 하나("아이디 또는 비밀번호").
+- 가입: 관리자가 만든 초대 코드(1회용, 기본 7일·최대 14일, 해시 저장)로 가입하면 바로 입장. 코드가 없으면 가입 신청을 남기고 관리자가 승인해야 한다(거절 시 24시간 뒤 재신청).
+- 첫 관리자: Mac에서 `tools/work_admin.sh create-admin <아이디>` (MySQL이 켜져 있어야 함). 관리자 비밀번호 분실도 `tools/work_admin.sh reset-password <아이디>`.
+- 비밀번호 분실(일반 멤버): 관리자가 임시 비밀번호를 발급(한 번만 표시), 본인은 첫 로그인 때 바꿔야 하고 기존 세션은 모두 종료된다.
+- 변경/탈퇴: 비밀번호 변경 시 다른 기기는 로그아웃. 본인 탈퇴는 비밀번호 확인, 관리자 탈퇴 처리도 가능(마지막 관리자는 불가). 개인 데이터와 드라이브 파일은 삭제, 조직 기록은 '탈퇴한 사용자'로 익명화한다.
+- 게임 계정의 탈퇴/권한과 work 계정은 서로 영향을 주지 않는다.

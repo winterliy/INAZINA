@@ -20,9 +20,10 @@ export const routes1: Route[] = [
     await run("UPDATE members SET display_name=?, job_title=?, phone=? WHERE id=?", [str(body.displayName, 80, "displayName"), str(body.jobTitle, 80, "jobTitle", true), str(body.phone, 40, "phone", true), member.id]);
     return { ok: true };
   }],
-  ["GET", /^\/members$/, async () => rows("SELECT id,display_name,job_title,phone,role,status FROM members WHERE status<>'retired' ORDER BY display_name")],
+  ["GET", /^\/members$/, async ({ member }) => rows(`SELECT id,display_name,job_title,phone,role,status${member.role === "admin" ? ",login_id" : ""} FROM members WHERE status<>'retired' ORDER BY display_name`)],
   ["PATCH", /^\/members\/(\d+)$/, admin(async ({ member, params, body }) => {
     const id = int(params[0], "id");
+    if (id === member.id) throw forbidden(); // nobody changes their own role (the last administrator could lock everyone out)
     await run("UPDATE members SET role=?, status=? WHERE id=? AND status<>'retired'", [oneOf(body.role, ["admin", "member", "guest"], "role"), oneOf(body.status, ["active", "leave", "retired"], "status"), id]);
     await audit(member.id, "member.update", String(id));
     return { ok: true };

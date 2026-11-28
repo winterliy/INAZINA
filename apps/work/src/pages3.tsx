@@ -50,14 +50,24 @@ function Access() {
   const [note, setNote] = useState(""); const [code, setCode] = useState("");
   return <div className="card"><h3>입장 관리(관리자)</h3>
     <p className="muted">허용된 계정만 들어올 수 있습니다. 초대 코드를 주거나, 가입 신청을 승인하세요.</p>
-    <h3>가입 신청</h3>{(reqs.data ?? []).length === 0 ? <Empty text="대기 중인 신청이 없습니다." /> : reqs.data!.map((r) => <div key={r.id} className="msg"><b>{r.display_name}</b><span className="muted">{r.user_ref} · {when(r.requested_at)} {r.message}</span>
+    <h3>가입 신청</h3>{(reqs.data ?? []).length === 0 ? <Empty text="대기 중인 신청이 없습니다." /> : reqs.data!.map((r) => <div key={r.id} className="msg"><b>{r.display_name}</b><span className="muted">아이디 {r.login_id} · {when(r.requested_at)} {r.message}</span>
       <div className="row"><Attempt action={async () => { await post(`/access/requests/${r.id}/decide`, { decision: "approved" }); reqs.reload(); }}>승인</Attempt><Attempt className="danger" action={async () => { await post(`/access/requests/${r.id}/decide`, { decision: "rejected" }); reqs.reload(); }}>거절</Attempt></div></div>)}
     <h3>초대 코드</h3><div className="row"><input placeholder="메모(누구에게 주는지)" value={note} onChange={(e) => setNote(e.target.value)} maxLength={120} /><Attempt action={async () => { const r = await post("/invites", { note, days: 7 }); setCode(r.code); setNote(""); invites.reload(); }}>7일짜리 코드 만들기</Attempt></div>
     {code && <p>코드: <b>{code}</b> <span className="muted">(지금 한 번만 보입니다. 한 사람만 쓸 수 있습니다.)</span></p>}
-    <table><tbody>{(invites.data ?? []).map((i) => <tr key={i.id}><td>{i.note}</td><td className="muted">~{when(i.expires_at)}</td><td>{i.used_at ? "사용됨" : "미사용"}</td><td>{!i.used_at && <button className="ghost" onClick={() => del(`/invites/${i.id}`).then(invites.reload)}>취소</button>}</td></tr>)}</tbody></table></div>;
+    <table><tbody>{(invites.data ?? []).map((i) => <tr key={i.id}><td>{i.note}</td><td className="muted">~{when(i.expires_at)}</td><td>{i.used_at ? `사용됨(${i.used_by_ref ?? "-"})` : "미사용"}</td><td>{!i.used_at && <button className="ghost" onClick={() => del(`/invites/${i.id}`).then(invites.reload)}>취소</button>}</td></tr>)}</tbody></table></div>;
 }
 
-export function Org({ me }: { me: Me }) {
+function Security({ onLeft }: { onLeft: () => void }) {
+  const [f, setF] = useState({ current: "", next: "" }); const [done, setDone] = useState(false); const [pw, setPw] = useState(""); const [sure, setSure] = useState(false);
+  return <div className="card"><h3>비밀번호/탈퇴</h3>
+    <Field label="현재 비밀번호"><input type="password" value={f.current} onChange={(e) => setF({ ...f, current: e.target.value })} autoComplete="current-password" /></Field>
+    <Field label="새 비밀번호(10자 이상)"><input type="password" value={f.next} onChange={(e) => setF({ ...f, next: e.target.value })} autoComplete="new-password" /></Field>
+    <Attempt action={async () => { await post("/auth/password", { current: f.current, next: f.next }); setF({ current: "", next: "" }); setDone(true); }}>비밀번호 변경</Attempt>{done && <span className="muted"> 바뀌었습니다. 다른 기기는 로그아웃됩니다.</span>}
+    <h3>work 탈퇴</h3><p className="muted">메일·메신저·드라이브·내 문서·연락처가 삭제되고, 결재·근태·게시글 기록은 '탈퇴한 사용자'로 남습니다. 되돌릴 수 없습니다.</p>
+    {!sure ? <button className="danger" onClick={() => setSure(true)}>탈퇴하기</button> : <div className="row"><input type="password" placeholder="비밀번호 확인" value={pw} onChange={(e) => setPw(e.target.value)} /><Attempt className="danger" action={async () => { await post("/me/withdraw", { password: pw }); onLeft(); }}>정말 탈퇴</Attempt><button className="ghost" onClick={() => setSure(false)}>취소</button></div>}</div>;
+}
+
+export function Org({ me, onLeft }: { me: Me; onLeft: () => void }) {
   const members = useLoad<any[]>(() => get("/members"));
   const deps = useLoad<any>(() => get("/departments"));
   const profile = useLoad<any>(() => get("/me"));
@@ -74,7 +84,8 @@ export function Org({ me }: { me: Me }) {
       <div className="card"><h3>조직도</h3>{tree(null)}{(deps.data?.departments ?? []).length === 0 && <Empty />}
         {isAdmin && <><h3>부서 추가</h3><div className="row"><input placeholder="부서 이름" value={dep.name} onChange={(e) => setDep({ ...dep, name: e.target.value })} /><select value={dep.parentId} onChange={(e) => setDep({ ...dep, parentId: e.target.value })}><option value="">최상위</option>{(deps.data?.departments ?? []).map((d: any) => <option key={d.id} value={d.id}>{d.name}</option>)}</select><Attempt action={async () => { await post("/departments", { name: dep.name, parentId: dep.parentId || null }); setDep({ name: "", parentId: "" }); deps.reload(); }}>추가</Attempt></div>
           <div className="row" style={{ marginTop: 8 }}><select value={assign.departmentId} onChange={(e) => setAssign({ ...assign, departmentId: e.target.value })}><option value="">부서</option>{(deps.data?.departments ?? []).map((d: any) => <option key={d.id} value={d.id}>{d.name}</option>)}</select><select value={assign.memberId} onChange={(e) => setAssign({ ...assign, memberId: e.target.value })}><option value="">구성원</option>{(members.data ?? []).map((m) => <option key={m.id} value={m.id}>{m.display_name}</option>)}</select><Attempt action={async () => { await post(`/departments/${assign.departmentId}/members`, { memberId: Number(assign.memberId) }); deps.reload(); }}>배정</Attempt></div></>}</div>
+      <Security onLeft={onLeft} />
       {isAdmin && <Access />}
-      <div className="card"><h3>구성원</h3><table><tbody>{(members.data ?? []).map((m) => <tr key={m.id}><td>{m.display_name}</td><td className="muted">{m.job_title}</td><td className="muted">{m.phone}</td><td>{isAdmin && m.id !== me.member.id ? <select value={m.role} onChange={(e) => api("PATCH", `/members/${m.id}`, { role: e.target.value, status: "active" }).then(members.reload)}><option value="admin">관리자</option><option value="member">멤버</option><option value="guest">게스트</option></select> : <span className="badge">{m.role}</span>}</td></tr>)}</tbody></table></div></div>
+      <div className="card"><h3>구성원</h3><table><tbody>{(members.data ?? []).map((m) => <tr key={m.id}><td>{m.display_name}</td><td className="muted">{m.job_title}</td><td className="muted">{m.phone}</td><td>{isAdmin && m.id !== me.member.id ? <div className="row"><select value={m.role} onChange={(e) => api("PATCH", `/members/${m.id}`, { role: e.target.value, status: "active" }).then(members.reload)}><option value="admin">관리자</option><option value="member">멤버</option><option value="guest">게스트</option></select><span className="muted">{m.login_id}</span><Attempt className="ghost" action={async () => { const r = await post(`/members/${m.id}/reset-password`); alert(`임시 비밀번호(한 번만 표시): ${r.temporaryPassword}\n본인에게 전달하세요. 첫 로그인 때 바꾸게 됩니다.`); }}>비밀번호 재설정</Attempt><Attempt className="ghost" action={async () => { if (confirm(`${m.display_name} 님을 탈퇴 처리할까요? 되돌릴 수 없습니다.`)) { await post(`/members/${m.id}/withdraw`); members.reload(); deps.reload(); } }}>탈퇴 처리</Attempt></div> : <span className="badge">{m.role}</span>}</td></tr>)}</tbody></table></div></div>
   </>;
 }

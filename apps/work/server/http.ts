@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-export type Member = { id: number; userRef: string; name: string; role: "admin" | "member" | "guest" };
-export type Ctx = { member: Member; params: string[]; query: URLSearchParams; body: any };
+export type Member = { id: number; userRef: string; name: string; role: "admin" | "member" | "guest"; mustChange?: boolean };
+export type Ctx = { member: Member; ip: string; params: string[]; query: URLSearchParams; body: any };
 export type Handler = (ctx: Ctx) => Promise<unknown>;
 export class HttpError extends Error { constructor(public status: number, message: string) { super(message); } }
 
