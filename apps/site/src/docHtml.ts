@@ -15,6 +15,7 @@ export function renderDocumentHtml(source: string): string {
     if (!line) { close(); continue; }
     if (line.startsWith("# ")) { close(); continue; }
     if (line.startsWith("## ")) { close(); out.push(`<h2>${escapeHtml(line.slice(3))}</h2>`); continue; }
+    if (line.startsWith("### ")) { close(); out.push(`<h3>${escapeHtml(line.slice(4))}</h3>`); continue; }
     if (line.startsWith("- ")) {
       if (table) close();
       if (!list) { out.push("<ul>"); list = true; }

@@ -1,6 +1,7 @@
 import { Suspense, type ReactNode } from "react";
 import { appUrl, type ApiUser } from "../../shared/api";
 import { Logo } from "../../shared/Logo";
+import { SiteFooter } from "./SiteFooter";
 import type { Ctx } from "./common";
 import { AccountPage } from "./lazyPages";
 
@@ -15,7 +16,7 @@ export function UserShell({ user, ctx, notice, onLogout }: { user: ApiUser; ctx:
       {user.delegatedBy && <div className="notice" role="status"><span>관리자 {user.delegatedByName ?? user.delegatedBy}님이 {user.nickname} 계정으로 로그인 중입니다.</span></div>}
       {notice}
       <Suspense fallback={<p className="loading">계정 화면을 불러오는 중…</p>}><AccountPage ctx={ctx} user={user} onLogout={onLogout} /></Suspense>
-      <footer className="bot"><div className="bot-in"><span className="bot-status"><Logo className="bot-logo" /></span><span>© INAZINA. All rights reserved.</span></div></footer>
+      <SiteFooter />
     </main>
   </div>;
 }

@@ -185,6 +185,7 @@ dialog[open] { animation: rise .45s var(--ease); }
 .close { width: 36px; height: 36px; border: 0; border-radius: 50%; background: var(--soft); font-size: 16px; cursor: pointer; }
 .doc-body { padding: 0 28px 28px; overflow-wrap: anywhere; }
 .doc-body h2, .doc-body h3 { margin: 28px 0 10px; font-size: 22px; font-family: var(--serif); font-weight: 400; color: var(--ink); }
+.doc-body h3 { margin: 22px 0 6px; font-size: 17px; font-family: inherit; font-weight: 600; }
 .doc-body p { margin: 10px 0; color: var(--ink-2); line-height: 1.6; }
 .doc-body ul { padding-left: 20px; color: var(--ink-2); line-height: 1.6; }
 .doc-body table { width: 100%; border-collapse: collapse; font-size: 14px; }

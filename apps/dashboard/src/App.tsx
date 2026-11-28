@@ -9,6 +9,7 @@ import { CommandsTab } from "./CommandsTab";
 import { EventsSection, useEventForm } from "./EventsSection";
 import { JumpDialog, type JumpTarget } from "./JumpDialog";
 import { Footer } from "./Footer";
+import { SiteFooter } from "./SiteFooter";
 import { HomePage } from "./HomePage";
 import * as Lazy from "./lazyPages";
 import { NoticeBar, useNotice } from "./useNotice";
@@ -179,6 +180,7 @@ export default function App() {
           {page === "account" && <Lazy.AccountPage ctx={ctx} user={user} onLogout={logout} />}
         </Suspense>
         <Footer connected={connection === "ok"} />
+        <SiteFooter />
       </main>
     </div>
     {jumpOpen && <JumpDialog targets={jumpTargets} onClose={() => setJumpOpen(false)} />}

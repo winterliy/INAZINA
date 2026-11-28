@@ -17,7 +17,7 @@
     "test:api": "npm run test --workspace @inazina/api",
     "test:shared": "node --import tsx --test apps/shared/sso.test.ts",
     "test:hts": "cd apps/hts && TSX_TSCONFIG_PATH=tsconfig.app.json node --import tsx --test src/PriceChart.test.tsx src/chartScale.test.ts src/ExchangeHeatmap.test.ts src/PortfolioPage.test.ts src/notificationFormat.test.ts src/guest.test.ts src/withdrawal.test.ts src/exactTotal.test.ts src/announcements.test.ts src/services/courtCases.test.ts",
-    "test:dashboard": "node --import tsx --test apps/dashboard/src/opsFormat.test.ts",
+    "test:dashboard": "node --import tsx --test apps/dashboard/src/opsFormat.test.ts apps/dashboard/src/footerLinks.test.ts",
     "test:site": "node --import tsx --test apps/site/src/noticesHtml.test.ts",
     "geoip:update": ".venv/bin/python tools/update_geoip.py"
   },
