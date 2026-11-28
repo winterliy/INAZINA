@@ -383,7 +383,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const dataPorts = Object.fromEntries(pythonPorts.map((workerPort, index) => [pythonWorkers > 1 ? `data-${index + 1}` : "data", workerPort]));
     send(response, 200, {
       api: { pid: process.pid, uptimeSeconds: Math.round(process.uptime()), node: process.version, mode: import.meta.url.includes("/dist/") ? "build" : "watch" },
-      services: await serviceStatus({ api: port, ...dataPorts, caddy: 2019, dashboard: 4310, hts: 4311, site: 4314, wl: 4315 }),
+      services: await serviceStatus({ api: port, ...dataPorts, caddy: 2019, dashboard: 4310, hts: 4311, site: 4314, wl: 4315, work: 4316, workApi: 4317 }),
       bot: { running: await processRunning(join(projectRoot, "run.py")) },
       settings: safeSettings(process.env),
       logs: { dir: "logs", services: LOG_SERVICES },

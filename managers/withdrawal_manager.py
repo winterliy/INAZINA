@@ -14,8 +14,10 @@ What happens, in one transaction (the member's own consent is asked by the calle
 ``COLUMN_BUCKETS`` puts every column that holds a user ID in exactly one bucket; a test fails when a new one is not listed.
 """
 import json
+import os
 import secrets
 import sqlite3
+import subprocess
 import time
 
 from managers.bank_journal import BankJournal
@@ -279,7 +281,20 @@ class WithdrawalManager:
             WithdrawalManager.purge_expired(conn, now)
             conn.execute("INSERT INTO withdrawal_records(discord_user_id,tombstone_id,nationality,treasury_id,withdrawn_epoch,expires_epoch,summary) "
                          "VALUES (?,?,?,?,?,?,?)", (user_id, tomb, user["nationality"], treasury, now, now + RETENTION_SECONDS, json.dumps(summary)))
+        self._withdraw_work_data(user_id)
         return {"tombstoneId": tomb, "treasuryId": treasury, **summary}
+
+    @staticmethod
+    def _withdraw_work_data(user_id):
+        """The work platform (work.inazina.localhost) keeps its data in its own MySQL: anonymise it too. Best effort: a failure
+        is queued by the script and retried at the next start, and never undoes the withdrawal that already happened."""
+        script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "work_mysql.sh")
+        if not os.path.exists(script) or not os.path.isdir(os.path.join(os.path.dirname(script), "..", "database", "work-mysql", "data")):
+            return
+        try:
+            subprocess.run([script, "withdraw", str(user_id)], timeout=30, check=False, capture_output=True)
+        except Exception:
+            pass
 
     def _close_accounts(self, conn, user_id, summary):
         home = CurrencyManager.home(conn, user_id)

@@ -37,3 +37,7 @@ docs/wide-learning/
 /database/wl-security.json
 /database/browser-access.log.jsonl
 logs/
+
+# Work platform MySQL (separate instance, never committed)
+database/work-mysql/
+database/work-files/

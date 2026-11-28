@@ -47,5 +47,5 @@ export function loadClients(env: NodeJS.ProcessEnv): OidcClient[] {
     clientId, redirectUris: [`https://${clientId}.${domain}/api/auth/oidc/callback`], postLogoutRedirectUris: [`https://${clientId}.${domain}/`],
     ...(maxAgeSeconds ? { maxAgeSeconds } : {}),
   });
-  return validate([app("naru"), app("console", 900)]);
+  return validate([app("naru"), app("console", 900), app("work")]);
 }

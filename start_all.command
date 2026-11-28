@@ -54,6 +54,8 @@ start() {
 
 cleanup() {
   trap - INT TERM EXIT
+  # The work MySQL is started by this script (below), so it is stopped with it; its data stays in database/work-mysql.
+  [[ -n "${WORK_MYSQL_STARTED:-}" ]] && "$ROOT/tools/work_mysql.sh" stop >/dev/null 2>&1
   for pid in $pids; do
     kill -TERM "$pid" 2>/dev/null || true
   done
@@ -114,13 +116,13 @@ if [[ "$FRONTEND" == "static" ]]; then
     exit 1
   fi
   rebuild=0
-  for app in hts dashboard id; do
+  for app in hts dashboard id work; do
     built="$ROOT/apps/$app/dist/index.html"
     if [[ ! -f "$built" ]] || [[ -n "$(find "$ROOT/apps/$app/src" "$ROOT/apps/$app/index.html" "$ROOT/apps/shared" -newer "$built" -print -quit 2>/dev/null)" ]]; then rebuild=1; fi
   done
   if (( rebuild )); then
-    print "화면을 빌드합니다(hts, dashboard, id)."
-    npm run build --workspace @inazina/hts --workspace @inazina/dashboard --workspace @inazina/id >/dev/null 2>&1 || {
+    print "화면을 빌드합니다(hts, dashboard, id, work)."
+    npm run build --workspace @inazina/hts --workspace @inazina/dashboard --workspace @inazina/id --workspace @inazina/work >/dev/null 2>&1 || {
       print -u2 "화면 빌드에 실패했습니다. 원인을 확인하세요: npm run build --workspace @inazina/hts (dashboard, id 도 같은 방식)"
       exit 1
     }
@@ -141,6 +143,22 @@ export INAZINA_FRONTEND="$FRONTEND"
 # A document saved in the console (or swapped in on its effective date) is committed and pushed by tools/publish_documents.py, so the public site follows.
 export INAZINA_PUBLISH_DOCUMENTS="${INAZINA_PUBLISH_DOCUMENTS:-1}"
 start api npm run start --workspace @inazina/api
+# The work platform (work.<domain>): its own MySQL (tools/work_mysql.sh init once), then its API (creates/updates the tables) and screen.
+if [[ -d "$ROOT/database/work-mysql/data" && -n "${WORK_DB_PASSWORD:-}" ]]; then
+  # Only a MySQL this run starts is stopped on exit; one that was already running (started by hand) is left alone.
+  if "$ROOT/tools/work_mysql.sh" status >/dev/null 2>&1; then
+    print "work MySQL이 이미 실행 중이라 그대로 두고, 종료할 때도 끄지 않습니다."
+  elif "$ROOT/tools/work_mysql.sh" start >/dev/null 2>&1; then
+    WORK_MYSQL_STARTED=1
+  else
+    print -u2 "주의: work MySQL을 시작하지 못했습니다. database/work-mysql/error.log 를 확인하세요."
+  fi
+  start work-api npm run start:api --workspace @inazina/work
+  [[ "$FRONTEND" != "static" ]] && start work npm run dev --workspace @inazina/work
+  ( sleep 8; "$ROOT/tools/work_mysql.sh" withdraw-pending >/dev/null 2>&1 ) &  # withdrawals that could not reach work MySQL earlier
+else
+  print -u2 "work 플랫폼은 건너뜁니다. (tools/work_mysql.sh init 과 .env 의 WORK_DB_* 가 필요합니다.)"
+fi
 if [[ "$FRONTEND" != "static" ]]; then
   start dashboard npm run dev:dashboard
   start hts npm run dev:hts

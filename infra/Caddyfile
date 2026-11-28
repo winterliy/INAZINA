@@ -1,7 +1,7 @@
 # INAZINA front door, for the internal network: every name is <service>.inazina.localhost (id., naru., console.)
 # except the wiki viewer, which is wl.localhost, and certificates come from Caddy's own local CA (`tls internal`); there is no public DNS or public certificate.
 # The official site is no longer served here: it lives on GitHub Pages (INAZINA_PUBLIC_SITE), and inazina.localhost / www. / corp. only send visitors there.
-# api.<domain> and port 4313 (internal gateway) are intentionally NOT published here. work. and mc. are on hold.
+# api.<domain> and port 4313 (internal gateway) are intentionally NOT published here. mc. is on hold (work. is the work platform).
 # Env (all optional): INAZINA_DOMAIN (default inazina.localhost), INAZINA_FRONTEND (dev | static), INAZINA_ROOT (project folder,
 # for static), INAZINA_WL (proxy | off), INAZINA_PUBLIC_SITE (where the old site names and the login server's other addresses go).
 
@@ -113,4 +113,24 @@ wl.localhost {
 	import wl_{$INAZINA_WL:proxy}
 }
 
-# On hold (no service yet): work.<domain> (new work platform) and mc.<domain> (Minecraft, TCP 25565: needs caddy-l4 or plain DNS).
+# The work platform: sign-in (/api/auth, /api/me) is the main API's, the work API (own MySQL) answers /api/work/*, the screen is apps/work.
+work.{$INAZINA_DOMAIN:inazina.localhost} {
+	import common
+	@internal path /api/internal*
+	handle @internal {
+		respond 404
+	}
+	@workapi path /api/work/*
+	handle @workapi {
+		reverse_proxy 127.0.0.1:4317
+	}
+	@api path /api/*
+	handle @api {
+		reverse_proxy 127.0.0.1:4312
+	}
+	handle {
+		import frontend_{$INAZINA_FRONTEND:dev} 4316 {$INAZINA_ROOT:.}/apps/work/dist
+	}
+}
+
+# On hold (no service yet): mc.<domain> (Minecraft, TCP 25565: needs caddy-l4 or plain DNS).

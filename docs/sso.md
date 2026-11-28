@@ -15,6 +15,7 @@
 | `console.inazina.localhost` | 4310 + `/api/*` → 4312 | 관리자 콘솔. 로그인은 최근 15분 이내여야 한다(`max_age`) |
 | `inazina.localhost`, `www.`, `corp.` | (서비스 없음) | 공식 사이트는 GitHub Pages(`https://winterliy.github.io/INAZINA/`)로 옮겼다. 이 이름들은 그곳으로 302 리디렉션만 한다(`INAZINA_PUBLIC_SITE`). 4314는 더 이상 실행하지 않는다 |
 | `inazina.localhost` | `www.` 로 301 | |
+| `work.inazina.localhost` | 화면 4316, `/api/work/*` → work API 4317, 로그인 `/api/auth`·`/api/me` → 4312 | 워크 플랫폼(`apps/work`). 자체 MySQL(`tools/work_mysql.sh`, 127.0.0.1:3307). OIDC 클라이언트 `work` |
 | `wl.localhost` | 4315 | 위키 뷰어. **이 이름 하나만** 쓴다. SSO 대상이 아니고 자체 진입 비밀번호가 있다. `INAZINA_WL=off` 로 끈다 |
 | `api.…` , 4313 | **공개하지 않음** | 앱은 API 를 자기 호스트의 `/api/*` 로 부른다. `/api/internal*` 은 404 |
 | `work.`, `mc.` | **보류** | Caddyfile 에 자리만 있다(주석) |

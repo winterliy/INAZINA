@@ -4,9 +4,11 @@ import { loadClients } from "./clients.js";
 
 const one = (overrides: object = {}) => JSON.stringify([{ clientId: "naru", redirectUris: ["https://naru.inazina.kr/cb"], postLogoutRedirectUris: ["https://naru.inazina.kr/"], ...overrides }]);
 
-test("defaults register naru and console on the local domain", () => {
+test("defaults register naru, console and work on the local domain", () => {
   const clients = loadClients({});
-  assert.deepEqual(clients.map((client) => client.clientId), ["naru", "console"]);
+  assert.deepEqual(clients.map((client) => client.clientId), ["naru", "console", "work"]);
+  assert.deepEqual(clients[2].redirectUris, ["https://work.inazina.localhost/api/auth/oidc/callback"]);
+  assert.equal(clients[2].maxAgeSeconds, undefined);
   assert.deepEqual(clients[0].redirectUris, ["https://naru.inazina.localhost/api/auth/oidc/callback"]);
   assert.deepEqual(clients[0].postLogoutRedirectUris, ["https://naru.inazina.localhost/"]);
   assert.equal(clients[0].maxAgeSeconds, undefined);
