@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
-import { authenticate } from "./auth.ts";
+import { adminAccess, bootstrapCount, openRoutes } from "./access.ts";
+import { authenticate, identify } from "./auth.ts";
 import { migrate, pool, one } from "./db.ts";
 import { bad, HttpError, readBody, send } from "./http.ts";
 import { routes1, type Route } from "./routes1.ts";
@@ -8,10 +9,11 @@ import { routes2 } from "./routes2.ts";
 const port = Number(process.env.WORK_API_PORT ?? 4317);
 const domain = process.env.INAZINA_DOMAIN || "inazina.localhost";
 const origin = `https://work.${domain}`;
-const routes: Route[] = [...routes1, ...routes2];
+const routes: Route[] = [...routes1, ...routes2, ...adminAccess.map(([m, re, h]): Route => [m, re, async (ctx) => { if (ctx.member.role !== "admin") throw new HttpError(403, "forbidden"); return h(ctx); }])];
 
 if (!process.env.WORK_DB_PASSWORD) { console.error("WORK_DB_PASSWORD is not set (see .env.example)"); process.exit(1); }
 await migrate();
+if (!bootstrapCount && !(await one("SELECT 1 FROM members LIMIT 1"))) console.warn("WORK_BOOTSTRAP_ADMINS is empty and there are no members: nobody can enter work yet (set it in .env).");
 if (!(await one("SELECT 1 FROM boards LIMIT 1"))) {
   await pool.query("INSERT INTO boards (name,notice_only) VALUES ('공지사항',1),('자유게시판',0)");
   await pool.query("INSERT INTO approval_forms (name,template) VALUES ('일반 기안','목적:\n내용:\n'),('지출 결의','항목:\n금액:\n사유:\n'),('휴가 신청','기간:\n사유:\n')");
@@ -30,6 +32,12 @@ createServer(async (request, response) => {
       if (request.headers["x-work-request"] !== "1") throw new HttpError(403, "csrf");
       const from = request.headers.origin;
       if (from && from !== origin && !from.startsWith("http://127.0.0.1")) throw new HttpError(403, "origin");
+    }
+    const open = openRoutes.find(([m, re]) => m === method && re.test(path));
+    if (open) {
+      const user = await identify(request);
+      const body = method === "GET" ? {} : await readBody(request, 8 * 1024);
+      return send(response, 200, await open[2]({ user, query: url.searchParams, body }));
     }
     const found = routes.find(([m, re]) => m === method && re.test(path));
     if (!found) throw new HttpError(404, "not_found");

@@ -5,6 +5,7 @@
 CREATE PROCEDURE work_withdraw(IN p_user_ref VARCHAR(64))
 BEGIN
   DECLARE v_id BIGINT;
+  DELETE FROM access_requests WHERE user_ref = p_user_ref AND status = 'pending';
   SELECT id INTO v_id FROM members WHERE user_ref = p_user_ref LIMIT 1;
   IF v_id IS NOT NULL THEN
     START TRANSACTION;
@@ -26,6 +27,7 @@ BEGIN
     DELETE FROM project_members WHERE member_id = v_id;
     DELETE FROM approvals WHERE drafter_id = v_id AND status = 'draft';
     UPDATE tasks SET assignee_id = NULL WHERE assignee_id = v_id AND status <> 'done';
+    UPDATE invites SET used_by_ref = NULL WHERE used_by_ref = p_user_ref;
     UPDATE members SET user_ref = CONCAT('w-', SUBSTRING(MD5(CONCAT(p_user_ref, RAND(), NOW(6))), 1, 16)), display_name = '탈퇴한 사용자',
       job_title = NULL, phone = NULL, status = 'retired', role = 'guest' WHERE id = v_id;
     INSERT INTO audit_log (member_id, action, target) VALUES (v_id, 'withdraw', 'anonymised');

@@ -164,3 +164,17 @@ CREATE TABLE IF NOT EXISTS audit_log (
 ) ENGINE=InnoDB;
 
 INSERT IGNORE INTO schema_version (version) VALUES (1);
+
+-- 입장 제어: 허용 목록은 members(status active)이고, 목록에 없는 계정은 초대 코드로 들어오거나 가입 신청 후 관리자 승인을 기다린다.
+CREATE TABLE IF NOT EXISTS invites (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY, code_hash CHAR(64) NOT NULL UNIQUE, created_by BIGINT NOT NULL, note VARCHAR(120) NULL,
+  expires_at DATETIME NOT NULL, used_by_ref VARCHAR(64) NULL, used_at DATETIME NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (created_by) REFERENCES members(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS access_requests (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY, user_ref VARCHAR(64) NOT NULL, display_name VARCHAR(80) NOT NULL, message VARCHAR(300) NULL,
+  status ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending', requested_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  decided_by BIGINT NULL, decided_at DATETIME NULL, KEY (user_ref, status), KEY (status, requested_at),
+  FOREIGN KEY (decided_by) REFERENCES members(id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+INSERT IGNORE INTO schema_version (version) VALUES (2);

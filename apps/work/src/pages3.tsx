@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, get, post } from "./api.ts";
+import { api, del, get, post } from "./api.ts";
 import { Attempt, Empty, Err, Field, useLoad, when } from "./ui.tsx";
 import { MemberPick, type Me } from "./pages1.tsx";
 
@@ -44,6 +44,19 @@ export function Attendance({ me }: { me: Me }) {
   </>;
 }
 
+function Access() {
+  const reqs = useLoad<any[]>(() => get("/access/requests"));
+  const invites = useLoad<any[]>(() => get("/invites"));
+  const [note, setNote] = useState(""); const [code, setCode] = useState("");
+  return <div className="card"><h3>입장 관리(관리자)</h3>
+    <p className="muted">허용된 계정만 들어올 수 있습니다. 초대 코드를 주거나, 가입 신청을 승인하세요.</p>
+    <h3>가입 신청</h3>{(reqs.data ?? []).length === 0 ? <Empty text="대기 중인 신청이 없습니다." /> : reqs.data!.map((r) => <div key={r.id} className="msg"><b>{r.display_name}</b><span className="muted">{r.user_ref} · {when(r.requested_at)} {r.message}</span>
+      <div className="row"><Attempt action={async () => { await post(`/access/requests/${r.id}/decide`, { decision: "approved" }); reqs.reload(); }}>승인</Attempt><Attempt className="danger" action={async () => { await post(`/access/requests/${r.id}/decide`, { decision: "rejected" }); reqs.reload(); }}>거절</Attempt></div></div>)}
+    <h3>초대 코드</h3><div className="row"><input placeholder="메모(누구에게 주는지)" value={note} onChange={(e) => setNote(e.target.value)} maxLength={120} /><Attempt action={async () => { const r = await post("/invites", { note, days: 7 }); setCode(r.code); setNote(""); invites.reload(); }}>7일짜리 코드 만들기</Attempt></div>
+    {code && <p>코드: <b>{code}</b> <span className="muted">(지금 한 번만 보입니다. 한 사람만 쓸 수 있습니다.)</span></p>}
+    <table><tbody>{(invites.data ?? []).map((i) => <tr key={i.id}><td>{i.note}</td><td className="muted">~{when(i.expires_at)}</td><td>{i.used_at ? "사용됨" : "미사용"}</td><td>{!i.used_at && <button className="ghost" onClick={() => del(`/invites/${i.id}`).then(invites.reload)}>취소</button>}</td></tr>)}</tbody></table></div>;
+}
+
 export function Org({ me }: { me: Me }) {
   const members = useLoad<any[]>(() => get("/members"));
   const deps = useLoad<any>(() => get("/departments"));
@@ -61,6 +74,7 @@ export function Org({ me }: { me: Me }) {
       <div className="card"><h3>조직도</h3>{tree(null)}{(deps.data?.departments ?? []).length === 0 && <Empty />}
         {isAdmin && <><h3>부서 추가</h3><div className="row"><input placeholder="부서 이름" value={dep.name} onChange={(e) => setDep({ ...dep, name: e.target.value })} /><select value={dep.parentId} onChange={(e) => setDep({ ...dep, parentId: e.target.value })}><option value="">최상위</option>{(deps.data?.departments ?? []).map((d: any) => <option key={d.id} value={d.id}>{d.name}</option>)}</select><Attempt action={async () => { await post("/departments", { name: dep.name, parentId: dep.parentId || null }); setDep({ name: "", parentId: "" }); deps.reload(); }}>추가</Attempt></div>
           <div className="row" style={{ marginTop: 8 }}><select value={assign.departmentId} onChange={(e) => setAssign({ ...assign, departmentId: e.target.value })}><option value="">부서</option>{(deps.data?.departments ?? []).map((d: any) => <option key={d.id} value={d.id}>{d.name}</option>)}</select><select value={assign.memberId} onChange={(e) => setAssign({ ...assign, memberId: e.target.value })}><option value="">구성원</option>{(members.data ?? []).map((m) => <option key={m.id} value={m.id}>{m.display_name}</option>)}</select><Attempt action={async () => { await post(`/departments/${assign.departmentId}/members`, { memberId: Number(assign.memberId) }); deps.reload(); }}>배정</Attempt></div></>}</div>
+      {isAdmin && <Access />}
       <div className="card"><h3>구성원</h3><table><tbody>{(members.data ?? []).map((m) => <tr key={m.id}><td>{m.display_name}</td><td className="muted">{m.job_title}</td><td className="muted">{m.phone}</td><td>{isAdmin && m.id !== me.member.id ? <select value={m.role} onChange={(e) => api("PATCH", `/members/${m.id}`, { role: e.target.value, status: "active" }).then(members.reload)}><option value="admin">관리자</option><option value="member">멤버</option><option value="guest">게스트</option></select> : <span className="badge">{m.role}</span>}</td></tr>)}</tbody></table></div></div>
   </>;
 }
